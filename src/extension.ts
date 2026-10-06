@@ -1,0 +1,1089 @@
+import { extname, isAbsolute, relative, resolve, sep } from "node:path";
+import * as vscode from "vscode";
+import { FileRepositoryCacheStore } from "./cache/store";
+import {
+  ExplanationService,
+  type ExplanationResult,
+  type ProviderDescriptor
+} from "./controller";
+import { findRepositoryRoot } from "./context/inventory";
+import { buildFileOverview, type FileOverview, type OutlineEntry } from "./context/fileOverview";
+import type { FunctionTarget, RepositoryOverview } from "./core/types";
+import { MockProvider } from "./generation/mock";
+import { OpenAIProvider } from "./generation/openai";
+import {
+  isUsableLanguageModelVendor,
+  LanguageModelProvider,
+  languageModelDescriptorId,
+  parseLanguageModelDescriptorId
+} from "./generation/languageModel";
+import { formatUsage } from "./generation/provider";
+import { findRustFunction, initializeRustParser } from "./languages/rust";
+import { findFunctionWithEditorTools } from "./languages/vscodeSymbols";
+import {
+  ExplanationPanel,
+  type ExplanationView,
+  type PanelAction,
+  type PanelNotice
+} from "./presentation/panel";
+import { innermostRangeAt } from "./presentation/scrollSync";
+
+const API_KEY_SECRET = "theDownsideUp.openai.apiKey";
+const MOCK_LIMITATION = "Mock mode is deterministic placeholder output, not a real code explanation.";
+const OVERVIEW_RELEVANT_PATH =
+  /(?:^|\/)(?:README(?:\.[^/]*)?|ARCHITECTURE(?:\.[^/]*)?|Cargo\.(?:toml|lock)|package(?:-lock)?\.json|(?:main|index|lib|mod)\.(?:rs|[cm]?js|jsx|mjs|cjs|ts|tsx))$/i;
+
+interface SelectedFunction {
+  readonly root: string;
+  readonly target: FunctionTarget;
+  readonly document: vscode.TextDocument;
+}
+
+interface PreviewFile {
+  readonly document: vscode.TextDocument;
+  readonly root: string;
+  readonly overview: FileOverview;
+}
+
+type StoredView = Omit<ExplanationView, "entryId" | "expanded">;
+
+/** The AI explanation section of one function, kept while the preview is open. */
+interface FunctionAi {
+  readonly key: string;
+  value: SelectedFunction;
+  view: StoredView;
+  result?: ExplanationResult;
+  expanded: boolean;
+  controller?: AbortController;
+  /** Incremented to discard results of superseded lookups and generations. */
+  epoch: number;
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : "Unknown error.";
+}
+
+function sameUri(left: vscode.Uri, right: vscode.Uri): boolean {
+  return left.toString() === right.toString();
+}
+
+function isWithin(root: string, target: string): boolean {
+  const value = relative(root, target);
+  return value === "" || (!value.startsWith(`..${sep}`) && value !== ".." && !isAbsolute(value));
+}
+
+export function activate(context: vscode.ExtensionContext): void {
+  const cacheStore = new FileRepositoryCacheStore(context.globalStorageUri.fsPath);
+  const mockProvider = new MockProvider();
+  let panel: ExplanationPanel | undefined;
+  let preview: PreviewFile | undefined;
+  const functions = new Map<string, FunctionAi>();
+  /** The latest repository overview, kept with the root it describes. */
+  let repositoryContext: { root: string; overview: RepositoryOverview } | undefined;
+  let notice: PanelNotice | undefined;
+  let repositoryJob: AbortController | undefined;
+  let generationQueue: Promise<unknown> = Promise.resolve();
+  let runningGenerations = 0;
+  let previewEpoch = 0;
+  let selectionLookupEpoch = 0;
+  let selectionTimer: ReturnType<typeof setTimeout> | undefined;
+  let outlineTimer: ReturnType<typeof setTimeout> | undefined;
+  let recheckTimer: ReturnType<typeof setTimeout> | undefined;
+  const recheckPaths = new Set<string>();
+  let recheckEverything = false;
+  let suppressEditorSyncUntil = 0;
+  let lastEditorTopLine: number | undefined;
+  let lastTextEditor = vscode.window.activeTextEditor;
+  const rootWatchers = new Map<string, vscode.Disposable[]>();
+
+
+
+  const describeProvider = (): ProviderDescriptor => {
+    const settings = vscode.workspace.getConfiguration("downsideUp");
+    const configured = settings.get<string>("provider", "mock");
+    if (configured === "vscode-lm") {
+      const vendor = settings.get<string>("languageModel.vendor", "copilot").trim() || "copilot";
+      const id = settings.get<string>("languageModel.id", "").trim();
+      return { kind: "vscode-lm", modelId: languageModelDescriptorId(vendor, id) };
+    }
+    if (configured === "openai") {
+      const model = settings.get<string>("openai.model", "gpt-4.1-mini").trim();
+      return { kind: "openai", modelId: model || "gpt-4.1-mini" };
+    }
+    return { kind: "mock", modelId: mockProvider.modelId };
+  };
+
+  const service = new ExplanationService({
+    store: cacheStore,
+    describeProvider,
+    createProvider: async (descriptor) => {
+      if (descriptor.kind === "mock") return mockProvider;
+      if (descriptor.kind === "vscode-lm") {
+        const reference = parseLanguageModelDescriptorId(descriptor.modelId);
+        if (!reference) {
+          throw new Error("No language model is selected. Run “Code Shadow: Choose Language Model”.");
+        }
+        if (!isUsableLanguageModelVendor(reference.vendor)) {
+          throw new Error(
+            `Models from “${reference.vendor}” cannot answer extension requests. Run “Code Shadow: Choose Language Model” and pick another model.`
+          );
+        }
+        const [model] = await vscode.lm.selectChatModels({ vendor: reference.vendor, id: reference.id });
+        if (!model) {
+          throw new Error(
+            `Language model “${reference.id}” from “${reference.vendor}” is not available. Sign in to its provider (for example GitHub Copilot) or run “Code Shadow: Choose Language Model”.`
+          );
+        }
+        return new LanguageModelProvider(descriptor.modelId, model);
+      }
+      const key = await context.secrets.get(API_KEY_SECRET);
+      if (!key) {
+        throw new Error("No OpenAI API key is stored. Run “Code Shadow: Set OpenAI API Key”.");
+      }
+      return new OpenAIProvider(descriptor.modelId, key);
+    },
+    authorizeExternalData: async (root, descriptor, estimatedBytes) => {
+      if (descriptor.kind === "mock") return true;
+      if (!vscode.workspace.isTrusted) {
+        await vscode.window.showErrorMessage(
+          "External code sharing is disabled in an untrusted workspace. Trust the workspace before using a language model provider."
+        );
+        return false;
+      }
+      const cache = await cacheStore.read(root);
+      if (
+        cache.consent?.provider === descriptor.kind &&
+        cache.consent.model === descriptor.modelId
+      ) {
+        return true;
+      }
+      const approximateTokens = Math.ceil(estimatedBytes / 4);
+      const reference = descriptor.kind === "vscode-lm"
+        ? parseLanguageModelDescriptorId(descriptor.modelId)
+        : undefined;
+      const destination = descriptor.kind === "vscode-lm"
+        ? `Provider: VS Code language model from “${reference?.vendor ?? "unknown"}”\nModel: ${reference?.id ?? descriptor.modelId}`
+        : `Provider: OpenAI Responses API\nModel: ${descriptor.modelId}`;
+      const terms = descriptor.kind === "vscode-lm"
+        ? "Requests use your existing subscription with that provider (for GitHub Copilot, your Copilot plan) and may count toward its usage limits. Data handling follows that provider's terms and your organization's policies. VS Code may also ask you to allow The Downside Up to use language models."
+        : "Your API usage is billed separately. Review OpenAI's data controls; store:false does not guarantee zero provider-side retention.";
+      const accept = descriptor.kind === "vscode-lm" ? "Send code to language model" : "Send code to OpenAI";
+      const action = await vscode.window.showWarningMessage(
+        `Code Shadow will send selected source, relevant snippets, and repository documentation from:\n\n${root}\n\n${destination}\nEstimated context: about ${approximateTokens.toLocaleString()} tokens (byte-based estimate)\n\n${terms} This consent is saved for this repository and model. Clear the repository cache to revoke it.`,
+        { modal: true },
+        accept
+      );
+      if (action !== accept) return false;
+      const provider = descriptor.kind;
+      await cacheStore.update(root, (current) => ({
+        ...current,
+        consent: {
+          provider,
+          model: descriptor.modelId,
+          acceptedAt: Date.now()
+        }
+      }));
+      return true;
+    }
+  });
+
+  const chooseLanguageModel = async (): Promise<boolean> => {
+    let models: readonly vscode.LanguageModelChat[];
+    try {
+      models = (await vscode.lm.selectChatModels())
+        .filter((model) => isUsableLanguageModelVendor(model.vendor))
+        .sort((left, right) =>
+          Number(right.vendor === "copilot") - Number(left.vendor === "copilot") ||
+          left.vendor.localeCompare(right.vendor) ||
+          left.name.localeCompare(right.name)
+        );
+    } catch {
+      models = [];
+    }
+    if (models.length === 0) {
+      await vscode.window.showWarningMessage(
+        "No VS Code language models are available. Install and sign in to GitHub Copilot, or install another extension that provides language models, then try again."
+      );
+      return false;
+    }
+    const current = parseLanguageModelDescriptorId(
+      describeProvider().kind === "vscode-lm" ? describeProvider().modelId : ""
+    );
+    const picked = await vscode.window.showQuickPick(
+      models.map((model) => ({
+        label: model.name,
+        description: `${model.vendor} · ${model.id}${
+          current?.vendor === model.vendor && current.id === model.id ? " · current" : ""
+        }`,
+        detail: `Family ${model.family}, version ${model.version}; up to ${model.maxInputTokens.toLocaleString()} input tokens`,
+        model
+      })),
+      {
+        title: "Choose the language model for Code Shadow",
+        placeHolder: "Uses your existing subscription with the model's provider. No code is sent until you explain a function and accept the sharing prompt.",
+        matchOnDescription: true,
+        matchOnDetail: true
+      }
+    );
+    if (!picked) return false;
+    const settings = vscode.workspace.getConfiguration("downsideUp");
+    await settings.update("languageModel.vendor", picked.model.vendor, vscode.ConfigurationTarget.Global);
+    await settings.update("languageModel.id", picked.model.id, vscode.ConfigurationTarget.Global);
+    await settings.update("provider", "vscode-lm", vscode.ConfigurationTarget.Global);
+    const effective = describeProvider();
+    if (effective.modelId !== languageModelDescriptorId(picked.model.vendor, picked.model.id)) {
+      await vscode.window.showWarningMessage(
+        "The model was saved in user settings, but workspace settings for downsideUp.provider or downsideUp.languageModel override it. Update or remove those workspace settings to use the chosen model."
+      );
+      return false;
+    }
+    await vscode.window.showInformationMessage(
+      `Code Shadow will use ${picked.model.name} (${picked.model.vendor}) through VS Code. Explain a function to use it; you will be asked before any code is shared.`
+    );
+    return true;
+  };
+
+  const ensureLanguageModelSelected = async (): Promise<boolean> => {
+    const descriptor = describeProvider();
+    if (descriptor.kind !== "vscode-lm") return true;
+    const reference = parseLanguageModelDescriptorId(descriptor.modelId);
+    if (reference && isUsableLanguageModelVendor(reference.vendor)) return true;
+    if (reference) {
+      await vscode.window.showWarningMessage(
+        `The configured model “${reference.id}” from “${reference.vendor}” cannot answer extension requests. Choose another model.`
+      );
+    }
+    return chooseLanguageModel();
+  };
+
+  const filePath = (root: string, uri: vscode.Uri): string =>
+    relative(root, uri.fsPath).split(sep).join("/");
+
+  const stateKey = (root: string, target: FunctionTarget): string => `${root}\0${target.symbolId}`;
+
+  /** Finds the outline entry for a function, tolerating line shifts after edits. */
+  const entryForTarget = (target: FunctionTarget): OutlineEntry | undefined => {
+    if (!preview || !sameUri(preview.document.uri, target.uri)) return undefined;
+    const candidates = preview.overview.entries.filter((entry) => entry.explainable && entry.name === target.name);
+    const line = target.selection.start.line;
+    return candidates.find((entry) => entry.nameLine === line) ??
+      [...candidates].sort((left, right) => Math.abs(left.nameLine - line) - Math.abs(right.nameLine - line))[0];
+  };
+
+  const previewStates = (): Array<{ state: FunctionAi; entry: OutlineEntry }> => {
+    if (!preview) return [];
+    const result: Array<{ state: FunctionAi; entry: OutlineEntry }> = [];
+    const used = new Set<string>();
+    const states = [...functions.values()].filter((state) => sameUri(state.value.document.uri, preview!.document.uri));
+    // Exact name-line matches first, so a same-named neighbour cannot claim a function's entry.
+    for (const exact of [true, false]) {
+      for (const state of states) {
+        if (result.some((item) => item.state === state)) continue;
+        const entry = entryForTarget(state.value.target);
+        if (!entry || used.has(entry.id) || (exact && entry.nameLine !== state.value.target.selection.start.line)) continue;
+        used.add(entry.id);
+        result.push({ state, entry });
+      }
+    }
+    return result;
+  };
+
+  const columnFor = (uri: vscode.Uri): vscode.ViewColumn =>
+    vscode.window.visibleTextEditors.find((editor) => sameUri(editor.document.uri, uri))?.viewColumn ??
+    lastTextEditor?.viewColumn ??
+    vscode.ViewColumn.One;
+
+  const reveal = async (uri: vscode.Uri, line: number, start: number, end: number): Promise<void> => {
+    const document = await vscode.workspace.openTextDocument(uri);
+    await vscode.window.showTextDocument(document, {
+      viewColumn: columnFor(uri),
+      selection: new vscode.Range(line, start, line, Math.max(start, end)),
+      preserveFocus: false
+    });
+  };
+
+  const render = (): void => {
+    if (!panel) return;
+    const descriptor = describeProvider();
+    const handlers = new Map<string, () => Promise<void>>();
+    const explanations: ExplanationView[] = [];
+    for (const { state, entry } of previewStates()) {
+      const result = state.result;
+      const references = state.view.references.map((reference) => ({ ...reference, id: `${entry.id}:${reference.id}` }));
+      explanations.push({ ...state.view, references, entryId: entry.id, expanded: state.expanded });
+      if (!result) continue;
+      for (const reference of result.context.sourceReferences) {
+        const uri = result.context.referenceUris.get(reference.id);
+        if (uri) {
+          handlers.set(`${entry.id}:${reference.id}`, () =>
+            reveal(uri, reference.line, reference.startCharacter, reference.endCharacter)
+          );
+        }
+      }
+    }
+    const shownContext = preview && repositoryContext?.root === preview.root ? repositoryContext : undefined;
+    panel.setReferenceHandlers(handlers);
+    panel.update({
+      provider: descriptor.kind,
+      model: descriptor.modelId || "no model selected",
+      ...(preview ? { document: preview.overview } : {}),
+      explanations,
+      ...(shownContext ? { overview: shownContext.overview } : {}),
+      ...(notice ? { notice } : {}),
+      busy: Boolean(repositoryJob),
+      hasRepository: Boolean(preview)
+    });
+  };
+
+  const emptyView = (target: FunctionTarget): StoredView => ({
+    functionName: target.qualifiedName,
+    status: "loading",
+    detail: "",
+    references: [],
+    limitations: []
+  });
+
+  const loadingView = (state: FunctionAi, detail: string): StoredView => ({
+    ...state.view,
+    status: "loading",
+    detail,
+    error: undefined
+  });
+
+  const applyResult = (state: FunctionAi, result: ExplanationResult): void => {
+    state.result = result;
+    state.view = {
+      functionName: state.value.target.qualifiedName,
+      status: "current",
+      detail: result.cached ? "Saved explanation; the code it describes is unchanged" : "Generated just now",
+      ...(result.usage ? { usage: formatUsage(result.usage) } : {}),
+      explanation: result.explanation,
+      references: result.context.sourceReferences,
+      limitations: [...new Set([
+        ...result.context.limitations,
+        ...result.explanation.limitations,
+        ...(result.provider.kind === "mock" ? [MOCK_LIMITATION] : [])
+      ])]
+    };
+    repositoryContext = { root: state.value.root, overview: result.overview };
+    installRootWatcher(state.value.root);
+  };
+
+  const stateFor = (value: SelectedFunction): FunctionAi => {
+    const key = stateKey(value.root, value.target);
+    let state = functions.get(key);
+    if (!state) {
+      state = { key, value, view: emptyView(value.target), expanded: false, epoch: 0 };
+      functions.set(key, state);
+    } else {
+      state.value = value;
+    }
+    return state;
+  };
+
+  const forget = (state: FunctionAi): void => {
+    state.epoch++;
+    state.controller?.abort();
+    functions.delete(state.key);
+  };
+
+  /** Runs provider work one at a time so concurrent requests cannot each prime context or prompt for consent. */
+  const enqueue = <T>(task: () => Promise<T>): Promise<T> => {
+    const next = generationQueue.then(task, task);
+    generationQueue = next.catch(() => undefined);
+    return next;
+  };
+
+  const syncWithEditor = (editor: vscode.TextEditor | undefined): void => {
+    if (!panel || !preview || !editor || !sameUri(editor.document.uri, preview.document.uri)) return;
+    lastEditorTopLine = editor.visibleRanges[0]?.start.line ?? 0;
+    panel.scrollToLine(lastEditorTopLine);
+    panel.highlightEntry(innermostRangeAt(preview.overview.entries, editor.selection.active.line)?.id);
+  };
+
+  const scheduleRecheck = (path?: string): void => {
+    if (path === undefined) recheckEverything = true;
+    else recheckPaths.add(path);
+    if (recheckTimer) clearTimeout(recheckTimer);
+    recheckTimer = setTimeout(() => void recheckSaved(), 700);
+  };
+
+  const showPreview = async (document: vscode.TextDocument, root: string): Promise<void> => {
+    const epoch = ++previewEpoch;
+    const overview = await buildFileOverview(document, filePath(root, document.uri));
+    if (epoch !== previewEpoch || !panel) return;
+    const fileChanged = !preview || !sameUri(preview.document.uri, document.uri);
+    preview = { document, root, overview };
+    panel.panel.title = `Code Shadow: ${overview.fileName}`;
+    const handlers = new Map<string, () => Promise<void>>();
+    for (const entry of overview.entries) {
+      const { line, startCharacter, endCharacter } = entry.reference;
+      handlers.set(entry.id, () => reveal(document.uri, line, startCharacter, endCharacter));
+    }
+    panel.setFileReferenceHandlers(handlers);
+    if (fileChanged) {
+      notice = undefined;
+      if (previewStates().some(({ state }) => state.result)) scheduleRecheck(filePath(root, document.uri));
+    }
+    render();
+    // Only a file switch re-aligns the preview; rebuilding the same file keeps the reader's place.
+    if (fileChanged) {
+      syncWithEditor(vscode.window.visibleTextEditors.find((editor) => sameUri(editor.document.uri, document.uri)));
+    }
+  };
+
+  const resolveRoot = async (document: vscode.TextDocument): Promise<string | undefined> => {
+    const folder = vscode.workspace.getWorkspaceFolder(document.uri);
+    return folder ? findRepositoryRoot(folder.uri.fsPath) : undefined;
+  };
+
+  const previewDocument = async (document: vscode.TextDocument): Promise<void> => {
+    if (!panel || document.uri.scheme !== "file") return;
+    const name = document.uri.path.split("/").pop() ?? "this file";
+    try {
+      const root = await resolveRoot(document);
+      if (!root) {
+        notice = { tone: "info", text: `${name} is outside the open workspace folders, so it is not described.` };
+        render();
+        return;
+      }
+      await showPreview(document, root);
+    } catch (error) {
+      notice = { tone: "error", text: `Could not describe ${name}: ${errorMessage(error)}` };
+      render();
+    }
+  };
+
+  /** Watches each repository that has a shown explanation, so outside edits mark it outdated. */
+  const installRootWatcher = (root: string): void => {
+    if (rootWatchers.has(root)) return;
+    const watcher = vscode.workspace.createFileSystemWatcher(
+      new vscode.RelativePattern(vscode.Uri.file(root), "**/*")
+    );
+    const onExternalFileChange = (uri: vscode.Uri, structural: boolean) => {
+      const path = filePath(root, uri);
+      const tracked = [...functions.values()].some((state) =>
+        state.value.root === root && state.result?.context.inputs.some((input) => input.path === path)
+      );
+      if (!tracked && !structural && !OVERVIEW_RELEVANT_PATH.test(path)) return;
+      scheduleRecheck(tracked ? path : undefined);
+    };
+    rootWatchers.set(root, watcher ? [
+      watcher,
+      watcher.onDidChange((uri) => onExternalFileChange(uri, false)),
+      watcher.onDidCreate((uri) => onExternalFileChange(uri, true)),
+      watcher.onDidDelete((uri) => onExternalFileChange(uri, true))
+    ] : []);
+  };
+
+  /** Re-resolves a function against the current source, since edits may have moved it. */
+  const currentTarget = async (state: FunctionAi): Promise<SelectedFunction | undefined> => {
+    const { root, document, target } = state.value;
+    const line = target.selection.start.line;
+    const positions = preview && sameUri(preview.document.uri, document.uri)
+      ? preview.overview.entries
+          .filter((entry) => entry.explainable && entry.name === target.name)
+          .sort((left, right) => Math.abs(left.nameLine - line) - Math.abs(right.nameLine - line))
+          .slice(0, 8)
+          .map((entry) => new vscode.Position(entry.nameLine, entry.nameStart))
+      : [];
+    if (positions.length === 0) positions.push(target.selection.start);
+    for (const position of positions) {
+      try {
+        const resolved = await findFunctionTarget(document, position);
+        // Only the same function identity counts; a same-named neighbour is a different function.
+        if (resolved && stateKey(root, resolved) === state.key) return { root, document, target: resolved };
+      } catch {
+        // Try the next candidate position.
+      }
+    }
+    return undefined;
+  };
+
+  /**
+   * After edits, model changes, or file changes, checks shown explanations
+   * against the cache. This is local only: stale ones are marked outdated and
+   * never regenerated automatically.
+   */
+  const recheckSaved = async (): Promise<void> => {
+    const paths = new Set(recheckPaths);
+    const everything = recheckEverything;
+    recheckPaths.clear();
+    recheckEverything = false;
+    for (const state of [...functions.values()]) {
+      if (state.controller || !state.result || !functions.has(state.key)) continue;
+      const own = filePath(state.value.root, state.value.document.uri);
+      const affected = everything || paths.has(own) ||
+        state.result.context.inputs.some((input) => paths.has(input.path));
+      if (!affected) continue;
+      const epoch = ++state.epoch;
+      const current = await currentTarget(state);
+      if (state.epoch !== epoch || state.controller || !functions.has(state.key)) continue;
+      if (!current) {
+        // The function was removed or its identity changed; its section starts fresh.
+        forget(state);
+        render();
+        continue;
+      }
+      let cached: ExplanationResult | undefined;
+      try {
+        cached = await service.findCachedExplanation(current.root, current.target, current.document);
+      } catch {
+        cached = undefined;
+      }
+      if (state.epoch !== epoch || state.controller || !functions.has(state.key)) continue;
+      state.value = current;
+      if (cached) {
+        applyResult(state, cached);
+      } else {
+        state.view = {
+          ...state.view,
+          status: "outdated",
+          detail: "The code, its context, or the model changed since this explanation was made",
+          error: undefined
+        };
+      }
+      render();
+    }
+  };
+
+  /** Generates (or loads a still-current saved) explanation for an explicit request. */
+  const generate = async (state: FunctionAi): Promise<void> => {
+    if (state.controller) return;
+    if (!(await ensureLanguageModelSelected()) || state.controller) return;
+    const controller = new AbortController();
+    const epoch = ++state.epoch;
+    state.controller = controller;
+    state.expanded = true;
+    installRootWatcher(state.value.root);
+    state.view = loadingView(
+      state,
+      runningGenerations > 0 ? "Waiting for another explanation to finish…" : "Checking repository context and saved explanations…"
+    );
+    render();
+    let started = false;
+    // A request still waiting in the queue settles as soon as it is cancelled.
+    controller.signal.addEventListener("abort", () => {
+      if (started || state.epoch !== epoch) return;
+      state.epoch++;
+      if (state.controller === controller) state.controller = undefined;
+      state.view = { ...state.view, status: "cancelled", detail: "Cancelled; nothing was sent", error: undefined };
+      render();
+    }, { once: true });
+    try {
+      const result = await enqueue(async () => {
+        if (controller.signal.aborted) throw new DOMException("The request was cancelled.", "AbortError");
+        started = true;
+        runningGenerations++;
+        try {
+          if (state.epoch === epoch) {
+            state.view = loadingView(state, "Checking repository context and saved explanations…");
+            render();
+          }
+          const current = await currentTarget(state);
+          if (!current) throw new Error(`Could not find ${state.view.functionName} in the current source.`);
+          state.value = current;
+          return await service.explain(current.root, current.target, current.document, controller.signal, (progress) => {
+            if (state.epoch !== epoch) return;
+            state.view = {
+              ...state.view,
+              detail: progress.detail,
+              ...(progress.usage ? { usage: formatUsage(progress.usage) } : {})
+            };
+            render();
+          });
+        } finally {
+          runningGenerations--;
+        }
+      });
+      if (state.epoch !== epoch) return;
+      applyResult(state, result);
+    } catch (error) {
+      if (state.epoch !== epoch) return;
+      const userCancelled = controller.signal.aborted;
+      const declined = !userCancelled && error instanceof DOMException && error.name === "AbortError";
+      state.view = userCancelled || declined
+        ? {
+            ...state.view,
+            status: "cancelled",
+            detail: userCancelled ? "Cancelled; nothing was saved" : "Nothing was sent: code sharing was not approved",
+            error: undefined
+          }
+        : { ...state.view, status: "failed", detail: "Generation failed", error: errorMessage(error) };
+    } finally {
+      if (state.controller === controller) state.controller = undefined;
+      render();
+    }
+  };
+
+  /** Expands a function's AI section: shows a saved explanation, or generates one when none is current. */
+  const openExplanation = async (state: FunctionAi): Promise<void> => {
+    state.expanded = true;
+    if (state.controller || state.view.explanation || state.view.status === "failed" || state.view.status === "cancelled") {
+      render();
+      return;
+    }
+    const epoch = ++state.epoch;
+    state.view = loadingView(state, "Looking for a saved explanation…");
+    render();
+    let cached: ExplanationResult | undefined;
+    try {
+      cached = await service.findCachedExplanation(state.value.root, state.value.target, state.value.document);
+    } catch {
+      cached = undefined;
+    }
+    if (state.epoch !== epoch || !functions.has(state.key)) return;
+    if (cached) {
+      applyResult(state, cached);
+      render();
+      return;
+    }
+    if (!state.expanded) {
+      // Collapsed again before anything was generated: treat it as never opened.
+      forget(state);
+      render();
+      return;
+    }
+    await generate(state);
+  };
+
+  const existingStateForEntry = (entryId: string): FunctionAi | undefined =>
+    previewStates().find(({ entry }) => entry.id === entryId)?.state;
+
+  /** Resolves a preview entry to the function's current source; IDs come from the host-built outline. */
+  const resolveEntryState = async (entryId: string): Promise<FunctionAi | undefined> => {
+    if (!preview) return undefined;
+    const entry = preview.overview.entries.find((candidate) => candidate.id === entryId && candidate.explainable);
+    if (!entry) return undefined;
+    const { document, root } = preview;
+    const existing = existingStateForEntry(entryId);
+    let target: FunctionTarget | undefined;
+    try {
+      target = await findFunctionTarget(document, new vscode.Position(entry.nameLine, entry.nameStart));
+    } catch {
+      target = undefined;
+    }
+    if (!target) {
+      if (existing) return existing;
+      notice = { tone: "error", text: `Could not locate ${entry.name} in the current source. Try again after the preview updates.` };
+      render();
+      return undefined;
+    }
+    return stateFor({ root, target, document });
+  };
+
+  async function handlePanelAction(action: PanelAction): Promise<void> {
+    switch (action.type) {
+      case "navigate":
+        await panel?.navigate(action.referenceId);
+        return;
+      case "expand": {
+        const state = await resolveEntryState(action.entryId);
+        if (state) await openExplanation(state);
+        return;
+      }
+      case "collapse": {
+        const state = existingStateForEntry(action.entryId);
+        if (state) {
+          state.expanded = false;
+          render();
+        }
+        return;
+      }
+      case "regenerate": {
+        const state = await resolveEntryState(action.entryId);
+        if (state) await generate(state);
+        return;
+      }
+      case "cancelEntry":
+        existingStateForEntry(action.entryId)?.controller?.abort();
+        return;
+      case "cancel":
+        repositoryJob?.abort();
+        return;
+      case "refreshContext":
+        await refreshRepositoryContext();
+        return;
+      case "clearCache":
+        await clearRepositoryCache();
+        return;
+      case "chooseModel":
+        await chooseLanguageModel();
+        render();
+        return;
+      case "revealLine": {
+        const current = preview;
+        if (!current) return;
+        const editor = vscode.window.visibleTextEditors.find((candidate) => sameUri(candidate.document.uri, current.document.uri));
+        if (!editor) return;
+        const line = Math.min(action.line, editor.document.lineCount - 1);
+        if (line === lastEditorTopLine) return;
+        lastEditorTopLine = line;
+        suppressEditorSyncUntil = Date.now() + 250;
+        editor.revealRange(new vscode.Range(line, 0, line, 0), vscode.TextEditorRevealType.AtTop);
+        return;
+      }
+    }
+  }
+
+  const ensurePanel = (): ExplanationPanel => {
+    if (panel) return panel;
+    const created = new ExplanationPanel(
+      "Code Shadow",
+      (action) => void handlePanelAction(action),
+      () => {
+        if (panel !== created) return;
+        for (const state of [...functions.values()]) forget(state);
+        repositoryJob?.abort();
+        repositoryJob = undefined;
+        preview = undefined;
+        notice = undefined;
+        panel = undefined;
+      },
+      (visible) => {
+        if (visible && lastTextEditor) void previewDocument(lastTextEditor.document);
+      }
+    );
+    panel = created;
+    return created;
+  };
+
+  /** Shows a saved explanation for selected function text; a cache miss never generates. */
+  const showSavedExplanation = async (
+    document: vscode.TextDocument,
+    root: string,
+    selection: vscode.Selection,
+    lookup: number
+  ): Promise<void> => {
+    let target: FunctionTarget | undefined;
+    try {
+      target = await findFunctionTarget(document, selection.start);
+    } catch {
+      target = undefined;
+    }
+    if (lookup !== selectionLookupEpoch || !panel?.panel.visible) return;
+    if (!target || !target.range.contains(selection.start) || !target.range.contains(selection.end)) return;
+    const existing = functions.get(stateKey(root, target));
+    if (existing && (existing.controller || existing.view.explanation)) {
+      if (!existing.expanded) {
+        existing.expanded = true;
+        render();
+      }
+      return;
+    }
+    const cached = await service.findCachedExplanation(root, target, document);
+    if (lookup !== selectionLookupEpoch || !cached) return;
+    const state = stateFor({ root, target, document });
+    if (state.controller) return;
+    state.epoch++;
+    state.expanded = true;
+    applyResult(state, cached);
+    render();
+  };
+
+  const rootForCommand = async (): Promise<string | undefined> => {
+    if (preview) return preview.root;
+    const editor = vscode.window.activeTextEditor;
+    if (editor?.document.uri.scheme === "file") {
+      try {
+        return await resolveRoot(editor.document);
+      } catch {
+        return undefined;
+      }
+    }
+    return undefined;
+  };
+
+  const refreshRepositoryContext = async (): Promise<void> => {
+    const root = await rootForCommand();
+    if (!root) {
+      await vscode.window.showInformationMessage("Open a source file in a workspace folder first.");
+      return;
+    }
+    if (repositoryJob || !(await ensureLanguageModelSelected())) return;
+    const controller = new AbortController();
+    repositoryJob = controller;
+    notice = { tone: "progress", text: "Refreshing repository context by request…" };
+    render();
+    try {
+      const result = await enqueue(() => {
+        if (controller.signal.aborted) throw new DOMException("The request was cancelled.", "AbortError");
+        return service.refreshRepositoryContext(root, controller.signal, (progress) => {
+          if (repositoryJob !== controller) return;
+          notice = { tone: "progress", text: progress.detail };
+          render();
+        });
+      });
+      if (repositoryJob !== controller) return;
+      const previous = repositoryContext?.root === root ? repositoryContext.overview : undefined;
+      const changed = Boolean(previous && JSON.stringify(previous) !== JSON.stringify(result.overview));
+      repositoryContext = { root, overview: result.overview };
+      notice = {
+        tone: "info",
+        text: `${changed ? "Repository context changed; explanations made with the old context are marked outdated." : "Repository context checked."} ${formatUsage(result.usage)}`
+      };
+      if (changed) scheduleRecheck();
+    } catch (error) {
+      if (repositoryJob !== controller) return;
+      notice = controller.signal.aborted || (error instanceof DOMException && error.name === "AbortError")
+        ? { tone: "info", text: "Repository context refresh cancelled; nothing was sent or saved." }
+        : { tone: "error", text: `Repository context refresh failed: ${errorMessage(error)}` };
+    } finally {
+      if (repositoryJob === controller) repositoryJob = undefined;
+      render();
+    }
+  };
+
+  const clearRepositoryCache = async (): Promise<void> => {
+    const root = await rootForCommand();
+    if (!root) {
+      await vscode.window.showInformationMessage("Open a source file in a workspace folder first.");
+      return;
+    }
+    const answer = await vscode.window.showWarningMessage(
+      `Clear The Downside Up's local overview, explanations, and saved code-sharing consent for this repository?\n\n${root}`,
+      { modal: true },
+      "Clear repository cache"
+    );
+    if (answer !== "Clear repository cache") return;
+    for (const state of [...functions.values()]) if (state.value.root === root) forget(state);
+    repositoryJob?.abort();
+    repositoryJob = undefined;
+    await service.clearCache(root);
+    if (repositoryContext?.root === root) repositoryContext = undefined;
+    notice = { tone: "info", text: "Repository cache and saved code-sharing consent cleared." };
+    render();
+  };
+
+  const chooseWorkspace = async (document?: vscode.TextDocument): Promise<vscode.WorkspaceFolder | undefined> => {
+    const folders = vscode.workspace.workspaceFolders ?? [];
+    if (folders.length === 0) {
+      await vscode.window.showWarningMessage("Open a local repository folder before explaining code.");
+      return undefined;
+    }
+    const folder = document ? vscode.workspace.getWorkspaceFolder(document.uri) : undefined;
+    if (folder) return folder;
+    if (folders.length === 1) return folders[0];
+    const chosen = await vscode.window.showQuickPick(
+      folders.map((entry) => ({ label: entry.name, description: entry.uri.fsPath, folder: entry })),
+      { placeHolder: "Choose which repository contains the active source file" }
+    );
+    return chosen?.folder;
+  };
+
+  const findFunctionTarget = async (
+    document: vscode.TextDocument,
+    position: vscode.Position
+  ): Promise<FunctionTarget | undefined> => {
+    let target: FunctionTarget | undefined;
+    if (document.languageId === "rust" || extname(document.uri.fsPath).toLowerCase() === ".rs") {
+      await initializeRustParser(context);
+      target = await findRustFunction(document, position);
+    }
+    return target ?? findFunctionWithEditorTools(document, position);
+  };
+
+  const selectFunction = async (): Promise<SelectedFunction | undefined> => {
+    const editor = vscode.window.activeTextEditor;
+    if (!editor) {
+      await vscode.window.showWarningMessage("Open a source file and place the cursor inside a function.");
+      return undefined;
+    }
+    const folder = await chooseWorkspace(editor.document);
+    if (!folder) return undefined;
+    if (editor.document.uri.scheme !== "file") {
+      await vscode.window.showWarningMessage("This prototype supports local file workspaces only.");
+      return undefined;
+    }
+    let root: string;
+    try {
+      root = await findRepositoryRoot(folder.uri.fsPath);
+    } catch (error) {
+      await vscode.window.showErrorMessage(
+        `Could not resolve the repository root: ${error instanceof Error ? error.message : "unknown error"}`
+      );
+      return undefined;
+    }
+    let target: FunctionTarget | undefined;
+    try {
+      target = await findFunctionTarget(editor.document, editor.selection.active);
+    } catch (error) {
+      await vscode.window.showErrorMessage(
+        `Function discovery is unavailable: ${error instanceof Error ? error.message : "unknown tooling error"}`
+      );
+    }
+    if (!target) {
+      await vscode.window.showInformationMessage(
+        `No enclosing function or method was found for ${editor.document.languageId}. Ensure the editor has a language symbol provider; this command does not explain arbitrary blocks.`
+      );
+      return undefined;
+    }
+    return { root, target, document: editor.document };
+  };
+
+
+  const explainCommand = async (): Promise<void> => {
+    const value = await selectFunction();
+    if (!value) return;
+    ensurePanel();
+    if (!preview || !sameUri(preview.document.uri, value.document.uri)) await showPreview(value.document, value.root);
+    const state = stateFor(value);
+    if (state.view.status === "outdated" || state.view.status === "failed" || state.view.status === "cancelled") {
+      await generate(state);
+    } else {
+      await openExplanation(state);
+    }
+  };
+
+  const openPreviewCommand = async (resource?: vscode.Uri): Promise<void> => {
+    let document: vscode.TextDocument | undefined;
+    if (resource instanceof vscode.Uri && resource.scheme === "file") {
+      document = await vscode.workspace.openTextDocument(resource);
+    } else {
+      const editor = vscode.window.activeTextEditor ?? lastTextEditor;
+      document = editor?.document;
+      if (editor) lastTextEditor = editor;
+    }
+    if (!document || document.uri.scheme !== "file") {
+      await vscode.window.showWarningMessage("Open a local source file to preview it with Code Shadow.");
+      return;
+    }
+    if (!vscode.workspace.getWorkspaceFolder(document.uri)) {
+      await vscode.window.showWarningMessage("Open the source file inside a workspace folder to preview it.");
+      return;
+    }
+    const existing = panel;
+    ensurePanel();
+    if (existing) existing.panel.reveal(undefined, true);
+    await previewDocument(document);
+  };
+
+  const cancelExplanations = (): void => {
+    repositoryJob?.abort();
+    for (const state of functions.values()) state.controller?.abort();
+  };
+
+  const setApiKey = async (): Promise<void> => {
+    const value = await vscode.window.showInputBox({
+      title: "Store OpenAI API key securely",
+      prompt: "The key is stored in VS Code SecretStorage and is never placed in settings or the repository.",
+      password: true,
+      ignoreFocusOut: true
+    });
+    if (!value) return;
+    await context.secrets.store(API_KEY_SECRET, value.trim());
+    await vscode.window.showInformationMessage("OpenAI API key stored in VS Code SecretStorage.");
+  };
+
+  const removeApiKey = async (): Promise<void> => {
+    await context.secrets.delete(API_KEY_SECRET);
+    await vscode.window.showInformationMessage("Stored OpenAI API key removed.");
+  };
+
+
+
+  const onDocumentChange = vscode.workspace.onDidChangeTextDocument((event) => {
+    if (event.contentChanges.length === 0 || event.document.uri.scheme !== "file") return;
+    const current = preview;
+    if (current && sameUri(event.document.uri, current.document.uri)) {
+      // A cache lookup that started before this edit would describe the old source.
+      selectionLookupEpoch++;
+      if (selectionTimer) clearTimeout(selectionTimer);
+      if (panel) {
+        if (outlineTimer) clearTimeout(outlineTimer);
+        const edited = event.document;
+        outlineTimer = setTimeout(() => {
+          if (!preview || !sameUri(preview.document.uri, edited.uri)) return;
+          void showPreview(edited, current.root).catch(() => undefined);
+        }, 300);
+      }
+    }
+    for (const state of functions.values()) {
+      if (!state.result) continue;
+      const path = filePath(state.value.root, event.document.uri);
+      if (sameUri(state.value.document.uri, event.document.uri) ||
+        state.result.context.inputs.some((input) => input.path === path)) {
+        scheduleRecheck(path);
+        break;
+      }
+    }
+  });
+
+  const onActiveEditorChange = vscode.window.onDidChangeActiveTextEditor((editor) => {
+    // Focus moving to the preview or another panel leaves no active text editor.
+    if (!editor) return;
+    lastTextEditor = editor;
+    selectionLookupEpoch++;
+    if (selectionTimer) clearTimeout(selectionTimer);
+    if (outlineTimer) clearTimeout(outlineTimer);
+    if (panel?.panel.visible) void previewDocument(editor.document);
+  });
+
+  const onVisibleRangesChange = vscode.window.onDidChangeTextEditorVisibleRanges((event) => {
+    if (!panel?.panel.visible || !preview || !sameUri(event.textEditor.document.uri, preview.document.uri)) return;
+    const line = event.visibleRanges[0]?.start.line ?? 0;
+    // Ignore the editor scrolling that the preview itself requested, and repeated ranges.
+    if (Date.now() < suppressEditorSyncUntil || line === lastEditorTopLine) return;
+    lastEditorTopLine = line;
+    panel.scrollToLine(line);
+  });
+
+  const onTextSelectionChange = vscode.window.onDidChangeTextEditorSelection((event) => {
+    lastTextEditor = event.textEditor;
+    if (!panel?.panel.visible || !preview || !sameUri(event.textEditor.document.uri, preview.document.uri)) return;
+    const selection = event.selections[0];
+    if (!selection) return;
+    panel.highlightEntry(innermostRangeAt(preview.overview.entries, selection.active.line)?.id);
+    if (event.selections.length !== 1 || selection.isEmpty) return;
+    if (selectionTimer) clearTimeout(selectionTimer);
+    const lookup = ++selectionLookupEpoch;
+    const { document, root } = preview;
+    selectionTimer = setTimeout(() => {
+      void showSavedExplanation(document, root, selection, lookup).catch((error: unknown) => {
+        if (lookup !== selectionLookupEpoch) return;
+        notice = { tone: "error", text: `Could not check saved explanations: ${errorMessage(error)}` };
+        render();
+      });
+    }, 250);
+  });
+
+  const onConfigChange = vscode.workspace.onDidChangeConfiguration((event) => {
+    if (
+      !event.affectsConfiguration("downsideUp.provider") &&
+      !event.affectsConfiguration("downsideUp.openai.model") &&
+      !event.affectsConfiguration("downsideUp.languageModel")
+    ) return;
+    scheduleRecheck();
+    render();
+  });
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand("downsideUp.explainFunction", explainCommand),
+    vscode.commands.registerCommand("downsideUp.showFileOverview", openPreviewCommand),
+    vscode.commands.registerCommand("downsideUp.refreshRepositoryContext", refreshRepositoryContext),
+    vscode.commands.registerCommand("downsideUp.clearCache", clearRepositoryCache),
+    vscode.commands.registerCommand("downsideUp.cancelExplanation", cancelExplanations),
+    vscode.commands.registerCommand("downsideUp.setApiKey", setApiKey),
+    vscode.commands.registerCommand("downsideUp.removeApiKey", removeApiKey),
+    vscode.commands.registerCommand("downsideUp.selectLanguageModel", async () => {
+      await chooseLanguageModel();
+      render();
+    }),
+    onDocumentChange,
+    onActiveEditorChange,
+    onVisibleRangesChange,
+    onTextSelectionChange,
+    onConfigChange,
+    new vscode.Disposable(() => {
+      cancelExplanations();
+      if (selectionTimer) clearTimeout(selectionTimer);
+      if (outlineTimer) clearTimeout(outlineTimer);
+      if (recheckTimer) clearTimeout(recheckTimer);
+      panel?.panel.dispose();
+      for (const disposables of rootWatchers.values()) for (const disposable of disposables) disposable.dispose();
+      rootWatchers.clear();
+    })
+  );
+}
+
+export function deactivate(): void {}

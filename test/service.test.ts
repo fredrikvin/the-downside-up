@@ -1,0 +1,363 @@
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { resolve } from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { FileRepositoryCacheStore, MemoryRepositoryCacheStore } from "../src/cache/store";
+import type { FunctionTarget } from "../src/core/types";
+import { ExplanationService } from "../src/controller";
+import { MockProvider } from "../src/generation/mock";
+import { Range, Position, Uri } from "./vscode";
+
+const harness = vi.hoisted(() => ({
+  functionHash: "function-v1",
+  storageHash: "storage-v1",
+  unrelatedHash: "unrelated-v1",
+  gitHeadHash: "head-main",
+  primedPaths: ["README.md"],
+  source: "export function checkout(catalog, title) { return catalog.find(title); }",
+  gatherInventory: undefined as unknown as (...args: unknown[]) => unknown,
+  gatherFunctionContext: undefined as unknown as (...args: unknown[]) => unknown
+}));
+
+vi.mock("../src/context/inventory", () => ({
+  gatherInventory: (...args: unknown[]) => harness.gatherInventory(...args)
+}));
+vi.mock("../src/context/related", () => ({
+  gatherFunctionContext: (...args: unknown[]) => harness.gatherFunctionContext(...args)
+}));
+
+const root = resolve("fixtures/js-app");
+const documentUri = Uri.file(resolve(root, "src/checkout.js"));
+
+function makeInventory(_root: string, previous?: Record<string, string>) {
+  const snapshot: Record<string, string> = {
+    "README.md": "readme-v1",
+    "src/checkout.js": harness.functionHash,
+    "src/storage.js": harness.storageHash,
+    "src/unrelated.js": harness.unrelatedHash,
+    "\0git-head": harness.gitHeadHash
+  };
+  const changedPaths = [...new Set([
+    ...Object.keys(previous ?? {}),
+    ...Object.keys(snapshot)
+  ])]
+    .filter((path) => previous?.[path] !== snapshot[path])
+    .map((path) => path === "\0git-head" ? "[Git branch/HEAD]" : path);
+  return {
+    root,
+    name: "js-app",
+    files: [],
+    snapshot,
+    primedPaths: [...harness.primedPaths],
+    inventoryText: "--- README.md ---\nA tiny library checkout fixture.",
+    languageIds: ["javascript"],
+    limitations: [],
+    changedPaths
+  };
+}
+
+function makeContext(target: FunctionTarget) {
+  const selectedPath = "src/checkout.js";
+  const relatedPath = "src/storage.js";
+  return {
+    inputs: [
+      { path: selectedPath, description: "selected checkout", fingerprint: harness.functionHash },
+      { path: relatedPath, description: "related storage declaration", fingerprint: harness.storageHash }
+    ],
+    sourceReferences: [{
+      id: "selected-function",
+      path: selectedPath,
+      line: 0,
+      startCharacter: 16,
+      endCharacter: 24,
+      description: "Selected function checkout"
+    }],
+    referenceUris: new Map([["selected-function", target.uri]]),
+    text: `${harness.source}\n\npersist(book);`,
+    limitations: []
+  };
+}
+
+function setHarness(): void {
+  harness.functionHash = "function-v1";
+  harness.storageHash = "storage-v1";
+  harness.unrelatedHash = "unrelated-v1";
+  harness.gitHeadHash = "head-main";
+  harness.primedPaths = ["README.md"];
+  harness.source = "export function checkout(catalog, title) { return catalog.find(title); }";
+  harness.gatherInventory = (...args: unknown[]) =>
+    makeInventory(args[0] as string, args[1] as Record<string, string> | undefined);
+  harness.gatherFunctionContext = (...args: unknown[]) =>
+    makeContext(args[0] as FunctionTarget);
+}
+
+function target(): FunctionTarget {
+  const functionRange = new Range(new Position(0, 0), new Position(0, 90));
+  return {
+    uri: documentUri,
+    range: functionRange,
+    selection: new Range(new Position(0, 16), new Position(0, 24)),
+    languageId: "javascript",
+    name: "checkout",
+    qualifiedName: "checkout",
+    signature: "checkout(catalog, title)",
+    source: harness.source,
+    symbolId: "symbol-checkout",
+    structuralFingerprint: harness.functionHash,
+    analysis: "vscode-symbols"
+  } as unknown as FunctionTarget;
+}
+
+const fakeDocument = {
+  uri: documentUri,
+  languageId: "javascript",
+  version: 1,
+  getText: () => harness.source
+} as unknown as import("vscode").TextDocument;
+
+function createService(
+  store: MemoryRepositoryCacheStore | FileRepositoryCacheStore,
+  provider: MockProvider,
+  authorized = true
+): ExplanationService {
+  return new ExplanationService({
+    store,
+    describeProvider: () => ({ kind: "mock", modelId: provider.modelId }),
+    createProvider: async () => provider,
+    authorizeExternalData: async () => authorized
+  });
+}
+
+describe("ExplanationService", () => {
+  beforeEach(() => setHarness());
+  afterEach(() => vi.restoreAllMocks());
+
+  it("primes before explaining, then revisits without provider calls", async () => {
+    const provider = new MockProvider();
+    const store = new MemoryRepositoryCacheStore();
+    const service = createService(store, provider);
+    const first = await service.explain(root, target(), fakeDocument);
+    expect(first.cached).toBe(false);
+    expect(provider.requests).toBe(2);
+
+    const second = await service.explain(root, target(), fakeDocument);
+    expect(second.cached).toBe(true);
+    expect(provider.requests).toBe(2);
+    expect(second.explanation.purpose).toContain("Mock mode");
+  });
+
+  it("reuses one repository overview while explaining different functions", async () => {
+    const provider = new MockProvider();
+    const service = createService(new MemoryRepositoryCacheStore(), provider);
+    await service.explain(root, target(), fakeDocument);
+    const anotherFunction = {
+      ...target(),
+      name: "describeCatalog",
+      qualifiedName: "describeCatalog",
+      symbolId: "symbol-describe-catalog",
+      source: "export function describeCatalog(catalog) { return catalog.length; }",
+      structuralFingerprint: "describe-catalog-v1"
+    };
+
+    const result = await service.explain(root, anotherFunction, fakeDocument);
+
+    expect(result.cached).toBe(false);
+    expect(provider.requests).toBe(3);
+  });
+
+  it("returns only a fresh cached explanation without making provider requests", async () => {
+    const provider = new MockProvider();
+    const service = createService(new MemoryRepositoryCacheStore(), provider);
+    await service.explain(root, target(), fakeDocument);
+    const calls = provider.requests;
+
+    const cached = await service.findCachedExplanation(root, target(), fakeDocument);
+    expect(cached?.cached).toBe(true);
+    expect(provider.requests).toBe(calls);
+
+    harness.functionHash = "changed";
+    expect(await service.findCachedExplanation(root, target(), fakeDocument)).toBeUndefined();
+    expect(provider.requests).toBe(calls);
+  });
+
+  it("reuses persistent cache after recreating the service", async () => {
+    const storage = await mkdtemp(resolve(tmpdir(), "downside-up-cache-"));
+    try {
+      const firstProvider = new MockProvider();
+      const firstStore = new FileRepositoryCacheStore(storage);
+      await createService(firstStore, firstProvider).explain(root, target(), fakeDocument);
+      expect(firstProvider.requests).toBe(2);
+
+      const restartedProvider = new MockProvider();
+      const restartedStore = new FileRepositoryCacheStore(storage);
+      const restarted = await createService(restartedStore, restartedProvider)
+        .explain(root, target(), fakeDocument);
+      expect(restarted.cached).toBe(true);
+      expect(restartedProvider.requests).toBe(0);
+    } finally {
+      await rm(storage, { recursive: true, force: true });
+    }
+  });
+
+  it("invalidates edited function and relevant surrounding context independently", async () => {
+    const provider = new MockProvider();
+    const service = createService(new MemoryRepositoryCacheStore(), provider);
+    await service.explain(root, target(), fakeDocument);
+
+    harness.functionHash = "function-v2";
+    harness.source = "export function checkout(catalog, title) { return catalog.lookup(title); }";
+    const functionResult = await service.explain(root, target(), fakeDocument);
+    expect(functionResult.cached).toBe(false);
+    expect(provider.requests).toBe(3);
+
+    harness.storageHash = "storage-v2";
+    const contextResult = await service.explain(root, target(), fakeDocument);
+    expect(contextResult.cached).toBe(false);
+    expect(provider.requests).toBe(4);
+  });
+
+  it("preserves an otherwise valid explanation after an unrelated edit", async () => {
+    const provider = new MockProvider();
+    const service = createService(new MemoryRepositoryCacheStore(), provider);
+    await service.explain(root, target(), fakeDocument);
+    const calls = provider.requests;
+
+    harness.unrelatedHash = "unrelated-v2";
+    const result = await service.explain(root, target(), fakeDocument);
+    expect(result.cached).toBe(true);
+    expect(provider.requests).toBe(calls);
+  });
+
+  it("reviews repository context when any primed file changes, cited or not", async () => {
+    harness.primedPaths = ["README.md", "src/unrelated.js"];
+    const provider = new MockProvider();
+    const review = vi.spyOn(provider, "reviewRepository");
+    const service = createService(new MemoryRepositoryCacheStore(), provider);
+    await service.explain(root, target(), fakeDocument);
+    expect(review).not.toHaveBeenCalled();
+
+    harness.unrelatedHash = "unrelated-v2";
+    await service.explain(root, target(), fakeDocument);
+    expect(review).toHaveBeenCalledTimes(1);
+    expect(review.mock.calls[0]![0].changedPaths).toEqual(["src/unrelated.js"]);
+  });
+
+  it("reviews repository context after a branch switch", async () => {
+    const provider = new MockProvider();
+    const service = createService(new MemoryRepositoryCacheStore(), provider);
+    await service.explain(root, target(), fakeDocument);
+    const calls = provider.requests;
+
+    harness.gitHeadHash = "head-feature";
+    const result = await service.explain(root, target(), fakeDocument);
+
+    expect(result.cached).toBe(false);
+    expect(provider.requests).toBe(calls + 2);
+  });
+
+  it("advances checked snapshot without changing unchanged overview content version", async () => {
+    const provider = new MockProvider();
+    const store = new MemoryRepositoryCacheStore();
+    const service = createService(store, provider);
+    await service.explain(root, target(), fakeDocument);
+    const before = (await store.read(root)).overview!;
+    const refreshed = await service.refreshRepositoryContext(root);
+    const after = (await store.read(root)).overview!;
+
+    expect(refreshed.overview).toEqual(before.value);
+    expect(after.contentVersion).toBe(before.contentVersion);
+    expect(after.checkedSnapshot).toEqual(before.checkedSnapshot);
+    expect(provider.requests).toBe(3);
+  });
+
+  it("does not save a current explanation when source changes in flight", async () => {
+    const provider = new MockProvider();
+    provider.delayMs = 20;
+    const store = new MemoryRepositoryCacheStore();
+    const service = createService(store, provider);
+    const request = service.explain(root, target(), fakeDocument);
+    await new Promise((resolveWait) => setTimeout(resolveWait, 5));
+    harness.functionHash = "function-edited-during-request";
+    harness.source = "export function checkout(catalog, title) { return null; }";
+    await expect(request).rejects.toThrow(/changed while the explanation was generating/i);
+    expect(Object.keys((await store.read(root)).explanations)).toHaveLength(0);
+  });
+
+  it("deduplicates concurrent equivalent requests", async () => {
+    const provider = new MockProvider();
+    provider.delayMs = 10;
+    const service = createService(new MemoryRepositoryCacheStore(), provider);
+    const [first, second] = await Promise.all([
+      service.explain(root, target(), fakeDocument),
+      service.explain(root, target(), fakeDocument)
+    ]);
+    expect(first.cached).toBe(false);
+    expect(second.cached).toBe(false);
+    expect(provider.requests).toBe(2);
+  });
+
+  it("supports cancellation, surfaces provider failures, and fences Clear Cache", async () => {
+    const provider = new MockProvider();
+    provider.delayMs = 100;
+    const store = new MemoryRepositoryCacheStore();
+    const service = createService(store, provider);
+    const controller = new AbortController();
+    const cancelled = service.explain(root, target(), fakeDocument, controller.signal);
+    await new Promise((resolveWait) => setTimeout(resolveWait, 5));
+    controller.abort();
+    await expect(cancelled).rejects.toMatchObject({ name: "AbortError" });
+
+    provider.delayMs = 50;
+    const duringClear = service.explain(root, target(), fakeDocument);
+    await new Promise((resolveWait) => setTimeout(resolveWait, 5));
+    await service.clearCache(root);
+    await expect(duringClear).rejects.toThrow(/cache was cleared/i);
+    expect(await store.read(root)).toMatchObject({
+      overview: null,
+      explanations: {}
+    });
+
+    provider.delayMs = 0;
+    provider.failure = "network";
+    await expect(service.explain(root, target(), fakeDocument)).rejects.toThrow(/network failure/i);
+  });
+
+  it("shows malformed and refused mock responses as explicit errors", async () => {
+    const provider = new MockProvider();
+    const service = createService(new MemoryRepositoryCacheStore(), provider);
+    provider.failure = "malformed";
+    await expect(service.explain(root, target(), fakeDocument)).rejects.toThrow(/not valid JSON/i);
+    provider.failure = "refusal";
+    await expect(service.explain(root, target(), fakeDocument)).rejects.toThrow(/refused/i);
+  });
+
+  it("never requests external code after consent is declined", async () => {
+    for (const descriptor of [
+      { kind: "openai" as const, modelId: "test-model" },
+      { kind: "vscode-lm" as const, modelId: "copilot/test-model" }
+    ]) {
+      const store = new MemoryRepositoryCacheStore();
+      const provider = new MockProvider();
+      const authorizations: string[] = [];
+      const externalService = new ExplanationService({
+        store,
+        describeProvider: () => descriptor,
+        createProvider: async () => provider,
+        authorizeExternalData: async (_root, requested) => {
+          authorizations.push(`${requested.kind}:${requested.modelId}`);
+          return false;
+        }
+      });
+      await expect(externalService.explain(root, target(), fakeDocument))
+        .rejects.toMatchObject({ name: "AbortError" });
+      await expect(externalService.refreshRepositoryContext(root))
+        .rejects.toMatchObject({ name: "AbortError" });
+      expect(authorizations).toEqual([
+        `${descriptor.kind}:${descriptor.modelId}`,
+        `${descriptor.kind}:${descriptor.modelId}`
+      ]);
+      expect(provider.requests).toBe(0);
+      expect((await store.read(root)).overview).toBeNull();
+    }
+  });
+});

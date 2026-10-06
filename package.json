@@ -1,0 +1,139 @@
+{
+  "name": "the-downside-up",
+  "displayName": "The Downside Up",
+  "description": "Understand unfamiliar code with grounded, cached explanations beside the source.",
+  "version": "0.4.1",
+  "publisher": "the-downside-up",
+  "license": "UNLICENSED",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "downsideUp.explainFunction",
+        "title": "Code Shadow: Explain Function"
+      },
+      {
+        "command": "downsideUp.showFileOverview",
+        "title": "Code Shadow: Open Preview to the Side",
+        "icon": "$(open-preview)"
+      },
+      {
+        "command": "downsideUp.refreshRepositoryContext",
+        "title": "Code Shadow: Refresh Repository Context"
+      },
+      {
+        "command": "downsideUp.clearCache",
+        "title": "Code Shadow: Clear Repository Cache"
+      },
+      {
+        "command": "downsideUp.cancelExplanation",
+        "title": "Code Shadow: Cancel Explanation"
+      },
+      {
+        "command": "downsideUp.setApiKey",
+        "title": "Code Shadow: Set OpenAI API Key"
+      },
+      {
+        "command": "downsideUp.removeApiKey",
+        "title": "Code Shadow: Remove OpenAI API Key"
+      },
+      {
+        "command": "downsideUp.selectLanguageModel",
+        "title": "Code Shadow: Choose Language Model"
+      }
+    ],
+    "configuration": {
+      "title": "The Downside Up",
+      "properties": {
+        "downsideUp.provider": {
+          "type": "string",
+          "enum": [
+            "mock",
+            "vscode-lm",
+            "openai"
+          ],
+          "enumDescriptions": [
+            "Deterministic placeholder output; no external requests.",
+            "A VS Code language model, such as GitHub Copilot, using your existing subscription. No API key needed; choose a model with “Code Shadow: Choose Language Model”.",
+            "OpenAI Responses API with your own API key and separate API billing."
+          ],
+          "default": "mock",
+          "description": "Explanation provider. External providers require explicit per-repository and per-model consent before code is shared."
+        },
+        "downsideUp.languageModel.vendor": {
+          "type": "string",
+          "default": "copilot",
+          "description": "Vendor of the VS Code language model used by the vscode-lm provider. Set by “Code Shadow: Choose Language Model”. Changing it requires renewed repository consent."
+        },
+        "downsideUp.languageModel.id": {
+          "type": "string",
+          "default": "",
+          "description": "ID of the VS Code language model used by the vscode-lm provider. Set by “Code Shadow: Choose Language Model”; when empty, Explain asks you to choose one. Changing it requires renewed repository consent."
+        },
+        "downsideUp.openai.model": {
+          "type": "string",
+          "default": "gpt-4.1-mini",
+          "description": "OpenAI model used with the Responses API. Changing the model requires renewed repository consent."
+        }
+      }
+    },
+    "menus": {
+      "editor/title": [
+        {
+          "command": "downsideUp.showFileOverview",
+          "when": "resourceScheme == file && editorLangId != markdown && activeWebviewPanelId != 'theDownsideUp.explanation'",
+          "group": "navigation"
+        }
+      ]
+    }
+  },
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": "limited",
+      "description": "Local mock explanations and bounded source inspection are available. External code sharing requires a trusted workspace and explicit repository consent."
+    }
+  },
+  "activationEvents": [
+    "onCommand:downsideUp.explainFunction",
+    "onCommand:downsideUp.showFileOverview",
+    "onCommand:downsideUp.refreshRepositoryContext",
+    "onCommand:downsideUp.clearCache",
+    "onCommand:downsideUp.cancelExplanation",
+    "onCommand:downsideUp.setApiKey",
+    "onCommand:downsideUp.removeApiKey",
+    "onCommand:downsideUp.selectLanguageModel"
+  ],
+  "main": "./dist/extension.js",
+  "scripts": {
+    "build": "node esbuild.config.mjs",
+    "watch": "node esbuild.config.mjs --watch",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:extension": "npm run build && node ./scripts/test-extension.mjs",
+    "package": "npm run build && vsce package --allow-missing-repository",
+    "lint": "tsc --noEmit",
+    "pretest": "npm run typecheck"
+  },
+  "dependencies": {
+    "ignore": "^7.0.11",
+    "minimatch": "^10.2.6",
+    "web-tree-sitter": "0.25.10"
+  },
+  "devDependencies": {
+    "@types/mocha": "^10.0.10",
+    "@types/node": "^22.15.30",
+    "@types/vscode": "^1.90.0",
+    "@vscode/test-electron": "^2.5.2",
+    "@vscode/vsce": "^3.6.0",
+    "esbuild": "^0.25.5",
+    "tree-sitter-wasms": "0.1.13",
+    "typescript": "^5.8.3",
+    "vitest": "^3.2.4"
+  }
+}

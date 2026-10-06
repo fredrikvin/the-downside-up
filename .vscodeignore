@@ -1,0 +1,15 @@
+.vscode/**
+.github/**
+.gitignore
+test/**
+fixtures/**
+scripts/**
+src/**
+dist/test/**
+dist/**/*.map
+coverage/**
+*.ts
+*.tsbuildinfo
+package-lock.json
+tsconfig.json
+esbuild.config.mjs
