@@ -199,6 +199,46 @@ describe("ExplanationService", () => {
     }
   });
 
+  it("finds saved explanations for several functions at once, gathering context only for saved ones", async () => {
+    const storage = await mkdtemp(resolve(tmpdir(), "downside-up-cache-"));
+    try {
+      const firstProvider = new MockProvider();
+      await createService(new FileRepositoryCacheStore(storage), firstProvider)
+        .explain(root, target(), fakeDocument);
+      const unsaved = { ...target(), name: "unsaved", qualifiedName: "unsaved", symbolId: "symbol-unsaved" };
+
+      const inventoryCalls: unknown[] = [];
+      const contextTargets: string[] = [];
+      const gatherInventory = harness.gatherInventory;
+      const gatherContext = harness.gatherFunctionContext;
+      harness.gatherInventory = (...args: unknown[]) => {
+        inventoryCalls.push(args);
+        return gatherInventory(...args);
+      };
+      harness.gatherFunctionContext = (...args: unknown[]) => {
+        contextTargets.push((args[0] as FunctionTarget).symbolId);
+        return gatherContext(...args);
+      };
+      const restartedProvider = new MockProvider();
+      const restarted = createService(new FileRepositoryCacheStore(storage), restartedProvider);
+
+      const found = await restarted.findCachedExplanations(root, [unsaved, target()], fakeDocument);
+      expect([...found.keys()]).toEqual(["symbol-checkout"]);
+      expect(found.get("symbol-checkout")?.cached).toBe(true);
+      expect(contextTargets).toEqual(["symbol-checkout"]);
+      expect(inventoryCalls).toHaveLength(1);
+
+      expect((await restarted.findCachedExplanations(root, [unsaved], fakeDocument)).size).toBe(0);
+      expect(inventoryCalls).toHaveLength(1);
+
+      harness.functionHash = "function-v2";
+      expect((await restarted.findCachedExplanations(root, [target()], fakeDocument)).size).toBe(0);
+      expect(restartedProvider.requests).toBe(0);
+    } finally {
+      await rm(storage, { recursive: true, force: true });
+    }
+  });
+
   it("invalidates edited function and relevant surrounding context independently", async () => {
     const provider = new MockProvider();
     const service = createService(new MemoryRepositoryCacheStore(), provider);

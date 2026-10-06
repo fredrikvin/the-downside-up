@@ -167,39 +167,59 @@ export class ExplanationService {
     target: FunctionTarget,
     document: vscode.TextDocument
   ): Promise<ExplanationResult | undefined> {
+    return (await this.findCachedExplanations(root, [target], document)).get(target.symbolId);
+  }
+
+  /**
+   * Local, cache-only lookup for functions of one document, keyed by symbol ID.
+   * Repository and function context are gathered only for functions with a
+   * saved record; this never calls a provider.
+   */
+  async findCachedExplanations(
+    root: string,
+    targets: readonly FunctionTarget[],
+    document: vscode.TextDocument
+  ): Promise<Map<string, ExplanationResult>> {
+    const results = new Map<string, ExplanationResult>();
     const descriptor = this.options.describeProvider();
     const cache = await this.options.store.read(root);
     const overview = cache.overview;
     const overviewConfig = `${descriptor.kind}:${descriptor.modelId}:${PROMPT_VERSION}`;
-    if (!overview || overview.config !== overviewConfig) return undefined;
-    const inventory = await gatherInventory(root, overview.checkedSnapshot);
-    if (needsOverviewReview(inventory, overview)) return undefined;
-    const context = await gatherFunctionContext(target, document, inventory);
+    if (!overview || overview.config !== overviewConfig) return results;
     const settingsHash = fingerprint(EXPLANATION_SETTINGS);
-    const key = explanationCacheKey(
-      target.symbolId,
-      descriptor.kind,
-      descriptor.modelId,
-      overview.contentVersion,
-      settingsHash,
-      PROMPT_VERSION
-    );
-    const cached = cache.explanations[key];
-    if (
-      !cached ||
-      cached.promptVersion !== PROMPT_VERSION ||
-      cached.explanationConfig !== settingsHash ||
-      cached.overviewVersion !== overview.contentVersion ||
-      !inputsMatch(cached.inputs, context.inputs)
-    ) return undefined;
-    return {
-      explanation: cached.explanation,
-      overview: overview.value,
-      context,
-      provider: descriptor,
-      cached: true,
-      stale: false
-    };
+    const candidates = targets.flatMap((target) => {
+      const cached = cache.explanations[explanationCacheKey(
+        target.symbolId,
+        descriptor.kind,
+        descriptor.modelId,
+        overview.contentVersion,
+        settingsHash,
+        PROMPT_VERSION
+      )];
+      return cached &&
+        cached.promptVersion === PROMPT_VERSION &&
+        cached.explanationConfig === settingsHash &&
+        cached.overviewVersion === overview.contentVersion
+        ? [{ target, cached }]
+        : [];
+    });
+    if (candidates.length === 0) return results;
+    const inventory = await gatherInventory(root, overview.checkedSnapshot);
+    if (needsOverviewReview(inventory, overview)) return results;
+    for (const { target, cached } of candidates) {
+      if (results.has(target.symbolId)) continue;
+      const context = await gatherFunctionContext(target, document, inventory);
+      if (!inputsMatch(cached.inputs, context.inputs)) continue;
+      results.set(target.symbolId, {
+        explanation: cached.explanation,
+        overview: overview.value,
+        context,
+        provider: descriptor,
+        cached: true,
+        stale: false
+      });
+    }
+    return results;
   }
 
   private fence(root: string): number {

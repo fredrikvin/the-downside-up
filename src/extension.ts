@@ -72,7 +72,7 @@ function isWithin(root: string, target: string): boolean {
   return value === "" || (!value.startsWith(`..${sep}`) && value !== ".." && !isAbsolute(value));
 }
 
-export function activate(context: vscode.ExtensionContext): void {
+export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | undefined {
   const cacheStore = new FileRepositoryCacheStore(context.globalStorageUri.fsPath);
   const mockProvider = new MockProvider();
   let panel: ExplanationPanel | undefined;
@@ -86,6 +86,9 @@ export function activate(context: vscode.ExtensionContext): void {
   let runningGenerations = 0;
   let previewEpoch = 0;
   let selectionLookupEpoch = 0;
+  let savedLookupEpoch = 0;
+  /** Files whose functions were already checked for saved explanations while the preview is open. */
+  const savedLookupDone = new Set<string>();
   let selectionTimer: ReturnType<typeof setTimeout> | undefined;
   let outlineTimer: ReturnType<typeof setTimeout> | undefined;
   let recheckTimer: ReturnType<typeof setTimeout> | undefined;
@@ -408,6 +411,51 @@ export function activate(context: vscode.ExtensionContext): void {
     recheckTimer = setTimeout(() => void recheckSaved(), 700);
   };
 
+  /**
+   * Marks functions of the shown file that have a current saved explanation as
+   * ready, so they survive closing the preview or restarting VS Code. This is a
+   * local cache lookup only; misses stay collapsed and never generate.
+   */
+  const markSavedExplanations = async (document: vscode.TextDocument, root: string): Promise<void> => {
+    const lookup = ++savedLookupEpoch;
+    const fileKey = `${root}\0${document.uri.toString()}`;
+    const version = document.version;
+    const stillCurrent = () =>
+      lookup === savedLookupEpoch && Boolean(panel) && Boolean(preview) &&
+      sameUri(preview!.document.uri, document.uri) && document.version === version;
+    const targets: FunctionTarget[] = [];
+    const seen = new Set<string>();
+    for (const entry of preview?.overview.entries ?? []) {
+      if (!entry.explainable) continue;
+      let target: FunctionTarget | undefined;
+      try {
+        target = await findFunctionTarget(document, new vscode.Position(entry.nameLine, entry.nameStart));
+      } catch {
+        target = undefined;
+      }
+      if (!stillCurrent()) return;
+      if (!target || seen.has(target.symbolId) || functions.has(stateKey(root, target))) continue;
+      seen.add(target.symbolId);
+      targets.push(target);
+    }
+    let found = new Map<string, ExplanationResult>();
+    try {
+      if (targets.length > 0) found = await service.findCachedExplanations(root, targets, document);
+    } catch {
+      found = new Map();
+    }
+    if (!stillCurrent()) return;
+    savedLookupDone.add(fileKey);
+    let changed = false;
+    for (const target of targets) {
+      const cached = found.get(target.symbolId);
+      if (!cached || functions.has(stateKey(root, target))) continue;
+      applyResult(stateFor({ root, target, document }), cached);
+      changed = true;
+    }
+    if (changed) render();
+  };
+
   const showPreview = async (document: vscode.TextDocument, root: string): Promise<void> => {
     const epoch = ++previewEpoch;
     const overview = await buildFileOverview(document, filePath(root, document.uri));
@@ -426,6 +474,9 @@ export function activate(context: vscode.ExtensionContext): void {
       if (previewStates().some(({ state }) => state.result)) scheduleRecheck(filePath(root, document.uri));
     }
     render();
+    if (fileChanged || !savedLookupDone.has(`${root}\0${document.uri.toString()}`)) {
+      void markSavedExplanations(document, root).catch(() => undefined);
+    }
     // Only a file switch re-aligns the preview; rebuilding the same file keeps the reader's place.
     if (fileChanged) {
       syncWithEditor(vscode.window.visibleTextEditors.find((editor) => sameUri(editor.document.uri, document.uri)));
@@ -734,6 +785,8 @@ export function activate(context: vscode.ExtensionContext): void {
       () => {
         if (panel !== created) return;
         for (const state of [...functions.values()]) forget(state);
+        savedLookupEpoch++;
+        savedLookupDone.clear();
         repositoryJob?.abort();
         repositoryJob = undefined;
         preview = undefined;
@@ -846,6 +899,7 @@ export function activate(context: vscode.ExtensionContext): void {
       "Clear repository cache"
     );
     if (answer !== "Clear repository cache") return;
+    savedLookupEpoch++;
     for (const state of [...functions.values()]) if (state.value.root === root) forget(state);
     repositoryJob?.abort();
     repositoryJob = undefined;
@@ -988,6 +1042,7 @@ export function activate(context: vscode.ExtensionContext): void {
     if (current && sameUri(event.document.uri, current.document.uri)) {
       // A cache lookup that started before this edit would describe the old source.
       selectionLookupEpoch++;
+      savedLookupEpoch++;
       if (selectionTimer) clearTimeout(selectionTimer);
       if (panel) {
         if (outlineTimer) clearTimeout(outlineTimer);
@@ -1054,6 +1109,9 @@ export function activate(context: vscode.ExtensionContext): void {
       !event.affectsConfiguration("downsideUp.languageModel")
     ) return;
     scheduleRecheck();
+    // Saved explanations are per model, so other functions may now have one.
+    savedLookupDone.clear();
+    if (panel && preview) void markSavedExplanations(preview.document, preview.root).catch(() => undefined);
     render();
   });
 
@@ -1084,6 +1142,20 @@ export function activate(context: vscode.ExtensionContext): void {
       rootWatchers.clear();
     })
   );
+
+  // Read-only hooks for the extension-host tests; other extensions never receive them.
+  if (context.extensionMode !== vscode.ExtensionMode.Test) return undefined;
+  return {
+    previewExplanations: () => previewStates().map(({ state }) => ({
+      functionName: state.view.functionName,
+      status: state.view.status,
+      expanded: state.expanded
+    }))
+  };
+}
+
+export interface DownsideUpTestApi {
+  previewExplanations(): Array<{ functionName: string; status: string; expanded: boolean }>;
 }
 
 export function deactivate(): void {}

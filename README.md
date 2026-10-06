@@ -36,6 +36,9 @@ Preview to the Side** (or use the preview button in the editor title bar).
   generate one if none is current; a spinner shows while it loads, and the
   chevron collapses it again. Several can be open at once; generations run one
   at a time. Each explanation links to the related code the extension found.
+  Functions with a current saved explanation are marked **ready** whenever the
+  preview shows their file, including after reopening the preview or
+  restarting VS Code; this is a local cache check only.
   Selecting text inside a function
   in the editor opens its section only when a saved explanation exists.
   Selecting never starts generation by itself.

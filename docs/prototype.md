@@ -22,7 +22,12 @@ for a current saved explanation (local only) and generates one only when none
 exists and the section is still open. Loading shows a spinner and can be
 cancelled. Several sections can be open; provider work runs one request at a
 time, so concurrent requests cannot each prime repository context or prompt for
-consent. Selecting non-empty text inside a function in the editor only checks for a
+consent. When the preview shows a file, it checks the local cache once for that
+file's functions and labels those with a current saved explanation as ready,
+so saved explanations remain visible after the preview is closed and reopened
+or VS Code restarts; misses stay collapsed and unlabelled. Repository and
+function context are gathered only for functions that have a saved record.
+Selecting non-empty text inside a function in the editor only checks for a
 fresh saved explanation and opens its section when one exists. A cache miss
 never triggers generation. Opening files, moving the cursor, scrolling, local
 outlining, and source edits do not call a provider. After edits, file changes,
@@ -168,7 +173,8 @@ language model, or configure `downsideUp.provider` as `openai` and store an
 API key using **Downside Up: Set OpenAI API Key**. Then explicitly accept the
 per-repository sharing prompt.
 
-The deterministic unit suite covers cache reuse across restart, source and
+The deterministic unit suite covers cache reuse across restart, batched
+saved-explanation lookup, source and
 context invalidation, unrelated edits, overview content-version preservation,
 branch changes, in-flight edits, cancellation, clear-cache fencing, provider
 failures, VS Code language-model prompt/validation/error/cancellation handling,
@@ -176,7 +182,8 @@ ignored files, unsaved buffers, and parser fingerprints. Extension
 host tests exercise Rust and JavaScript discovery, distinct identities for
 same-named Rust methods in different `impl` blocks, document-ordered outlines,
 explanation commands, preview creation, selection changes during an in-flight
-request, and unsupported plaintext discovery. Each run uses a fresh temporary
+request, saved explanations listed as ready after closing and reopening the
+preview, and unsupported plaintext discovery. Each run uses a fresh temporary
 VS Code profile so earlier runs' windows are not restored.
 Local description tests cover Rust items (imports, modules, functions and
 methods with receivers, structs, enums, traits, impls, constants, statics,

@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import * as vscode from "vscode";
 import { findFunctionWithEditorTools } from "../../src/languages/vscodeSymbols";
 import { buildFileOverview } from "../../src/context/fileOverview";
+import type { DownsideUpTestApi } from "../../src/extension";
 import { findRustFunction, initializeRustParserAt } from "../../src/languages/rust";
 
 async function waitFor<T>(
@@ -141,6 +142,25 @@ export async function run(): Promise<void> {
   await Promise.all([olderRequest, newerRequest]);
   const finalPanel = await waitForPanel();
   assert.equal(finalPanel.label, "Downside Up: checkout.js", "The newer request's file is shown.");
+
+  const api = extension.exports as DownsideUpTestApi | undefined;
+  assert.ok(api, "Read-only test hooks are available in extension test mode.");
+  await vscode.window.tabGroups.close(finalPanel);
+  await waitFor(
+    async () => vscode.window.tabGroups.all.flatMap((group) => group.tabs)
+      .some((tab) => tab.label.startsWith("Downside Up")) ? undefined : true,
+    "the preview to close"
+  );
+  assert.deepEqual(api.previewExplanations(), [], "Closing the preview clears in-memory explanation state.");
+  await vscode.window.showTextDocument(jsDocument, vscode.ViewColumn.One);
+  await vscode.commands.executeCommand("downsideUp.showFileOverview");
+  const reopened = await waitFor(async () => {
+    const views = api.previewExplanations();
+    const ready = views.filter((view) => view.status === "current").map((view) => view.functionName);
+    return ready.includes("checkout") && ready.includes("describeCatalog") ? views : undefined;
+  }, "saved explanations listed as ready after reopening the preview");
+  assert.ok(reopened.every((view) => !view.expanded), "Saved explanations are listed collapsed, not opened.");
+  console.log("Downside Up integration tests: saved explanations listed after reopening the preview.");
 
   const unsupported = await vscode.workspace.openTextDocument({
     language: "plaintext",
