@@ -62,6 +62,10 @@ export interface TrackedInput {
   readonly path: string;
   readonly description: string;
   readonly fingerprint: string;
+  /** Distance from the explained function: 0 for itself, 1 for items it uses directly. Absent for callers and file context. */
+  readonly depth?: number;
+  /** Whether the fingerprint covers the whole item or only its signature; absent means the whole item. */
+  readonly scope?: "body" | "signature";
 }
 
 export interface ExplanationRecord {

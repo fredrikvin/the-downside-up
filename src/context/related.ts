@@ -6,6 +6,7 @@ import type { ContextInput, FunctionTarget, TrackedInput } from "../core/types";
 import type { RepositoryInventory } from "./inventory";
 import { isEligibleRelativePath } from "./inventory";
 import { findRustDeclarations, listRustFunctions } from "../languages/rust";
+import { findRustDependencies } from "./rustDependencies";
 
 export interface SourceReference {
   readonly id: string;
@@ -80,6 +81,67 @@ async function loadAllowedSource(
   }
 }
 
+const MAX_DEPENDENCY_ITEM_BYTES = 4 * 1024;
+const MAX_DEPENDENCY_BYTES = 16 * 1024;
+
+type AddInput = (
+  path: string,
+  description: string,
+  text: string,
+  structuralHash?: string,
+  tracking?: Pick<TrackedInput, "depth" | "scope">
+) => void;
+
+/**
+ * Adds items the function uses from other files (depth 1). An item is sent
+ * and tracked whole when it fits the budget, by signature when only that fits,
+ * and otherwise omitted with a limitation, so tracking matches what was sent.
+ */
+async function addRustDependencies(
+  target: FunctionTarget,
+  targetPath: string,
+  document: vscode.TextDocument,
+  inventory: RepositoryInventory,
+  addInput: AddInput,
+  limitations: string[]
+): Promise<void> {
+  const readablePaths = new Set(inventory.files.map((file) => file.relativePath));
+  const unreadPaths = new Set(Object.keys(inventory.snapshot).filter((path) => !readablePaths.has(path)));
+  const found = await findRustDependencies({
+    path: targetPath,
+    text: document.getText(),
+    line: target.range.start.line,
+    name: target.name,
+    readablePaths,
+    unreadPaths,
+    load: async (path) => (await loadAllowedSource(inventory, path))?.text
+  }).catch(() => ({
+    dependencies: [],
+    limitations: ["Items used from other files could not be resolved; changes to them are not tracked."]
+  }));
+  limitations.push(...found.limitations);
+  let budget = MAX_DEPENDENCY_BYTES;
+  for (const { path, item } of found.dependencies) {
+    const label = `${item.kind} ${item.qualifiedName}`;
+    const fullBytes = Buffer.byteLength(item.source, "utf8");
+    if (fullBytes <= MAX_DEPENDENCY_ITEM_BYTES && fullBytes <= budget) {
+      addInput(path, label, item.source, item.fingerprint, { depth: 1, scope: "body" });
+      budget -= fullBytes;
+      continue;
+    }
+    const signatureBytes = Buffer.byteLength(item.signature, "utf8");
+    if (signatureBytes <= budget) {
+      addInput(path, `signature of ${label}`, item.signature, item.signatureFingerprint, { depth: 1, scope: "signature" });
+      budget -= signatureBytes;
+      limitations.push("Some large items used from other files are included and tracked by signature only.");
+      continue;
+    }
+    limitations.push(
+      "Some items used from other files were omitted to fit the request budget; changes to them do not mark this explanation outdated."
+    );
+  }
+}
+
 export async function gatherFunctionContext(
   target: FunctionTarget,
   document: vscode.TextDocument,
@@ -98,12 +160,14 @@ export async function gatherFunctionContext(
     path: string,
     description: string,
     text: string,
-    structuralHash?: string
+    structuralHash?: string,
+    tracking: Pick<TrackedInput, "depth" | "scope"> = {}
   ) => {
     inputs.push({
       path,
       description,
-      fingerprint: structuralHash ?? fingerprint(text)
+      fingerprint: structuralHash ?? fingerprint(text),
+      ...tracking
     });
     contextSnippets.set(`${path}\0${description}`, `--- ${path} (${description}) ---\n${text}`);
   };
@@ -112,7 +176,8 @@ export async function gatherFunctionContext(
     targetPath,
     `selected ${target.qualifiedName}`,
     target.source,
-    target.structuralFingerprint
+    target.structuralFingerprint,
+    { depth: 0 }
   );
 
   const functions =
@@ -135,7 +200,7 @@ export async function gatherFunctionContext(
         new RegExp(`\\b${related.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*\\(`)
           .test(target.source)
       ) {
-        addInput(targetPath, `called function ${related.qualifiedName}`, related.source, related.fingerprint);
+        addInput(targetPath, `called function ${related.qualifiedName}`, related.source, related.fingerprint, { depth: 1 });
       }
     }
     const declarations = await findRustDeclarations(document, names).catch(() => []);
@@ -144,9 +209,11 @@ export async function gatherFunctionContext(
         targetPath,
         `${declaration.kind} ${declaration.name}`,
         declaration.source,
-        declaration.fingerprint
+        declaration.fingerprint,
+        { depth: 1 }
       );
     }
+    await addRustDependencies(target, targetPath, document, inventory, addInput, limitations);
   }
 
   let languageLocations: vscode.Location[] = [];

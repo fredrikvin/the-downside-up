@@ -47,7 +47,15 @@ project manifests, README and architecture-style documents, selected source
 files, and a small symbol outline. Rust symbols use Tree-sitter; other symbols
 use VS Code providers where available. Function context adds related types,
 imports, directly related helpers, and references where tooling can resolve
-them. Snippets sent to the model are labelled with their file path and what
+them. For Rust, it also adds the items the function uses directly from other
+files of the crate (depth 1): types, functions, constants, and methods of used
+types, found by following `use` declarations and paths (`crate::`, `self::`,
+`super::`, child modules, `mod.rs`, glob imports, and the package's own name
+from `tests/`, `examples/`, or `bin/` files) with Tree-sitter and Cargo's
+file layout. Items are sent whole up to 4 KiB each and 16 KiB in total; a
+larger item is sent as its signature only, and items beyond the budget are
+omitted with a stated limitation. External crates and the standard library are
+not followed. Snippets sent to the model are labelled with their file path and what
 they contain, and the model is asked to refer to code by file, function, and
 type names in plain prose rather than by identifiers. The "related code" links
 under an explanation come from the extension's own analysis, so navigation only
@@ -144,6 +152,21 @@ themselves discard a valid explanation. Unsaved buffers participate in
 freshness checks, and results are not saved as current if source changes during
 generation.
 
+Each explanation records what it was built from, so tracking matches what the
+model saw. Every tracked input notes its depth (0 for the function itself, 1
+for items it uses directly) and whether it covers the whole item or only its
+signature. A Rust function's explanation becomes outdated when its own source,
+its file's imports, or any directly used item changes, including items in other
+files. Changes only to items that those items use (depth 2), or to other items
+in the same files, do not by themselves make it outdated; a change to a file
+sent for priming still enters the overview review described above. For an item
+tracked by signature only, body edits keep the explanation current.
+Formatting-only edits do not change Rust
+structural fingerprints, and attributes such as `#[derive(...)]` count as part
+of a type. Saved explanations of Rust functions that use items from other files
+are shown as outdated once after upgrading, because they were made without that
+context.
+
 Invalidation never regenerates automatically. Use **Downside Up: Explain
 Function** or the preview's **Regenerate** link to regenerate. **Refresh Repository
 Context** explicitly reviews or rebuilds the overview. **Clear Repository
@@ -174,7 +197,8 @@ API key using **Downside Up: Set OpenAI API Key**. Then explicitly accept the
 per-repository sharing prompt.
 
 The deterministic unit suite covers cache reuse across restart, batched
-saved-explanation lookup, source and
+saved-explanation lookup, Rust cross-file dependency resolution and its
+depth-1 freshness and signature-only budget, source and
 context invalidation, unrelated edits, overview content-version preservation,
 branch changes, in-flight edits, cancellation, clear-cache fencing, provider
 failures, VS Code language-model prompt/validation/error/cancellation handling,
@@ -197,6 +221,15 @@ webview's content-security policy.
 
 - Rust macros, procedural macros, and conditional compilation may hide or alter
   syntax and relationships. Tree-sitter is not a Rust compiler.
+- Cross-file Rust tracking stops at depth 1 and resolves names without type
+  inference. A method call such as `value.find(...)` is matched by name against
+  methods of the types the function uses, so it may track an extra same-named
+  method or miss one whose type is never named. It follows Cargo's default
+  file layout only (no `#[path]` attributes or `include!`), does not follow
+  other crates in a Cargo workspace, finds `impl` blocks only in the file that
+  defines the type, and skips module files outside the inventory's read budget
+  (stated as a limitation). Callers and items used by non-Rust functions from
+  other files are tracked only when VS Code tooling reports them.
 - Other language support depends on installed VS Code document-symbol
   providers. There is no whole-program analyzer or guaranteed call graph;
   unresolved references and unavailable tooling are surfaced as limitations.

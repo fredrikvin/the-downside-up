@@ -24,11 +24,7 @@ export function inputsMatch(
   current: readonly TrackedInput[]
 ): boolean {
   if (previous.length !== current.length) return false;
-  const currentMap = new Map(current.map((input) => [
-    `${input.path}\0${input.description}`,
-    input.fingerprint
-  ]));
-  return previous.every(
-    (input) => currentMap.get(`${input.path}\0${input.description}`) === input.fingerprint
-  );
+  const identity = (input: TrackedInput) => `${input.path}\0${input.description}\0${input.scope ?? "body"}`;
+  const currentMap = new Map(current.map((input) => [identity(input), input.fingerprint]));
+  return previous.every((input) => currentMap.get(identity(input)) === input.fingerprint);
 }

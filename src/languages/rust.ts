@@ -49,12 +49,12 @@ function pointToPosition(
   return new vscode.Position(point.row, bytePrefix.length);
 }
 
-function tokens(node: SyntaxNode): string {
+export function rustStructuralTokens(node: SyntaxNode): string {
   if (node.type.endsWith("_literal")) {
     return `${node.type}:${node.text.length}:${node.text};`;
   }
   if (node.childCount === 0) return `${node.type}:${node.text.length}:${node.text};`;
-  return nodeChildren(node).map((entry) => tokens(entry)).join("");
+  return nodeChildren(node).map((entry) => rustStructuralTokens(entry)).join("");
 }
 
 interface FoundFunction {
@@ -101,7 +101,7 @@ function smallestContaining<T>(
     })[0];
 }
 
-function signatureFor(node: SyntaxNode): string {
+export function rustSignature(node: SyntaxNode): string {
   const body = child(node, "body");
   return body ? node.text.slice(0, node.text.lastIndexOf(body.text)).trim() : node.text;
 }
@@ -130,7 +130,7 @@ export async function findRustFunction(
     pointToPosition(found.node.startPosition, document.getText()),
     pointToPosition(found.node.endPosition, document.getText())
   );
-  const signature = signatureFor(found.node);
+  const signature = rustSignature(found.node);
   const qualifiedName = [...found.containers, found.name.text].join("::");
   const target = {
     uri: document.uri,
@@ -145,7 +145,7 @@ export async function findRustFunction(
     signature,
     source: found.node.text,
     symbolId: cacheKey(["rust-v1", document.uri.path, qualifiedName]),
-    structuralFingerprint: fingerprint(tokens(found.node)),
+    structuralFingerprint: fingerprint(rustStructuralTokens(found.node)),
     analysis: "rust-tree-sitter" as const
   };
   tree.delete();
@@ -170,11 +170,11 @@ export async function listRustFunctions(document: TextDocument): Promise<RustFun
   const result = findFunctions(tree.rootNode).map(({ node, name, containers }) => ({
     name: name.text,
     qualifiedName: [...containers, name.text].join("::"),
-    signature: signatureFor(node),
+    signature: rustSignature(node),
     source: node.text,
     startLine: node.startPosition.row,
     endLine: node.endPosition.row,
-    fingerprint: fingerprint(tokens(node))
+    fingerprint: fingerprint(rustStructuralTokens(node))
   }));
   tree.delete();
   return result;
@@ -207,7 +207,7 @@ export async function findRustDeclarations(
           name,
           kind: node.type,
           source: node.text,
-          fingerprint: fingerprint(tokens(node))
+          fingerprint: fingerprint(rustStructuralTokens(node))
         });
       }
     }
@@ -223,7 +223,7 @@ export async function fingerprintRustSyntax(source: string): Promise<string> {
   const parser = await parserPromise;
   const tree = parser.parse(source);
   if (!tree) throw new Error("Tree-sitter could not parse the Rust source.");
-  const value = fingerprint(tokens(tree.rootNode));
+  const value = fingerprint(rustStructuralTokens(tree.rootNode));
   tree.delete();
   return value;
 }

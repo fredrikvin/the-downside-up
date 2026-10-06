@@ -36,6 +36,9 @@ Preview to the Side** (or use the preview button in the editor title bar).
   generate one if none is current; a spinner shows while it loads, and the
   chevron collapses it again. Several can be open at once; generations run one
   at a time. Each explanation links to the related code the extension found.
+  For Rust, the explanation also uses the types, functions, and methods the
+  function uses from other files, and is marked outdated when any of them
+  change.
   Functions with a current saved explanation are marked **ready** whenever the
   preview shows their file, including after reopening the preview or
   restarting VS Code; this is a local cache check only.
