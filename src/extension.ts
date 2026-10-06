@@ -18,6 +18,7 @@ import {
   parseLanguageModelDescriptorId
 } from "./generation/languageModel";
 import { formatUsage } from "./generation/provider";
+import { findGoFunction, initializeGoParser, isGoDocument } from "./languages/go";
 import { findRustFunction, initializeRustParser } from "./languages/rust";
 import { findFunctionWithEditorTools } from "./languages/vscodeSymbols";
 import {
@@ -61,6 +62,11 @@ interface FunctionAi {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "Unknown error.";
+}
+
+/** Outline names may carry a receiver, like gopls's `(*Catalog).Add`; discovered functions use the bare name. */
+function outlineNameMatches(entryName: string, name: string): boolean {
+  return entryName === name || entryName.endsWith(`).${name}`);
 }
 
 function sameUri(left: vscode.Uri, right: vscode.Uri): boolean {
@@ -267,7 +273,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
   /** Finds the outline entry for a function, tolerating line shifts after edits. */
   const entryForTarget = (target: FunctionTarget): OutlineEntry | undefined => {
     if (!preview || !sameUri(preview.document.uri, target.uri)) return undefined;
-    const candidates = preview.overview.entries.filter((entry) => entry.explainable && entry.name === target.name);
+    const candidates = preview.overview.entries.filter((entry) => entry.explainable && outlineNameMatches(entry.name, target.name));
     const line = target.selection.start.line;
     return candidates.find((entry) => entry.nameLine === line) ??
       [...candidates].sort((left, right) => Math.abs(left.nameLine - line) - Math.abs(right.nameLine - line))[0];
@@ -533,7 +539,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     const line = target.selection.start.line;
     const positions = preview && sameUri(preview.document.uri, document.uri)
       ? preview.overview.entries
-          .filter((entry) => entry.explainable && entry.name === target.name)
+          .filter((entry) => entry.explainable && outlineNameMatches(entry.name, target.name))
           .sort((left, right) => Math.abs(left.nameLine - line) - Math.abs(right.nameLine - line))
           .slice(0, 8)
           .map((entry) => new vscode.Position(entry.nameLine, entry.nameStart))
@@ -933,6 +939,9 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     if (document.languageId === "rust" || extname(document.uri.fsPath).toLowerCase() === ".rs") {
       await initializeRustParser(context);
       target = await findRustFunction(document, position);
+    } else if (isGoDocument(document)) {
+      await initializeGoParser(context);
+      target = await findGoFunction(document, position);
     }
     return target ?? findFunctionWithEditorTools(document, position);
   };

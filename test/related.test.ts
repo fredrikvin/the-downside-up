@@ -6,6 +6,7 @@ import { inputsMatch } from "../src/cache/freshness";
 import { gatherInventory } from "../src/context/inventory";
 import { gatherFunctionContext } from "../src/context/related";
 import type { FunctionTarget } from "../src/core/types";
+import { initializeGoParserAt, listGoFunctions } from "../src/languages/go";
 import { initializeRustParserAt, listRustFunctions } from "../src/languages/rust";
 import { Position, Range, Uri, workspace } from "./vscode";
 
@@ -13,6 +14,7 @@ let root: string;
 
 beforeAll(async () => {
   await initializeRustParserAt(resolve("."));
+  await initializeGoParserAt(resolve("."));
 });
 
 beforeEach(async () => {
@@ -101,5 +103,78 @@ describe("Rust function context across files", () => {
 
     await editStorage("pub fn persist(book: &Book)", "pub fn persist(book: &Book, _retries: u8)");
     expect(inputsMatch(large.inputs, (await checkoutContext()).inputs)).toBe(false);
+  });
+});
+
+describe("Go function context", () => {
+  let goRoot: string;
+
+  beforeEach(async () => {
+    goRoot = await realpath(await mkdtemp(resolve(tmpdir(), "downside-up-go-related-")));
+    for (const file of ["go.mod", "main.go", "report.go", "inventory/inventory.go", "inventory/lookup.go", "storage/storage.go"]) {
+      await mkdir(resolve(goRoot, file, ".."), { recursive: true });
+      await copyFile(resolve("fixtures/go-app", file), resolve(goRoot, file));
+    }
+  });
+
+  afterEach(async () => {
+    await rm(goRoot, { recursive: true, force: true });
+  });
+
+  async function goContext(name: string) {
+    const path = resolve(goRoot, "main.go");
+    const text = await readFile(path, "utf8");
+    const document = {
+      uri: Uri.file(path),
+      languageId: "go",
+      version: 1,
+      getText: () => text
+    } as unknown as import("vscode").TextDocument;
+    const entry = (await listGoFunctions(document)).find((candidate) => candidate.name === name)!;
+    const target = {
+      uri: document.uri,
+      range: new Range(new Position(entry.startLine, 0), new Position(entry.endLine, 1)),
+      selection: new Range(new Position(entry.startLine, 5), new Position(entry.startLine, 5 + name.length)),
+      languageId: "go",
+      name,
+      qualifiedName: entry.qualifiedName,
+      signature: entry.signature,
+      source: entry.source,
+      symbolId: `symbol-${name}`,
+      structuralFingerprint: entry.fingerprint,
+      analysis: "go-tree-sitter"
+    } as unknown as FunctionTarget;
+    return gatherFunctionContext(target, document, await gatherInventory(goRoot));
+  }
+
+  async function edit(file: string, from: string, to: string): Promise<void> {
+    const path = resolve(goRoot, file);
+    const text = await readFile(path, "utf8");
+    if (!text.includes(from)) throw new Error(`${file} does not contain ${from}`);
+    await writeFile(path, text.replace(from, to));
+  }
+
+  it("tracks the import block and items used from this and other packages", async () => {
+    const context = await goContext("main");
+    expect(context.inputs.map((input) => [input.path, input.description, input.depth, input.scope]).sort()).toEqual([
+      ["inventory/inventory.go", "function NewCatalog", 1, "body"],
+      ["inventory/inventory.go", "method Catalog.Add", 1, "body"],
+      ["inventory/inventory.go", "type Book", 1, "body"],
+      ["main.go", "function checkout", 1, "body"],
+      ["main.go", "module imports and declarations", undefined, undefined],
+      ["main.go", "selected main", 0, undefined],
+      ["report.go", "function describe", 1, "body"]
+    ]);
+    expect(context.text).toContain("\"example.com/library/storage\"");
+  });
+
+  it("marks the explanation outdated only when a used item changes", async () => {
+    const original = await goContext("checkout");
+
+    await edit("inventory/inventory.go", "c.books = append(c.books, book)", "c.books = append([]Book{book}, c.books...)");
+    expect(inputsMatch(original.inputs, (await goContext("checkout")).inputs)).toBe(true);
+
+    await edit("inventory/lookup.go", "book.Available && book.Title == title", "book.Title == title");
+    expect(inputsMatch(original.inputs, (await goContext("checkout")).inputs)).toBe(false);
   });
 });

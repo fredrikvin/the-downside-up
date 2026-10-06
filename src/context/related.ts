@@ -6,6 +6,7 @@ import type { ContextInput, FunctionTarget, TrackedInput } from "../core/types";
 import type { RepositoryInventory } from "./inventory";
 import { isEligibleRelativePath } from "./inventory";
 import { findRustDeclarations, listRustFunctions } from "../languages/rust";
+import { findGoDependencies } from "./goDependencies";
 import { findRustDependencies } from "./rustDependencies";
 
 export interface SourceReference {
@@ -92,36 +93,55 @@ type AddInput = (
   tracking?: Pick<TrackedInput, "depth" | "scope">
 ) => void;
 
-/**
- * Adds items the function uses from other files (depth 1). An item is sent
- * and tracked whole when it fits the budget, by signature when only that fits,
- * and otherwise omitted with a limitation, so tracking matches what was sent.
- */
-async function addRustDependencies(
+interface DependencyItem {
+  readonly kind: string;
+  readonly qualifiedName: string;
+  readonly source: string;
+  readonly signature: string;
+  readonly fingerprint: string;
+  readonly signatureFingerprint: string;
+}
+
+interface DependencyRequest {
+  readonly path: string;
+  readonly text: string;
+  readonly line: number;
+  readonly name: string;
+  readonly readablePaths: ReadonlySet<string>;
+  readonly unreadPaths: ReadonlySet<string>;
+  readonly load: (path: string) => Promise<string | undefined>;
+}
+
+function dependencyRequest(
   target: FunctionTarget,
   targetPath: string,
   document: vscode.TextDocument,
-  inventory: RepositoryInventory,
-  addInput: AddInput,
-  limitations: string[]
-): Promise<void> {
+  inventory: RepositoryInventory
+): DependencyRequest {
   const readablePaths = new Set(inventory.files.map((file) => file.relativePath));
-  const unreadPaths = new Set(Object.keys(inventory.snapshot).filter((path) => !readablePaths.has(path)));
-  const found = await findRustDependencies({
+  return {
     path: targetPath,
     text: document.getText(),
     line: target.range.start.line,
     name: target.name,
     readablePaths,
-    unreadPaths,
+    unreadPaths: new Set(Object.keys(inventory.snapshot).filter((path) => !readablePaths.has(path))),
     load: async (path) => (await loadAllowedSource(inventory, path))?.text
-  }).catch(() => ({
-    dependencies: [],
-    limitations: ["Items used from other files could not be resolved; changes to them are not tracked."]
-  }));
-  limitations.push(...found.limitations);
+  };
+}
+
+/**
+ * Adds items the function uses directly (depth 1). An item is sent and
+ * tracked whole when it fits the budget, by signature when only that fits,
+ * and otherwise omitted with a limitation, so tracking matches what was sent.
+ */
+function addDependencies(
+  dependencies: ReadonlyArray<{ readonly path: string; readonly item: DependencyItem }>,
+  addInput: AddInput,
+  limitations: string[]
+): void {
   let budget = MAX_DEPENDENCY_BYTES;
-  for (const { path, item } of found.dependencies) {
+  for (const { path, item } of dependencies) {
     const label = `${item.kind} ${item.qualifiedName}`;
     const fullBytes = Buffer.byteLength(item.source, "utf8");
     if (fullBytes <= MAX_DEPENDENCY_ITEM_BYTES && fullBytes <= budget) {
@@ -133,14 +153,16 @@ async function addRustDependencies(
     if (signatureBytes <= budget) {
       addInput(path, `signature of ${label}`, item.signature, item.signatureFingerprint, { depth: 1, scope: "signature" });
       budget -= signatureBytes;
-      limitations.push("Some large items used from other files are included and tracked by signature only.");
+      limitations.push("Some large items this function uses are included and tracked by signature only.");
       continue;
     }
     limitations.push(
-      "Some items used from other files were omitted to fit the request budget; changes to them do not mark this explanation outdated."
+      "Some items this function uses were omitted to fit the request budget; changes to them do not mark this explanation outdated."
     );
   }
 }
+
+const UNRESOLVED_DEPENDENCIES = "Items this function uses could not be resolved; changes to them are not tracked.";
 
 export async function gatherFunctionContext(
   target: FunctionTarget,
@@ -187,8 +209,17 @@ export async function gatherFunctionContext(
   const sourceRanges = functions.map((entry) =>
     new vscode.Range(entry.startLine, 0, entry.endLine + 1, 0)
   );
-  const preamble = relevantPreamble(document.getText(), sourceRanges);
+  const goFound = target.languageId === "go"
+    ? await findGoDependencies(dependencyRequest(target, targetPath, document, inventory))
+      .catch(() => ({ dependencies: [], preamble: "", limitations: [UNRESOLVED_DEPENDENCIES] }))
+    : undefined;
+  // Go import blocks span several lines, so they come from the parser rather than the line scan.
+  const preamble = goFound ? goFound.preamble : relevantPreamble(document.getText(), sourceRanges);
   if (preamble) addInput(targetPath, "module imports and declarations", preamble);
+  if (goFound) {
+    limitations.push(...goFound.limitations);
+    addDependencies(goFound.dependencies, addInput, limitations);
+  }
 
   const textToScan = `${target.signature}\n${target.source}`;
   const names = namedIdentifiers(textToScan);
@@ -213,7 +244,10 @@ export async function gatherFunctionContext(
         { depth: 1 }
       );
     }
-    await addRustDependencies(target, targetPath, document, inventory, addInput, limitations);
+    const rustFound = await findRustDependencies(dependencyRequest(target, targetPath, document, inventory))
+      .catch(() => ({ dependencies: [], limitations: [UNRESOLVED_DEPENDENCIES] }));
+    limitations.push(...rustFound.limitations);
+    addDependencies(rustFound.dependencies, addInput, limitations);
   }
 
   let languageLocations: vscode.Location[] = [];

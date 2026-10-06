@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
 import type { RepositoryInventory } from "./inventory";
+import { listGoFunctions } from "../languages/go";
 import { listRustFunctions } from "../languages/rust";
 
 const MAX_SYMBOL_FILES = 20;
@@ -67,6 +68,17 @@ export async function addLocalSymbolOutline(
         ));
       } catch {
         limitations.push(`Rust symbols were unavailable for ${file.relativePath}.`);
+      }
+      continue;
+    }
+    if (file.languageId === "go") {
+      try {
+        const functions = await listGoFunctions({ getText: () => file.content });
+        outline.push(...functions.slice(0, 20).map(
+          (entry) => `  ${file.relativePath}: ${entry.qualifiedName} ${entry.signature}`
+        ));
+      } catch {
+        limitations.push(`Go symbols were unavailable for ${file.relativePath}.`);
       }
       continue;
     }

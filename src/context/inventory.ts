@@ -144,6 +144,8 @@ function eligiblePath(relativePath: string): boolean {
   return TEXT_EXTENSIONS.has(extension) ||
     file === "Cargo.toml" ||
     file === "Cargo.lock" ||
+    file === "go.mod" ||
+    file === "go.work" ||
     file === "package.json" ||
     file === "package-lock.json" ||
     file === ".gitignore" ||
@@ -234,7 +236,7 @@ function selectPrimeFiles(files: readonly InventoryFile[]): InventoryFile[] {
   )) {
     if (
       !TEXT_EXTENSIONS.has(extname(file.relativePath).toLowerCase()) &&
-      !/^(?:Cargo\.toml|Cargo\.lock|package\.json|package-lock\.json)$/.test(basename(file.relativePath))
+      !/^(?:Cargo\.toml|Cargo\.lock|go\.mod|go\.work|package\.json|package-lock\.json)$/.test(basename(file.relativePath))
     ) continue;
     if (size + Buffer.byteLength(file.content) > MAX_PRIME_BYTES) continue;
     selected.push(file);

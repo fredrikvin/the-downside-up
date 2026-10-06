@@ -4,6 +4,7 @@ import * as vscode from "vscode";
 import { findFunctionWithEditorTools } from "../../src/languages/vscodeSymbols";
 import { buildFileOverview } from "../../src/context/fileOverview";
 import type { DownsideUpTestApi } from "../../src/extension";
+import { findGoFunction, initializeGoParserAt } from "../../src/languages/go";
 import { findRustFunction, initializeRustParserAt } from "../../src/languages/rust";
 
 async function waitFor<T>(
@@ -103,10 +104,14 @@ export async function run(): Promise<void> {
   assert.equal(rustPanel.label, "Downside Up: main.rs");
 
   const jsRoot = resolve(__dirname, "../../fixtures/js-app");
-  vscode.workspace.updateWorkspaceFolders(1, 0, {
-    uri: vscode.Uri.file(jsRoot),
-    name: "js-app"
-  });
+  const goRoot = resolve(__dirname, "../../fixtures/go-app");
+  // VS Code rejects a second folder change in this session, so both folders are added at once.
+  assert.ok(vscode.workspace.updateWorkspaceFolders(
+    1,
+    0,
+    { uri: vscode.Uri.file(jsRoot), name: "js-app" },
+    { uri: vscode.Uri.file(goRoot), name: "go-app" }
+  ), "The JavaScript and Go fixture folders are added.");
   const jsFile = resolve(jsRoot, "src/checkout.js");
   const jsDocument = await vscode.workspace.openTextDocument(vscode.Uri.file(jsFile));
   const jsEditor = await vscode.window.showTextDocument(jsDocument, vscode.ViewColumn.One);
@@ -161,6 +166,30 @@ export async function run(): Promise<void> {
   }, "saved explanations listed as ready after reopening the preview");
   assert.ok(reopened.every((view) => !view.expanded), "Saved explanations are listed collapsed, not opened.");
   console.log("Downside Up integration tests: saved explanations listed after reopening the preview.");
+
+  const goDocument = await vscode.workspace.openTextDocument(vscode.Uri.file(resolve(goRoot, "main.go")));
+  await waitFor(
+    async () => vscode.workspace.getWorkspaceFolder(goDocument.uri) ? true : undefined,
+    "the Go workspace folder"
+  );
+  await initializeGoParserAt(extension.extensionPath);
+  const lookupDocument = await vscode.workspace.openTextDocument(vscode.Uri.file(resolve(goRoot, "inventory/lookup.go")));
+  const methodTarget = await findGoFunction(
+    lookupDocument,
+    lookupDocument.positionAt(lookupDocument.getText().indexOf(") FindAvailable(") + 4)
+  );
+  assert.equal(methodTarget?.qualifiedName, "Catalog.FindAvailable", "Go methods are named by receiver type.");
+  assert.equal(methodTarget?.analysis, "go-tree-sitter", "Go discovery does not need a language server.");
+  const goEditor = await vscode.window.showTextDocument(goDocument, vscode.ViewColumn.One);
+  const goCursor = goDocument.positionAt(goDocument.getText().indexOf("func checkout") + 6);
+  goEditor.selection = new vscode.Selection(goCursor, goCursor);
+  await vscode.commands.executeCommand("downsideUp.explainFunction");
+  await waitFor(
+    async () => vscode.window.tabGroups.all.flatMap((group) => group.tabs)
+      .some((tab) => tab.label === "Downside Up: main.go") ? true : undefined,
+    "the Go preview"
+  );
+  console.log("Downside Up integration tests: Go explanation command completed.");
 
   const unsupported = await vscode.workspace.openTextDocument({
     language: "plaintext",

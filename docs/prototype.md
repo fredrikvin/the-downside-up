@@ -34,9 +34,11 @@ outlining, and source edits do not call a provider. After edits, file changes,
 or a model change, open explanations are rechecked against the cache locally
 and marked outdated when their recorded inputs no longer match.
 
-The core is language-neutral. Rust discovery and source fingerprinting use the
-bundled Tree-sitter WASM parser. Other languages use VS Code document-symbol
-providers; the fixtures exercise Rust and JavaScript. Arbitrary blocks,
+The core is language-neutral. Rust and Go function discovery and source
+fingerprinting use bundled Tree-sitter WASM grammars, so neither needs a
+language server; Go methods are identified by receiver type (for example
+`Catalog.Add`). Other languages use VS Code document-symbol providers; the
+fixtures exercise Rust, Go, and JavaScript. Arbitrary blocks,
 automated edits, a full repository browser, vector stores, cloud state,
 collaboration, and marketplace publishing are out of scope.
 
@@ -44,8 +46,8 @@ collaboration, and marketplace publishing are out of scope.
 
 Before the first explanation, the extension gathers bounded local evidence:
 project manifests, README and architecture-style documents, selected source
-files, and a small symbol outline. Rust symbols use Tree-sitter; other symbols
-use VS Code providers where available. Function context adds related types,
+files, and a small symbol outline. Rust and Go symbols use Tree-sitter; other
+symbols use VS Code providers where available. Function context adds related types,
 imports, directly related helpers, and references where tooling can resolve
 them. For Rust, it also adds the items the function uses directly from other
 files of the crate (depth 1): types, functions, constants, and methods of used
@@ -55,7 +57,13 @@ from `tests/`, `examples/`, or `bin/` files) with Tree-sitter and Cargo's
 file layout. Items are sent whole up to 4 KiB each and 16 KiB in total; a
 larger item is sent as its signature only, and items beyond the budget are
 omitted with a stated limitation. External crates and the standard library are
-not followed. Snippets sent to the model are labelled with their file path and what
+not followed. For Go, function context adds the file's package clause and
+import block and, under the same budget, the package-level functions, methods,
+types, constants, and variables the function uses directly: from any file of
+its own package (test files only for tests) and from imported packages inside
+the same module, found through `go.mod`'s module path. Methods are matched for
+the types the function names and the types returned by functions it calls.
+The standard library and other modules are not followed. Snippets sent to the model are labelled with their file path and what
 they contain, and the model is asked to refer to code by file, function, and
 type names in plain prose rather than by identifiers. The "related code" links
 under an explanation come from the extension's own analysis, so navigation only
@@ -155,17 +163,20 @@ generation.
 Each explanation records what it was built from, so tracking matches what the
 model saw. Every tracked input notes its depth (0 for the function itself, 1
 for items it uses directly) and whether it covers the whole item or only its
-signature. A Rust function's explanation becomes outdated when its own source,
-its file's imports, or any directly used item changes, including items in other
-files. Changes only to items that those items use (depth 2), or to other items
+signature. A Rust or Go function's explanation becomes outdated when its own
+source, its file's imports, or any directly used item changes, including items
+in other files. Changes only to items that those items use (depth 2), or to other items
 in the same files, do not by themselves make it outdated; a change to a file
 sent for priming still enters the overview review described above. For an item
 tracked by signature only, body edits keep the explanation current.
-Formatting-only edits do not change Rust
-structural fingerprints, and attributes such as `#[derive(...)]` count as part
-of a type. Saved explanations of Rust functions that use items from other files
-are shown as outdated once after upgrading, because they were made without that
-context.
+Formatting-only edits do not change Rust or Go
+structural fingerprints, attributes such as `#[derive(...)]` count as part of a
+Rust type, and each Go constant tracks its whole `const` group because `iota`
+and implicit repetition depend on it. Saved explanations of Rust functions that
+use items from other files, and of all Go functions, are shown as outdated once
+after upgrading, because they were made without that context. `go.mod` is now
+part of the repository inventory, so a Go repository's overview is reviewed
+once as well.
 
 Invalidation never regenerates automatically. Use **Downside Up: Explain
 Function** or the preview's **Regenerate** link to regenerate. **Refresh Repository
@@ -176,14 +187,15 @@ generated explanation is correct.
 
 ## Local development and verification
 
-Requirements: Node.js 18+, npm, Git, Cargo for the Rust fixture, and VS Code
-1.90+.
+Requirements: Node.js 18+, npm, Git, Cargo for the Rust fixture, Go for the Go
+fixture, and VS Code 1.90+.
 
 ```sh
 npm ci
 npm test
 npm run test:extension
 cargo test --manifest-path fixtures/rust-app/Cargo.toml
+(cd fixtures/go-app && go test ./...)
 npm run package
 ```
 
@@ -197,13 +209,14 @@ API key using **Downside Up: Set OpenAI API Key**. Then explicitly accept the
 per-repository sharing prompt.
 
 The deterministic unit suite covers cache reuse across restart, batched
-saved-explanation lookup, Rust cross-file dependency resolution and its
-depth-1 freshness and signature-only budget, source and
+saved-explanation lookup, Rust and Go dependency resolution and their
+depth-1 freshness and signature-only budget, Go method naming, source and
 context invalidation, unrelated edits, overview content-version preservation,
 branch changes, in-flight edits, cancellation, clear-cache fencing, provider
 failures, VS Code language-model prompt/validation/error/cancellation handling,
 ignored files, unsaved buffers, and parser fingerprints. Extension
-host tests exercise Rust and JavaScript discovery, distinct identities for
+host tests exercise Rust, Go, and JavaScript discovery (Go without a language
+server), distinct identities for
 same-named Rust methods in different `impl` blocks, document-ordered outlines,
 explanation commands, preview creation, selection changes during an in-flight
 request, saved explanations listed as ready after closing and reopening the
@@ -228,8 +241,17 @@ webview's content-security policy.
   file layout only (no `#[path]` attributes or `include!`), does not follow
   other crates in a Cargo workspace, finds `impl` blocks only in the file that
   defines the type, and skips module files outside the inventory's read budget
-  (stated as a limitation). Callers and items used by non-Rust functions from
-  other files are tracked only when VS Code tooling reports them.
+  (stated as a limitation).
+- Go tracking also stops at depth 1 and matches method calls by name against
+  methods of the types the function names or receives from calls, so it may
+  track an extra same-named method or miss one reached only through an
+  interface, embedding, or a variable of an unnamed type. Build tags and
+  `//go:build` constraints are ignored, packages are followed only within the
+  file's own module (not `go.work` workspaces, `replace` targets, or
+  `vendor/`), and package files outside the inventory's read budget are
+  skipped with a stated limitation.
+- Callers, and items used by functions in languages other than Rust and Go,
+  are tracked only when VS Code tooling reports them.
 - Other language support depends on installed VS Code document-symbol
   providers. There is no whole-program analyzer or guaranteed call graph;
   unresolved references and unavailable tooling are surfaced as limitations.

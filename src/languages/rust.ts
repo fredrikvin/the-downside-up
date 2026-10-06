@@ -1,25 +1,16 @@
 import { createRequire } from "node:module";
 import { resolve } from "node:path";
-import { existsSync } from "node:fs";
-import { Language, Parser, type Node as SyntaxNode } from "web-tree-sitter";
+import type { Parser, Node as SyntaxNode } from "web-tree-sitter";
 import type { ExtensionContext, TextDocument, Position, Range } from "vscode";
 import { cacheKey, fingerprint } from "../core/fingerprint";
 import type { FunctionTarget } from "../core/types";
+import { allChildren, createTreeSitterParser, pointToPosition, structuralTokens } from "./treeSitter";
 
 const require = createRequire(__filename);
 let parserPromise: Promise<Parser> | undefined;
 
-async function createParser(extensionPath: string): Promise<Parser> {
-  const assetPath = resolve(extensionPath, "dist");
-  const runtime = resolve(assetPath, "tree-sitter.wasm");
-  const grammar = resolve(assetPath, "tree-sitter-rust.wasm");
-  if (!existsSync(runtime) || !existsSync(grammar)) {
-    throw new Error("Bundled Tree-sitter runtime or Rust grammar asset is missing.");
-  }
-  await Parser.init({ locateFile: () => runtime });
-  const parser = new Parser();
-  parser.setLanguage(await Language.load(grammar));
-  return parser;
+function createParser(extensionPath: string): Promise<Parser> {
+  return createTreeSitterParser(extensionPath, "tree-sitter-rust.wasm", "Rust");
 }
 
 export function initializeRustParserAt(extensionPath: string): Promise<void> {
@@ -35,27 +26,9 @@ function child(node: SyntaxNode, field: string): SyntaxNode | null {
   return node.childForFieldName(field);
 }
 
-function nodeChildren(node: SyntaxNode): SyntaxNode[] {
-  return node.children.filter((entry): entry is SyntaxNode => entry !== null);
-}
+const nodeChildren = allChildren;
 
-function pointToPosition(
-  point: { row: number; column: number },
-  source: string
-): Position {
-  const vscode = require("vscode") as typeof import("vscode");
-  const line = source.split(/\r?\n/)[point.row] ?? "";
-  const bytePrefix = Buffer.from(line, "utf8").subarray(0, point.column).toString("utf8");
-  return new vscode.Position(point.row, bytePrefix.length);
-}
-
-export function rustStructuralTokens(node: SyntaxNode): string {
-  if (node.type.endsWith("_literal")) {
-    return `${node.type}:${node.text.length}:${node.text};`;
-  }
-  if (node.childCount === 0) return `${node.type}:${node.text.length}:${node.text};`;
-  return nodeChildren(node).map((entry) => rustStructuralTokens(entry)).join("");
-}
+export const rustStructuralTokens = structuralTokens;
 
 interface FoundFunction {
   readonly node: SyntaxNode;

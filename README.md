@@ -36,9 +36,10 @@ Preview to the Side** (or use the preview button in the editor title bar).
   generate one if none is current; a spinner shows while it loads, and the
   chevron collapses it again. Several can be open at once; generations run one
   at a time. Each explanation links to the related code the extension found.
-  For Rust, the explanation also uses the types, functions, and methods the
-  function uses from other files, and is marked outdated when any of them
-  change.
+  For Rust and Go, the explanation also uses the types, functions, and methods
+  the function uses, including from other files and packages, and is marked
+  outdated when any of them change. Rust and Go functions are found with
+  bundled parsers, so no language server is needed.
   Functions with a current saved explanation are marked **ready** whenever the
   preview shows their file, including after reopening the preview or
   restarting VS Code; this is a local cache check only.
@@ -48,8 +49,8 @@ Preview to the Side** (or use the preview button in the editor title bar).
 
 **Downside Up: Explain Function** explains the function at the cursor from the
 command palette. The repository context used for explanations is shown at the
-end of the preview. The development fixtures are in `fixtures/rust-app` and
-`fixtures/js-app`.
+end of the preview. The development fixtures are in `fixtures/rust-app`,
+`fixtures/go-app`, and `fixtures/js-app`.
 
 To install a locally packaged VSIX, run
 `code --install-extension the-downside-up-0.4.1.vsix`.
@@ -92,7 +93,8 @@ freshness, limits, and known limitations.
 ## Development
 
 `npm run typecheck` checks TypeScript, `npm test` runs deterministic unit tests,
-`npm run test:extension` exercises the Rust and JavaScript flows in a real VS
-Code host, and `cargo test --manifest-path fixtures/rust-app/Cargo.toml` checks
-the Rust fixture. `npm run package` builds a VSIX including the required
+`npm run test:extension` exercises the Rust, Go, and JavaScript flows in a real
+VS Code host, `cargo test --manifest-path fixtures/rust-app/Cargo.toml` checks
+the Rust fixture, and `go test ./...` in `fixtures/go-app` checks the Go
+fixture. `npm run package` builds a VSIX including the required
 production Tree-sitter runtime.

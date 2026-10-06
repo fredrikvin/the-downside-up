@@ -4,6 +4,7 @@ import { createRequire } from "node:module";
 import { resolve } from "node:path";
 const require = createRequire(import.meta.url);
 const rustGrammar = require.resolve("tree-sitter-wasms/out/tree-sitter-rust.wasm");
+const goGrammar = require.resolve("tree-sitter-wasms/out/tree-sitter-go.wasm");
 const treeSitterRuntime = require.resolve("web-tree-sitter/tree-sitter.wasm");
 
 const outdir = resolve("dist");
@@ -12,6 +13,7 @@ async function bundle() {
   await mkdir(outdir, { recursive: true });
   await Promise.all([
     copyFile(rustGrammar, resolve(outdir, "tree-sitter-rust.wasm")),
+    copyFile(goGrammar, resolve(outdir, "tree-sitter-go.wasm")),
     copyFile(treeSitterRuntime, resolve(outdir, "tree-sitter.wasm"))
   ]);
   await build({

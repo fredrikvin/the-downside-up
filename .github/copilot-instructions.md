@@ -21,9 +21,9 @@ behavior.
 - Keep cache keys and freshness tied to recorded inputs and configuration.
   Invalidation must not trigger paid generation automatically; reject results
   if relevant source changes while a request is in flight.
-- Rust function discovery uses bundled Tree-sitter WASM; other languages use
-  VS Code document-symbol providers where available. Do not assume
-  `rust-analyzer` or a language server is installed.
+- Rust and Go function discovery use bundled Tree-sitter WASM; other languages
+  use VS Code document-symbol providers where available. Do not assume
+  `rust-analyzer`, `gopls`, or another language server is installed.
 - Follow `package.json` scripts and the declared VS Code engine. Run
   `npm test`, `npm run test:extension`, and `npm run package` when changes
   affect their corresponding layers. Keep production dependencies in the

@@ -51,6 +51,16 @@ describe("bounded repository inventory", () => {
     expect(result.inventoryText).not.toContain("test secret");
   });
 
+  it("includes Go module files and primes go.mod as a manifest", async () => {
+    await writeFile(resolve(root, "go.mod"), "module example.com/fixture\n\ngo 1.22\n");
+    await writeFile(resolve(root, "go.sum"), "example.com/dep v1.0.0 h1:abc=\n");
+    const result = await gatherInventory(root);
+    const paths = result.files.map((file) => file.relativePath);
+    expect(paths).toContain("go.mod");
+    expect(paths).not.toContain("go.sum");
+    expect(result.primedPaths).toContain("go.mod");
+  });
+
   it("tracks ignore-rule changes without sending ignore-file contents", async () => {
     const first = await gatherInventory(root);
     expect(first.snapshot[".gitignore"]).toBeDefined();

@@ -33,9 +33,9 @@ contract and project-specific constraints.
   navigation must use host-validated references.
 - Preserve cancellation and freshness checks. Invalidation must not trigger
   paid generation automatically; reject results if source changes in flight.
-- Rust discovery uses bundled Tree-sitter WASM; other languages use VS Code
-  document-symbol providers where available. Do not assume rust-analyzer or
-  another language server is installed.
+- Rust and Go discovery use bundled Tree-sitter WASM; other languages use VS
+  Code document-symbol providers where available. Do not assume rust-analyzer,
+  gopls, or another language server is installed.
 - Surface actionable errors without leaking secrets or sensitive workspace
   contents. Respect workspace trust and never execute workspace data.
 - Update README and `docs/prototype.md` when setup, privacy, cache behavior,
