@@ -2,6 +2,8 @@ import { basename } from "node:path";
 import * as vscode from "vscode";
 import { scanImports } from "./imports";
 import { capitalize, clauses, describe, type Description } from "./outlineText";
+import { isGoDocument } from "../languages/go";
+import { describeGoSource } from "../languages/goOutline";
 import { describeRustSource } from "../languages/rustOutline";
 import {
   boundedDocumentation,
@@ -462,7 +464,7 @@ function finalize(drafts: readonly OutlineEntryDraft[], path: string): OutlineEn
 
 /**
  * Builds a local, document-ordered description of the file. No provider
- * request is made; Rust uses the bundled parser and other languages use VS
+ * request is made; Rust and Go use bundled parsers and other languages use VS
  * Code document symbols plus line-based import and comment detection.
  */
 export async function buildFileOverview(
@@ -490,6 +492,13 @@ export async function buildFileOverview(
       result = { ...(await describeRustSource(source)), limitations: [] };
     } catch {
       result = { drafts: [], limitations: ["The bundled Rust parser was unavailable, so this file is not described."] };
+    }
+  } else if (isGoDocument(document)) {
+    try {
+      result = { ...(await describeGoSource(source)), limitations: [] };
+    } catch {
+      const fallback = await describeWithEditorSymbols(document, lines);
+      result = { ...fallback, limitations: ["The bundled Go parser was unavailable, so editor symbols were used.", ...fallback.limitations] };
     }
   } else {
     result = await describeWithEditorSymbols(document, lines);

@@ -8,8 +8,13 @@ active file it describes every import, module, function/method, type,
 constant/static, local variable binding, and standalone comment in plain
 language, in source order and without regrouping, with attached doc comments
 and attributes. These descriptions are deterministic and local (Tree-sitter for
-Rust; VS Code document symbols plus line-based import and comment detection
-for other languages) and are labelled as not AI-generated. The preview follows
+Rust and Go; VS Code document symbols plus line-based import and comment
+detection for other languages) and are labelled as not AI-generated. Go
+descriptions also explain Go-specific meaning, such as exported names,
+pointer and value receivers, multiple and named results, `iota` groups,
+distinct defined types, embedding, and `main`, `init`, test, and `//go:`
+directive roles; if the bundled Go parser is unavailable, editor symbols are
+used instead. The preview follows
 the active editor and rebuilds after edits (debounced) without losing its
 place. Scrolling either side keeps the other aligned by interpolating between
 item anchors, as the Markdown preview does; each side ignores the scrolling it
@@ -225,7 +230,10 @@ VS Code profile so earlier runs' windows are not restored.
 Local description tests cover Rust items (imports, modules, functions and
 methods with receivers, structs, enums, traits, impls, constants, statics,
 aliases, macros, locals, doc comments, attributes, and standalone comments),
-symbol-based descriptions and import detection for other languages, scroll
+Go declarations (package, imports, functions and methods with receivers,
+structs with embedding, interfaces and constraints, defined types, aliases,
+grouped constants with `iota`, variables, locals, doc comments, directives,
+and standalone comments), symbol-based descriptions and import detection for other languages, scroll
 anchor interpolation in both directions, prompts that ask for plain-prose
 references rather than identifiers, and the
 webview's content-security policy.
@@ -271,8 +279,8 @@ webview's content-security policy.
   webview in a browser, but not inside VS Code with real themes; a manual
   accessibility inspection has not been completed.
 - Local descriptions are syntactic: they restate declarations, signatures,
-  imports, and comments, not behavior. Non-Rust languages depend on the
-  installed symbol provider's detail; import detection covers JavaScript/
+  imports, and comments, not behavior. Languages other than Rust and Go depend
+  on the installed symbol provider's detail; import detection covers JavaScript/
   TypeScript, Python, Go, Java/Kotlin/Scala/Groovy, C#, C/C++, PHP, Ruby, and
   Swift.
 - Two moderate npm audit findings affect the development-only Vitest toolchain;

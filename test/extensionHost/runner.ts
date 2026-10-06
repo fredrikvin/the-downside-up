@@ -189,6 +189,11 @@ export async function run(): Promise<void> {
       .some((tab) => tab.label === "Downside Up: main.go") ? true : undefined,
     "the Go preview"
   );
+  await waitFor(
+    async () => api.previewExplanations()
+      .some((view) => view.functionName === "checkout" && view.status === "current") ? true : undefined,
+    "the Go explanation in the preview outline"
+  );
   console.log("Downside Up integration tests: Go explanation command completed.");
 
   const unsupported = await vscode.workspace.openTextDocument({
