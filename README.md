@@ -1,7 +1,7 @@
 # The Downside Up
 
 The Downside Up is a prototype VS Code extension that shows a document-style
-Code Shadow preview beside your source, like the Markdown preview. It describes
+Downside Up preview beside your source, like the Markdown preview. It describes
 each import, function, type, and variable in plain language at the same
 position as in the file, and adds an AI explanation under a function when you
 ask for one. Descriptions are built locally; explanations are generated only
@@ -19,7 +19,7 @@ npm run package
 ```
 
 Open this project in VS Code and press **F5** to launch an Extension
-Development Host. In the host, open a source file and run **Code Shadow: Open
+Development Host. In the host, open a source file and run **Downside Up: Open
 Preview to the Side** (or use the preview button in the editor title bar).
 
 - **Document preview.** The preview reads like rendered documentation: each
@@ -40,7 +40,7 @@ Preview to the Side** (or use the preview button in the editor title bar).
   in the editor opens its section only when a saved explanation exists.
   Selecting never starts generation by itself.
 
-**Code Shadow: Explain Function** explains the function at the cursor from the
+**Downside Up: Explain Function** explains the function at the cursor from the
 command palette. The repository context used for explanations is shown at the
 end of the preview. The development fixtures are in `fixtures/rust-app` and
 `fixtures/js-app`.
@@ -58,7 +58,7 @@ providers.
 
 1. Sign in to GitHub Copilot in VS Code (or install another extension that
    provides language models).
-2. Run **Code Shadow: Choose Language Model** and pick a model. This sets
+2. Run **Downside Up: Choose Language Model** and pick a model. This sets
    `downsideUp.provider` to `vscode-lm` and records the model's vendor and ID.
 3. Explain a function. Before the first request for a repository and model,
    review and accept the code-sharing prompt. VS Code also asks once whether
@@ -72,7 +72,7 @@ provider's data-handling terms and your organization's policies.
 ### OpenAI API key
 
 1. Set `downsideUp.provider` to `openai`.
-2. Run **Code Shadow: Set OpenAI API Key**. The key is stored in VS Code
+2. Run **Downside Up: Set OpenAI API Key**. The key is stored in VS Code
    SecretStorage.
 3. Explain a function. Before the first external request for a repository and
    model, review and accept the explicit code-sharing prompt.

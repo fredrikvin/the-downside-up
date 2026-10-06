@@ -70,7 +70,7 @@ function describeFailure(error: unknown, modelName: string): Error {
   }
   if (code === "NotFound") {
     return new Error(
-      `${modelName} is no longer available. Run “Code Shadow: Choose Language Model” to pick another model.`
+      `${modelName} is no longer available. Run “Downside Up: Choose Language Model” to pick another model.`
     );
   }
   const message = error instanceof Error ? error.message.slice(0, 500) : "unknown error";
@@ -194,7 +194,7 @@ export class LanguageModelProvider implements GenerationProvider {
     if (timedOut) throw new Error("The language model request timed out after 90 seconds.");
     if (!output.trim()) {
       throw new Error(
-        `${this.model.name} (${this.model.vendor}) returned no output. Some models listed by VS Code cannot answer extension requests; run “Code Shadow: Choose Language Model” and pick another model, such as one from the “copilot” vendor.`
+        `${this.model.name} (${this.model.vendor}) returned no output. Some models listed by VS Code cannot answer extension requests; run “Downside Up: Choose Language Model” and pick another model, such as one from the “copilot” vendor.`
       );
     }
 

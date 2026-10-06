@@ -34,13 +34,13 @@ async function waitForPanel(): Promise<vscode.Tab> {
   return waitFor(
     async () => vscode.window.tabGroups.all
       .flatMap((group) => group.tabs)
-      .find((tab) => tab.label.startsWith("Code Shadow:")),
-    "Code Shadow side-by-side webview"
+      .find((tab) => tab.label.startsWith("Downside Up:")),
+    "Downside Up side-by-side webview"
   );
 }
 
 export async function run(): Promise<void> {
-  console.log("Code Shadow integration tests: activating extension.");
+  console.log("Downside Up integration tests: activating extension.");
   const extension = vscode.extensions.getExtension("the-downside-up.the-downside-up");
   assert.ok(extension, "The development extension is installed.");
   assert.equal(extension.isActive, false, "The extension starts inactive before a contributed command is run.");
@@ -67,11 +67,11 @@ export async function run(): Promise<void> {
   await vscode.commands.executeCommand("downsideUp.showFileOverview");
   assert.ok(
     vscode.window.tabGroups.all.flatMap((group) => group.tabs)
-      .some((tab) => tab.label === "Code Shadow" || tab.label.startsWith("Code Shadow:")),
+      .some((tab) => tab.label === "Downside Up" || tab.label.startsWith("Downside Up:")),
     "The local file preview opens without selecting a function."
   );
   const rustTarget = await findRustFunction(rustDocument, rustCursor);
-  console.log("Code Shadow integration tests: Rust function lookup completed.");
+  console.log("Downside Up integration tests: Rust function lookup completed.");
   const implDocument = await vscode.workspace.openTextDocument({
     language: "rust",
     content: "struct Foo;\nstruct Bar;\nimpl Foo { fn new() -> Self { Foo } }\nimpl Bar { fn new() -> Self { Bar } }\nimpl Default for Foo { fn default() -> Self { Foo } }\n"
@@ -97,9 +97,9 @@ export async function run(): Promise<void> {
     (await vscode.commands.getCommands(true)).includes("downsideUp.selectLanguageModel"),
     "The language model picker command is registered."
   );
-  console.log("Code Shadow integration tests: Rust explanation command completed.");
+  console.log("Downside Up integration tests: Rust explanation command completed.");
   const rustPanel = await waitForPanel();
-  assert.equal(rustPanel.label, "Code Shadow: main.rs");
+  assert.equal(rustPanel.label, "Downside Up: main.rs");
 
   const jsRoot = resolve(__dirname, "../../fixtures/js-app");
   vscode.workspace.updateWorkspaceFolders(1, 0, {
@@ -115,14 +115,14 @@ export async function run(): Promise<void> {
     () => findFunctionWithEditorTools(jsDocument, jsCursor),
     "built-in JavaScript document symbols"
   );
-  console.log("Code Shadow integration tests: JavaScript symbol lookup completed.");
+  console.log("Downside Up integration tests: JavaScript symbol lookup completed.");
   assert.equal(jsTarget.name, "checkout");
   assert.equal(jsTarget.analysis, "vscode-symbols");
   jsEditor.selection = new vscode.Selection(jsCursor, jsCursor);
   await vscode.commands.executeCommand("downsideUp.explainFunction");
-  console.log("Code Shadow integration tests: JavaScript explanation command completed.");
+  console.log("Downside Up integration tests: JavaScript explanation command completed.");
   const jsPanel = await waitForPanel();
-  assert.equal(jsPanel.label, "Code Shadow: checkout.js");
+  assert.equal(jsPanel.label, "Downside Up: checkout.js");
 
   const racingRustEditor = await vscode.window.showTextDocument(rustDocument, vscode.ViewColumn.One);
   racingRustEditor.selection = new vscode.Selection(rustCursor, rustCursor);
@@ -140,7 +140,7 @@ export async function run(): Promise<void> {
   const newerRequest = vscode.commands.executeCommand("downsideUp.explainFunction");
   await Promise.all([olderRequest, newerRequest]);
   const finalPanel = await waitForPanel();
-  assert.equal(finalPanel.label, "Code Shadow: checkout.js", "The newer request's file is shown.");
+  assert.equal(finalPanel.label, "Downside Up: checkout.js", "The newer request's file is shown.");
 
   const unsupported = await vscode.workspace.openTextDocument({
     language: "plaintext",
@@ -155,7 +155,7 @@ export async function run(): Promise<void> {
   assert.equal(unsupportedTarget, undefined, "Plain text has no guessable function symbol.");
   assert.equal(
     vscode.window.tabGroups.all.flatMap((group) => group.tabs)
-      .filter((tab) => tab.label.startsWith("Code Shadow:")).length,
+      .filter((tab) => tab.label.startsWith("Downside Up:")).length,
     1,
     "Unsupported plaintext discovery did not open another explanation."
   );

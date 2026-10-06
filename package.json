@@ -15,36 +15,44 @@
     "commands": [
       {
         "command": "downsideUp.explainFunction",
-        "title": "Code Shadow: Explain Function"
+        "title": "Explain Function",
+        "category": "Downside Up"
       },
       {
         "command": "downsideUp.showFileOverview",
-        "title": "Code Shadow: Open Preview to the Side",
+        "title": "Open Preview to the Side",
+        "category": "Downside Up",
         "icon": "$(open-preview)"
       },
       {
         "command": "downsideUp.refreshRepositoryContext",
-        "title": "Code Shadow: Refresh Repository Context"
+        "title": "Refresh Repository Context",
+        "category": "Downside Up"
       },
       {
         "command": "downsideUp.clearCache",
-        "title": "Code Shadow: Clear Repository Cache"
+        "title": "Clear Repository Cache",
+        "category": "Downside Up"
       },
       {
         "command": "downsideUp.cancelExplanation",
-        "title": "Code Shadow: Cancel Explanation"
+        "title": "Cancel Explanation",
+        "category": "Downside Up"
       },
       {
         "command": "downsideUp.setApiKey",
-        "title": "Code Shadow: Set OpenAI API Key"
+        "title": "Set OpenAI API Key",
+        "category": "Downside Up"
       },
       {
         "command": "downsideUp.removeApiKey",
-        "title": "Code Shadow: Remove OpenAI API Key"
+        "title": "Remove OpenAI API Key",
+        "category": "Downside Up"
       },
       {
         "command": "downsideUp.selectLanguageModel",
-        "title": "Code Shadow: Choose Language Model"
+        "title": "Choose Language Model",
+        "category": "Downside Up"
       }
     ],
     "configuration": {
@@ -59,7 +67,7 @@
           ],
           "enumDescriptions": [
             "Deterministic placeholder output; no external requests.",
-            "A VS Code language model, such as GitHub Copilot, using your existing subscription. No API key needed; choose a model with “Code Shadow: Choose Language Model”.",
+            "A VS Code language model, such as GitHub Copilot, using your existing subscription. No API key needed; choose a model with “Downside Up: Choose Language Model”.",
             "OpenAI Responses API with your own API key and separate API billing."
           ],
           "default": "mock",
@@ -68,12 +76,12 @@
         "downsideUp.languageModel.vendor": {
           "type": "string",
           "default": "copilot",
-          "description": "Vendor of the VS Code language model used by the vscode-lm provider. Set by “Code Shadow: Choose Language Model”. Changing it requires renewed repository consent."
+          "description": "Vendor of the VS Code language model used by the vscode-lm provider. Set by “Downside Up: Choose Language Model”. Changing it requires renewed repository consent."
         },
         "downsideUp.languageModel.id": {
           "type": "string",
           "default": "",
-          "description": "ID of the VS Code language model used by the vscode-lm provider. Set by “Code Shadow: Choose Language Model”; when empty, Explain asks you to choose one. Changing it requires renewed repository consent."
+          "description": "ID of the VS Code language model used by the vscode-lm provider. Set by “Downside Up: Choose Language Model”; when empty, Explain asks you to choose one. Changing it requires renewed repository consent."
         },
         "downsideUp.openai.model": {
           "type": "string",

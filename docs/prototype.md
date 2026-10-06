@@ -3,7 +3,7 @@
 ## Product scope
 
 The Downside Up helps programmers understand functions in unfamiliar languages.
-The side-by-side Code Shadow preview reads like rendered Markdown. For the
+The side-by-side Downside Up preview reads like rendered Markdown. For the
 active file it describes every import, module, function/method, type,
 constant/static, local variable binding, and standalone comment in plain
 language, in source order and without regrouping, with attached doc comments
@@ -85,7 +85,7 @@ subscription.
 The `vscode-lm` provider uses the VS Code Language Model API
 (`vscode.lm`), so GitHub Copilot or any other extension-provided model works
 without an API key and uses the user's existing subscription and its usage
-limits. **Code Shadow: Choose Language Model** lists the available models and
+limits. **Downside Up: Choose Language Model** lists the available models and
 records the vendor and model ID; if none is recorded, Explain asks for one
 first. Copilot's internal `copilotcli` models are listed by VS Code but only
 serve Copilot CLI sessions and never return output, so the picker hides them
@@ -139,7 +139,7 @@ themselves discard a valid explanation. Unsaved buffers participate in
 freshness checks, and results are not saved as current if source changes during
 generation.
 
-Invalidation never regenerates automatically. Use **Code Shadow: Explain
+Invalidation never regenerates automatically. Use **Downside Up: Explain
 Function** or the preview's **Regenerate** link to regenerate. **Refresh Repository
 Context** explicitly reviews or rebuilds the overview. **Clear Repository
 Cache** removes cached overviews, explanations, and saved provider consent for
@@ -160,12 +160,12 @@ npm run package
 ```
 
 Open the project in VS Code and press F5 to launch the Extension Development
-Host. Open a fixture source file and run **Code Shadow: Open Preview to the
+Host. Open a fixture source file and run **Downside Up: Open Preview to the
 Side**, then click a function in the preview (or put the cursor inside a
-function and run **Code Shadow: Explain Function**). For live generation, either run **Code
-Shadow: Choose Language Model** to use GitHub Copilot or another VS Code
+function and run **Downside Up: Explain Function**). For live generation, either run **Downside
+Up: Choose Language Model** to use GitHub Copilot or another VS Code
 language model, or configure `downsideUp.provider` as `openai` and store an
-API key using **Code Shadow: Set OpenAI API Key**. Then explicitly accept the
+API key using **Downside Up: Set OpenAI API Key**. Then explicitly accept the
 per-repository sharing prompt.
 
 The deterministic unit suite covers cache reuse across restart, source and

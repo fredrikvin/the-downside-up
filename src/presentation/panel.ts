@@ -150,7 +150,7 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
   </style>
 </head>
 <body>
-  <nav class="toolbar" aria-label="Code Shadow actions">
+  <nav class="toolbar" aria-label="Downside Up actions">
     <span id="model"></span>
     <a id="chooseModel" role="button" tabindex="0">Change model</a>
     <span class="spacer"></span>
@@ -160,7 +160,7 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
   </nav>
   <p id="notice" class="notice" role="status" aria-live="polite"></p>
   <main id="doc">
-    <h1 id="title">Code Shadow</h1>
+    <h1 id="title">Downside Up</h1>
     <p id="facts" class="muted small"></p>
     <blockquote id="purpose" hidden></blockquote>
     <div id="entries"></div>
@@ -351,7 +351,7 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
       const notice = byId("notice");
       notice.textContent = next.notice ? next.notice.text : "";
       notice.className = "notice" + (next.notice && next.notice.tone === "error" ? " error" : "");
-      byId("title").textContent = file ? file.fileName : "Code Shadow";
+      byId("title").textContent = file ? file.fileName : "Downside Up";
       byId("facts").textContent = file ? [file.path, file.languageId, file.lineCount + " lines"].join(" · ") : "";
       const purpose = byId("purpose");
       purpose.hidden = !(file && file.purpose);

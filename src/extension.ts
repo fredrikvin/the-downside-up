@@ -121,24 +121,24 @@ export function activate(context: vscode.ExtensionContext): void {
       if (descriptor.kind === "vscode-lm") {
         const reference = parseLanguageModelDescriptorId(descriptor.modelId);
         if (!reference) {
-          throw new Error("No language model is selected. Run “Code Shadow: Choose Language Model”.");
+          throw new Error("No language model is selected. Run “Downside Up: Choose Language Model”.");
         }
         if (!isUsableLanguageModelVendor(reference.vendor)) {
           throw new Error(
-            `Models from “${reference.vendor}” cannot answer extension requests. Run “Code Shadow: Choose Language Model” and pick another model.`
+            `Models from “${reference.vendor}” cannot answer extension requests. Run “Downside Up: Choose Language Model” and pick another model.`
           );
         }
         const [model] = await vscode.lm.selectChatModels({ vendor: reference.vendor, id: reference.id });
         if (!model) {
           throw new Error(
-            `Language model “${reference.id}” from “${reference.vendor}” is not available. Sign in to its provider (for example GitHub Copilot) or run “Code Shadow: Choose Language Model”.`
+            `Language model “${reference.id}” from “${reference.vendor}” is not available. Sign in to its provider (for example GitHub Copilot) or run “Downside Up: Choose Language Model”.`
           );
         }
         return new LanguageModelProvider(descriptor.modelId, model);
       }
       const key = await context.secrets.get(API_KEY_SECRET);
       if (!key) {
-        throw new Error("No OpenAI API key is stored. Run “Code Shadow: Set OpenAI API Key”.");
+        throw new Error("No OpenAI API key is stored. Run “Downside Up: Set OpenAI API Key”.");
       }
       return new OpenAIProvider(descriptor.modelId, key);
     },
@@ -169,7 +169,7 @@ export function activate(context: vscode.ExtensionContext): void {
         : "Your API usage is billed separately. Review OpenAI's data controls; store:false does not guarantee zero provider-side retention.";
       const accept = descriptor.kind === "vscode-lm" ? "Send code to language model" : "Send code to OpenAI";
       const action = await vscode.window.showWarningMessage(
-        `Code Shadow will send selected source, relevant snippets, and repository documentation from:\n\n${root}\n\n${destination}\nEstimated context: about ${approximateTokens.toLocaleString()} tokens (byte-based estimate)\n\n${terms} This consent is saved for this repository and model. Clear the repository cache to revoke it.`,
+        `Downside Up will send selected source, relevant snippets, and repository documentation from:\n\n${root}\n\n${destination}\nEstimated context: about ${approximateTokens.toLocaleString()} tokens (byte-based estimate)\n\n${terms} This consent is saved for this repository and model. Clear the repository cache to revoke it.`,
         { modal: true },
         accept
       );
@@ -219,7 +219,7 @@ export function activate(context: vscode.ExtensionContext): void {
         model
       })),
       {
-        title: "Choose the language model for Code Shadow",
+        title: "Choose the language model for Downside Up",
         placeHolder: "Uses your existing subscription with the model's provider. No code is sent until you explain a function and accept the sharing prompt.",
         matchOnDescription: true,
         matchOnDetail: true
@@ -238,7 +238,7 @@ export function activate(context: vscode.ExtensionContext): void {
       return false;
     }
     await vscode.window.showInformationMessage(
-      `Code Shadow will use ${picked.model.name} (${picked.model.vendor}) through VS Code. Explain a function to use it; you will be asked before any code is shared.`
+      `Downside Up will use ${picked.model.name} (${picked.model.vendor}) through VS Code. Explain a function to use it; you will be asked before any code is shared.`
     );
     return true;
   };
@@ -414,7 +414,7 @@ export function activate(context: vscode.ExtensionContext): void {
     if (epoch !== previewEpoch || !panel) return;
     const fileChanged = !preview || !sameUri(preview.document.uri, document.uri);
     preview = { document, root, overview };
-    panel.panel.title = `Code Shadow: ${overview.fileName}`;
+    panel.panel.title = `Downside Up: ${overview.fileName}`;
     const handlers = new Map<string, () => Promise<void>>();
     for (const entry of overview.entries) {
       const { line, startCharacter, endCharacter } = entry.reference;
@@ -729,7 +729,7 @@ export function activate(context: vscode.ExtensionContext): void {
   const ensurePanel = (): ExplanationPanel => {
     if (panel) return panel;
     const created = new ExplanationPanel(
-      "Code Shadow",
+      "Downside Up",
       (action) => void handlePanelAction(action),
       () => {
         if (panel !== created) return;
@@ -945,7 +945,7 @@ export function activate(context: vscode.ExtensionContext): void {
       if (editor) lastTextEditor = editor;
     }
     if (!document || document.uri.scheme !== "file") {
-      await vscode.window.showWarningMessage("Open a local source file to preview it with Code Shadow.");
+      await vscode.window.showWarningMessage("Open a local source file to preview it with Downside Up.");
       return;
     }
     if (!vscode.workspace.getWorkspaceFolder(document.uri)) {
