@@ -88,6 +88,14 @@
           "default": "gpt-4.1-mini",
           "description": "OpenAI model used with the Responses API. Changing the model requires renewed repository consent."
         },
+        "downsideUp.maxConcurrentRequests": {
+          "type": "integer",
+          "default": 3,
+          "minimum": 1,
+          "maximum": 8,
+          "scope": "application",
+          "markdownDescription": "How many AI requests may run at the same time. Your own requests always start before prefetches, and prefetching leaves one slot free for them (unless this is 1). Higher values make prefetching faster but can hit your provider's rate limits sooner; they do not change how many requests are made."
+        },
         "downsideUp.prefetch.enabled": {
           "type": "boolean",
           "default": false,

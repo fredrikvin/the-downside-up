@@ -222,6 +222,21 @@ export class ExplanationService {
     return results;
   }
 
+  private readonly overviewLocks = new Map<string, Promise<unknown>>();
+
+  /** Runs `task` after earlier tasks for the same repository have settled. */
+  private async exclusive<T>(root: string, task: () => Promise<T>): Promise<T> {
+    const previous = this.overviewLocks.get(root) ?? Promise.resolve();
+    const run = previous.then(task, task);
+    const settled = run.catch(() => undefined);
+    this.overviewLocks.set(root, settled);
+    try {
+      return await run;
+    } finally {
+      if (this.overviewLocks.get(root) === settled) this.overviewLocks.delete(root);
+    }
+  }
+
   private fence(root: string): number {
     return this.generationFences.get(root) ?? 0;
   }
@@ -273,25 +288,8 @@ export class ExplanationService {
       );
     }
 
-    let cache = await this.options.store.read(root);
-    const baseInventory = await gatherInventory(root, cache.overview?.checkedSnapshot);
-    const inventory = await addLocalSymbolOutline(baseInventory);
-    const context = await gatherFunctionContext(target, document, inventory);
-    if (
-      Buffer.byteLength(inventory.inventoryText, "utf8") > MAX_PRIMING_BYTES ||
-      Buffer.byteLength(context.text, "utf8") > MAX_EXPLANATION_BYTES
-    ) {
-      throw new Error("Selected source context exceeds the prototype's request-size limit; no code was sent.");
-    }
-    assertNotCancelled(signal);
-
     const overviewConfig = `${descriptor.kind}:${descriptor.modelId}:${PROMPT_VERSION}`;
-    const shouldReview =
-      !cache.overview ||
-      cache.overview.config !== overviewConfig ||
-      needsOverviewReview(inventory, cache.overview);
     const usages: Usage[] = [];
-    let overviewRecord = cache.overview;
     let externalSharingAuthorized = false;
     const providerCallForRequest = async <T>(
       bytes: number,
@@ -308,70 +306,94 @@ export class ExplanationService {
       return call(await this.options.createProvider(descriptor));
     };
 
-    if (shouldReview) {
-      const previous = cache.overview;
-      progress(previous ? "reviewing" : "priming", previous ? "Reviewing bounded repository changes." : "Priming repository context.");
-      const prompt = inputToOverview(inventory);
-      let generated: GenerationResult<RepositoryOverview>;
-      if (previous && previous.config === overviewConfig) {
-        const reviewInput: OverviewReviewPromptInput = {
-          ...prompt,
-          previous: previous.value,
-          changedPaths: inventory.changedPaths
-        };
-        const [system, user] = reviewPrompt(reviewInput);
-        const requestBytes = Buffer.byteLength(system + user, "utf8");
-        if (requestBytes > MAX_PRIMING_BYTES) {
-          throw new Error("The complete repository-review request exceeds 96 KiB; no code was sent.");
-        }
-        generated = await providerCallForRequest(
-          requestBytes,
-          (provider) => provider.reviewRepository(reviewInput, signal)
-        );
-      } else {
-        const [system, user] = overviewPrompt(prompt);
-        const requestBytes = Buffer.byteLength(system + user, "utf8");
-        if (requestBytes > MAX_PRIMING_BYTES) {
-          throw new Error("The complete repository-priming request exceeds 96 KiB; no code was sent.");
-        }
-        generated = await providerCallForRequest(
-          requestBytes,
-          (provider) => provider.explainRepository(prompt, signal)
-        );
+    // Building or reviewing the overview is exclusive per repository: a parallel
+    // request waits here, then finds the overview current and reuses it.
+    const { cache, inventory, context, overviewRecord } = await this.exclusive(root, async () => {
+      assertNotCancelled(signal);
+      let cache = await this.options.store.read(root);
+      const baseInventory = await gatherInventory(root, cache.overview?.checkedSnapshot);
+      const inventory = await addLocalSymbolOutline(baseInventory);
+      const context = await gatherFunctionContext(target, document, inventory);
+      if (
+        Buffer.byteLength(inventory.inventoryText, "utf8") > MAX_PRIMING_BYTES ||
+        Buffer.byteLength(context.text, "utf8") > MAX_EXPLANATION_BYTES
+      ) {
+        throw new Error("Selected source context exceeds the prototype's request-size limit; no code was sent.");
       }
       assertNotCancelled(signal);
-      if (this.fence(root) !== startingFence) {
-        throw new Error("The repository cache was cleared while context was being refreshed.");
+
+      const shouldReview =
+        !cache.overview ||
+        cache.overview.config !== overviewConfig ||
+        needsOverviewReview(inventory, cache.overview);
+      let overviewRecord = cache.overview;
+
+      if (shouldReview) {
+        const previous = cache.overview;
+        progress(previous ? "reviewing" : "priming", previous ? "Reviewing bounded repository changes." : "Priming repository context.");
+        const prompt = inputToOverview(inventory);
+        let generated: GenerationResult<RepositoryOverview>;
+        if (previous && previous.config === overviewConfig) {
+          const reviewInput: OverviewReviewPromptInput = {
+            ...prompt,
+            previous: previous.value,
+            changedPaths: inventory.changedPaths
+          };
+          const [system, user] = reviewPrompt(reviewInput);
+          const requestBytes = Buffer.byteLength(system + user, "utf8");
+          if (requestBytes > MAX_PRIMING_BYTES) {
+            throw new Error("The complete repository-review request exceeds 96 KiB; no code was sent.");
+          }
+          generated = await providerCallForRequest(
+            requestBytes,
+            (provider) => provider.reviewRepository(reviewInput, signal)
+          );
+        } else {
+          const [system, user] = overviewPrompt(prompt);
+          const requestBytes = Buffer.byteLength(system + user, "utf8");
+          if (requestBytes > MAX_PRIMING_BYTES) {
+            throw new Error("The complete repository-priming request exceeds 96 KiB; no code was sent.");
+          }
+          generated = await providerCallForRequest(
+            requestBytes,
+            (provider) => provider.explainRepository(prompt, signal)
+          );
+        }
+        assertNotCancelled(signal);
+        if (this.fence(root) !== startingFence) {
+          throw new Error("The repository cache was cleared while context was being refreshed.");
+        }
+        usages.push(generated.usage);
+        const value = normalizedOverview(generated.value, descriptor.kind);
+        const version = overviewFingerprint(value);
+        overviewRecord = withOverview(
+          value,
+          previous?.value && version === overviewFingerprint(previous.value)
+            ? previous.contentVersion
+            : version,
+          inventory.snapshot,
+          inventory.primedPaths,
+          overviewConfig
+        );
+        cache = await this.options.store.update(root, (current) => ({
+          ...current,
+          overview: overviewRecord!
+        }));
+      } else if (overviewRecord && inventory.changedPaths.length > 0) {
+        overviewRecord = withOverview(
+          overviewRecord.value,
+          overviewRecord.contentVersion,
+          inventory.snapshot,
+          overviewRecord.primedPaths ?? [],
+          overviewRecord.config
+        );
+        cache = await this.options.store.update(root, (current) => ({
+          ...current,
+          overview: overviewRecord!
+        }));
       }
-      usages.push(generated.usage);
-      const value = normalizedOverview(generated.value, descriptor.kind);
-      const version = overviewFingerprint(value);
-      overviewRecord = withOverview(
-        value,
-        previous?.value && version === overviewFingerprint(previous.value)
-          ? previous.contentVersion
-          : version,
-        inventory.snapshot,
-        inventory.primedPaths,
-        overviewConfig
-      );
-      cache = await this.options.store.update(root, (current) => ({
-        ...current,
-        overview: overviewRecord!
-      }));
-    } else if (overviewRecord && inventory.changedPaths.length > 0) {
-      overviewRecord = withOverview(
-        overviewRecord.value,
-        overviewRecord.contentVersion,
-        inventory.snapshot,
-        overviewRecord.primedPaths ?? [],
-        overviewRecord.config
-      );
-      cache = await this.options.store.update(root, (current) => ({
-        ...current,
-        overview: overviewRecord!
-      }));
-    }
+      return { cache, inventory, context, overviewRecord };
+    });
 
     if (!overviewRecord) throw new Error("Repository context could not be prepared.");
     if (this.fence(root) !== startingFence) throw new Error("The repository cache was cleared.");
@@ -485,6 +507,15 @@ export class ExplanationService {
   }
 
   async refreshRepositoryContext(
+    root: string,
+    signal?: AbortSignal,
+    onProgress?: (progress: ExplanationProgress) => void
+  ): Promise<{ overview: RepositoryOverview; usage: Usage }> {
+    // Exclusive with explanations' overview phase, so the overview is never rebuilt twice at once.
+    return this.exclusive(root, () => this.refreshRepositoryContextNow(root, signal, onProgress));
+  }
+
+  private async refreshRepositoryContextNow(
     root: string,
     signal?: AbortSignal,
     onProgress?: (progress: ExplanationProgress) => void

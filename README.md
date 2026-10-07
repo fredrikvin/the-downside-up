@@ -34,8 +34,9 @@ Preview to the Side** (or use the preview button in the editor title bar).
 - **AI explanations.** Each function has a collapsed **AI explanation** section.
   Open it (or click the function's name) to show its saved explanation, or to
   generate one if none is current; a spinner shows while it loads, and the
-  chevron collapses it again. Several can be open at once; generations run one
-  at a time. Each explanation links to the related code the extension found.
+  chevron collapses it again. Several can be open at once, and up to three
+  generations run at the same time (see **Max Concurrent Requests** below).
+  Each explanation links to the related code the extension found.
   For Rust and Go, the explanation also uses the types, functions, and methods
   the function uses, including from other files and packages, and is marked
   outdated when any of them change. Rust and Go files are described, and their
@@ -115,8 +116,11 @@ By default, explanations are generated only when you ask for one. To have them
 ready as you read, turn on **Downside Up › Prefetch: Enabled**
 (`downsideUp.prefetch.enabled`) in your user settings. While the preview is
 open, the extension then explains the shown file's functions in the
-background, starting where you are and spreading outward, one request at a
-time and after anything you ask for explicitly. **Prefetch: Window**
+background, starting where you are and spreading outward. It uses the
+request slots your own requests leave free and always leaves one for them;
+**Max Concurrent Requests** (`downsideUp.maxConcurrentRequests`, default 3,
+1–8) sets how many requests run at once. More is faster but may hit your
+provider's rate limits sooner; it does not change how many requests are made. **Prefetch: Window**
 (`downsideUp.prefetch.window`, default 10) limits it to that many functions
 nearest your position and follows you through the file; `0` prefetches every
 function. For Rust and Go, **Prefetch: Dependencies**

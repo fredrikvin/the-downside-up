@@ -168,6 +168,28 @@ describe("ExplanationService", () => {
     expect(provider.requests).toBe(3);
   });
 
+  it("primes the repository once when explanations run in parallel", async () => {
+    const provider = new MockProvider();
+    const service = createService(new MemoryRepositoryCacheStore(), provider);
+    const another = {
+      ...target(),
+      name: "describeCatalog",
+      qualifiedName: "describeCatalog",
+      symbolId: "symbol-describe-catalog",
+      source: "export function describeCatalog(catalog) { return catalog.length; }",
+      structuralFingerprint: "describe-catalog-v1"
+    };
+
+    const [first, second] = await Promise.all([
+      service.explain(root, target(), fakeDocument),
+      service.explain(root, another, fakeDocument)
+    ]);
+
+    expect(first.cached).toBe(false);
+    expect(second.cached).toBe(false);
+    expect(provider.requests).toBe(3);
+  });
+
   it("returns only a fresh cached explanation without making provider requests", async () => {
     const provider = new MockProvider();
     const service = createService(new MemoryRepositoryCacheStore(), provider);

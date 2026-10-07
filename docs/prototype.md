@@ -25,9 +25,13 @@ Every function has a collapsed **AI explanation** section. Opening it, or
 clicking the function name, is an explicit request: the extension first looks
 for a current saved explanation (local only) and generates one only when none
 exists and the section is still open. Loading shows a spinner and can be
-cancelled. Several sections can be open; provider work runs one request at a
-time, so concurrent requests cannot each prime repository context or prompt for
-consent. When the preview shows a file, it checks the local cache once for that
+cancelled. Several sections can be open, and up to
+`downsideUp.maxConcurrentRequests` provider requests (default 3, 1–8, user
+settings only) run at once. Building or reviewing the repository overview is
+exclusive per repository, so parallel requests wait for it and reuse it
+instead of priming twice, and parallel requests share a single code-sharing
+prompt per repository and model. Explicit requests always start before
+waiting prefetches. When the preview shows a file, it checks the local cache once for that
 file's functions and labels those with a current saved explanation as ready,
 so saved explanations remain visible after the preview is closed and reopened
 or VS Code restarts; misses stay collapsed and unlabelled. Repository and
@@ -56,12 +60,16 @@ order of use, the ones without an explanation are fetched right after that
 function and before the rest of the window. Calls that already have an
 explanation count toward the number, so at most that many are considered per
 function read. Prefetching starts after saved explanations are marked
-ready, runs one request at a time after any explicit request, keeps sections
+ready, fills the request slots explicit requests leave free (never the last
+one, unless the limit is 1), choosing the function nearest the reader each time
+a slot frees, keeps sections
 collapsed, and does not regenerate outdated, failed, or cancelled
 explanations or functions added by later edits. Switching files drops
 prefetches that have not been sent; one already sent finishes and is saved.
 Closing the preview, Cancel, Clear Repository Cache, or turning the setting
-off stops it, and a failed request stops it with a notice. It runs only in a
+off stops it. A failed request is retried once after a five-second pause,
+for example after a rate limit; a second failure stops prefetching with a
+notice. It runs only in a
 trusted workspace and only after code sharing was approved for the repository
 and model by an explicit explanation; it never asks for approval itself and
 shows a notice when it is waiting for one. Prefetching uses the provider's
@@ -261,7 +269,9 @@ API key using **Downside Up: Set OpenAI API Key**. Then explicitly accept the
 per-repository sharing prompt.
 
 The deterministic unit suite covers cache reuse across restart, batched
-saved-explanation lookup, prefetch ordering and windows, called-function
+saved-explanation lookup, request scheduling with priorities and a reserved
+slot, a single overview build for parallel explanations, shared consent
+prompts, prefetch ordering and windows, called-function
 lists for hovers and prefetching, Rust and Go dependency resolution and their
 depth-1 freshness and signature-only budget, Go method naming, source and
 context invalidation, unrelated edits, overview content-version preservation,

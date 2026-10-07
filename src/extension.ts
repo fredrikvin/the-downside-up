@@ -20,6 +20,7 @@ import {
 } from "./generation/languageModel";
 import { formatUsage } from "./generation/provider";
 import { nextPrefetch, prefetchFocusLine } from "./presentation/prefetch";
+import { RequestScheduler, singleFlight } from "./presentation/requestScheduler";
 import { findGoFunction, initializeGoParser, isGoDocument } from "./languages/go";
 import { findRustFunction, initializeRustParser } from "./languages/rust";
 import { findFunctionWithEditorTools } from "./languages/vscodeSymbols";
@@ -63,7 +64,11 @@ interface PrefetchSession {
   readonly attemptedDependencies: Set<string>;
   /** Other-file functions each function of the file calls, resolved once per session. */
   readonly calledBy: Map<string, CalledFunction[]>;
+  /** Functions already retried once after a failure. */
+  readonly retried: Set<string>;
   stopped: boolean;
+  /** Set when the session was woken while not waiting, so the wake is not lost. */
+  woken: boolean;
   wake?: () => void;
 }
 
@@ -107,19 +112,21 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
   let repositoryContext: { root: string; overview: RepositoryOverview } | undefined;
   let notice: PanelNotice | undefined;
   let repositoryJob: AbortController | undefined;
-  let generationQueue: Promise<unknown> = Promise.resolve();
-  let runningGenerations = 0;
+  const maxConcurrentRequests = (): number => {
+    const value = vscode.workspace.getConfiguration("downsideUp").get<number>("maxConcurrentRequests", 3) ?? 3;
+    return Number.isFinite(value) ? Math.min(8, Math.max(1, Math.floor(value))) : 3;
+  };
+  const scheduler = new RequestScheduler(maxConcurrentRequests);
   let previewEpoch = 0;
   let selectionLookupEpoch = 0;
   let savedLookupEpoch = 0;
   /** Files whose functions were already checked for saved explanations while the preview is open. */
   const savedLookupDone = new Set<string>();
   let prefetchSession: PrefetchSession | undefined;
-  /** True while a prefetch request runs, so the consent check never prompts for it. */
-  let prefetchRequestActive = false;
-  /** Explicit generations in progress; prefetching waits until there are none. */
-  let explicitGenerations = 0;
-  const idleWaiters: Array<() => void> = [];
+  /** Signals of prefetch requests, so the consent check never prompts for them. */
+  const prefetchSignals = new WeakSet<AbortSignal>();
+  /** One code-sharing prompt per repository and model, shared by parallel requests. */
+  const consentPrompts = new Map<string, Promise<boolean>>();
   let selectionTimer: ReturnType<typeof setTimeout> | undefined;
   let outlineTimer: ReturnType<typeof setTimeout> | undefined;
   let recheckTimer: ReturnType<typeof setTimeout> | undefined;
@@ -176,8 +183,8 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       }
       return new OpenAIProvider(descriptor.modelId, key);
     },
-    authorizeExternalData: async (root, descriptor, estimatedBytes) => {
-      if (prefetchRequestActive) {
+    authorizeExternalData: async (root, descriptor, estimatedBytes, signal) => {
+      if (signal && prefetchSignals.has(signal)) {
         // Prefetching only uses code-sharing consent that was already given; it never asks.
         if (descriptor.kind === "mock") return true;
         if (!vscode.workspace.isTrusted) return false;
@@ -198,33 +205,36 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       ) {
         return true;
       }
-      const approximateTokens = Math.ceil(estimatedBytes / 4);
-      const reference = descriptor.kind === "vscode-lm"
-        ? parseLanguageModelDescriptorId(descriptor.modelId)
-        : undefined;
-      const destination = descriptor.kind === "vscode-lm"
-        ? `Provider: VS Code language model from “${reference?.vendor ?? "unknown"}”\nModel: ${reference?.id ?? descriptor.modelId}`
-        : `Provider: OpenAI Responses API\nModel: ${descriptor.modelId}`;
-      const terms = descriptor.kind === "vscode-lm"
-        ? "Requests use your existing subscription with that provider (for GitHub Copilot, your Copilot plan) and may count toward its usage limits. Data handling follows that provider's terms and your organization's policies. VS Code may also ask you to allow The Downside Up to use language models."
-        : "Your API usage is billed separately. Review OpenAI's data controls; store:false does not guarantee zero provider-side retention.";
-      const accept = descriptor.kind === "vscode-lm" ? "Send code to language model" : "Send code to OpenAI";
-      const action = await vscode.window.showWarningMessage(
-        `Downside Up will send selected source, relevant snippets, and repository documentation from:\n\n${root}\n\n${destination}\nEstimated context: about ${approximateTokens.toLocaleString()} tokens (byte-based estimate)\n\n${terms} This consent is saved for this repository and model. Clear the repository cache to revoke it.`,
-        { modal: true },
-        accept
-      );
-      if (action !== accept) return false;
       const provider = descriptor.kind;
-      await cacheStore.update(root, (current) => ({
-        ...current,
-        consent: {
-          provider,
-          model: descriptor.modelId,
-          acceptedAt: Date.now()
-        }
-      }));
-      return true;
+      // Parallel requests share one prompt for the same repository and model.
+      return singleFlight(consentPrompts, `${root}\0${descriptor.kind}\0${descriptor.modelId}`, async () => {
+        const approximateTokens = Math.ceil(estimatedBytes / 4);
+        const reference = descriptor.kind === "vscode-lm"
+          ? parseLanguageModelDescriptorId(descriptor.modelId)
+          : undefined;
+        const destination = descriptor.kind === "vscode-lm"
+          ? `Provider: VS Code language model from “${reference?.vendor ?? "unknown"}”\nModel: ${reference?.id ?? descriptor.modelId}`
+          : `Provider: OpenAI Responses API\nModel: ${descriptor.modelId}`;
+        const terms = descriptor.kind === "vscode-lm"
+          ? "Requests use your existing subscription with that provider (for GitHub Copilot, your Copilot plan) and may count toward its usage limits. Data handling follows that provider's terms and your organization's policies. VS Code may also ask you to allow The Downside Up to use language models."
+          : "Your API usage is billed separately. Review OpenAI's data controls; store:false does not guarantee zero provider-side retention.";
+        const accept = descriptor.kind === "vscode-lm" ? "Send code to language model" : "Send code to OpenAI";
+        const action = await vscode.window.showWarningMessage(
+          `Downside Up will send selected source, relevant snippets, and repository documentation from:\n\n${root}\n\n${destination}\nEstimated context: about ${approximateTokens.toLocaleString()} tokens (byte-based estimate)\n\n${terms} This consent is saved for this repository and model. Clear the repository cache to revoke it.`,
+          { modal: true },
+          accept
+        );
+        if (action !== accept) return false;
+        await cacheStore.update(root, (current) => ({
+          ...current,
+          consent: {
+            provider,
+            model: descriptor.modelId,
+            acceptedAt: Date.now()
+          }
+        }));
+        return true;
+      });
     }
   });
 
@@ -426,13 +436,6 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     state.epoch++;
     state.controller?.abort();
     functions.delete(state.key);
-  };
-
-  /** Runs provider work one at a time so concurrent requests cannot each prime context or prompt for consent. */
-  const enqueue = <T>(task: () => Promise<T>): Promise<T> => {
-    const next = generationQueue.then(task, task);
-    generationQueue = next.catch(() => undefined);
-    return next;
   };
 
   const syncWithEditor = (editor: vscode.TextEditor | undefined): void => {
@@ -662,16 +665,16 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     const controller = new AbortController();
     const epoch = ++state.epoch;
     state.controller = controller;
-    if (!prefetching) {
-      state.expanded = true;
-      explicitGenerations++;
-    }
+    if (!prefetching) state.expanded = true;
+    else prefetchSignals.add(controller.signal);
     installRootWatcher(state.value.root);
     state.view = loadingView(
       state,
       prefetching
         ? "Prefetching…"
-        : runningGenerations > 0 ? "Waiting for another explanation to finish…" : "Checking repository context and saved explanations…"
+        : scheduler.running >= maxConcurrentRequests()
+          ? "Waiting for another explanation to finish…"
+          : "Checking repository context and saved explanations…"
     );
     render();
     let started = false;
@@ -684,33 +687,26 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       render();
     }, { once: true });
     try {
-      const result = await enqueue(async () => {
+      const result = await scheduler.schedule(prefetching ? "prefetch" : "explicit", async () => {
         if (controller.signal.aborted) throw new DOMException("The request was cancelled.", "AbortError");
         if (prefetching && !prefetching.shouldStart()) throw new DOMException("Prefetching moved on.", "AbortError");
         started = true;
-        runningGenerations++;
-        prefetchRequestActive = Boolean(prefetching);
-        try {
-          if (state.epoch === epoch) {
-            state.view = loadingView(state, "Checking repository context and saved explanations…");
-            render();
-          }
-          const current = await currentTarget(state);
-          if (!current) throw new Error(`Could not find ${state.view.functionName} in the current source.`);
-          state.value = current;
-          return await service.explain(current.root, current.target, current.document, controller.signal, (progress) => {
-            if (state.epoch !== epoch) return;
-            state.view = {
-              ...state.view,
-              detail: progress.detail,
-              ...(progress.usage ? { usage: formatUsage(progress.usage) } : {})
-            };
-            render();
-          });
-        } finally {
-          runningGenerations--;
-          prefetchRequestActive = false;
+        if (state.epoch === epoch) {
+          state.view = loadingView(state, "Checking repository context and saved explanations…");
+          render();
         }
+        const current = await currentTarget(state);
+        if (!current) throw new Error(`Could not find ${state.view.functionName} in the current source.`);
+        state.value = current;
+        return await service.explain(current.root, current.target, current.document, controller.signal, (progress) => {
+          if (state.epoch !== epoch) return;
+          state.view = {
+            ...state.view,
+            detail: progress.detail,
+            ...(progress.usage ? { usage: formatUsage(progress.usage) } : {})
+          };
+          render();
+        });
       });
       if (state.epoch !== epoch) return;
       applyResult(state, result);
@@ -733,7 +729,6 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
         : { ...state.view, status: "failed", detail: "Generation failed", error: errorMessage(error) };
     } finally {
       if (state.controller === controller) state.controller = undefined;
-      if (!prefetching && --explicitGenerations === 0) idleWaiters.splice(0).forEach((resolve) => resolve());
       render();
     }
   };
@@ -838,14 +833,32 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
   const stopPrefetch = (): void => {
     if (!prefetchSession) return;
     prefetchSession.stopped = true;
-    prefetchSession.wake?.();
+    wakeSession(prefetchSession);
     prefetchSession = undefined;
   };
 
-  const wakePrefetch = (): void => prefetchSession?.wake?.();
+  /** Wakes a waiting session, or remembers the wake so the next wait returns at once. */
+  function wakeSession(session: PrefetchSession): void {
+    if (session.wake) session.wake();
+    else session.woken = true;
+  }
 
-  const whenNoExplicitGeneration = (): Promise<void> =>
-    explicitGenerations === 0 ? Promise.resolve() : new Promise((resolve) => idleWaiters.push(resolve));
+  const wakePrefetch = (): void => {
+    if (prefetchSession) wakeSession(prefetchSession);
+  };
+
+  const waitForWake = (session: PrefetchSession): Promise<void> => {
+    if (session.woken) {
+      session.woken = false;
+      return Promise.resolve();
+    }
+    return new Promise((resolve) => {
+      session.wake = () => {
+        session.wake = undefined;
+        resolve();
+      };
+    });
+  };
 
   /** Whether prefetching may send code now, decided without any prompt. */
   const prefetchAllowed = async (root: string): Promise<boolean> => {
@@ -934,7 +947,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     session: PrefetchSession,
     reading: OutlineEntry,
     limit: number
-  ): Promise<FunctionAi | undefined> => {
+  ): Promise<{ state: FunctionAi; release: () => void } | undefined> => {
     let called = session.calledBy.get(reading.qualifiedName);
     if (!called) {
       const target = await findFunctionTarget(session.document, new vscode.Position(reading.nameLine, reading.nameStart))
@@ -959,27 +972,54 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       if (!resolved) continue;
       const existing = functions.get(stateKey(session.root, resolved.target));
       if (hasOutcome(existing)) continue;
-      return stateFor({ root: session.root, target: resolved.target, document: resolved.document });
+      return {
+        state: stateFor({ root: session.root, target: resolved.target, document: resolved.document }),
+        release: () => session.attemptedDependencies.delete(key)
+      };
     }
     return undefined;
   };
 
   /**
-   * Explains the shown file's functions in the background, one at a time and
-   * after any explicit request, nearest to the reader first. Right after the
-   * function being read, the functions it calls in other files come next. It
-   * waits for the reader to move when its window is done, and stops on a
-   * failure.
+   * Explains the shown file's functions in the background, filling the
+   * request slots that explicit requests leave free, nearest to the reader
+   * first: each time a slot frees, the next function is chosen from the
+   * reader's current position. Right after the function being read, the
+   * functions it calls in other files come next. It waits for the reader to
+   * move when its window is done. A failed request is retried once after a
+   * pause; a second failure stops prefetching with a notice.
    */
   const runPrefetch = async (session: PrefetchSession): Promise<void> => {
     const active = () => !session.stopped && prefetchSession === session;
+    const launch = (state: FunctionAi, key: string, release: () => void): void => {
+      void generate(state, { prefetch: { shouldStart: active } })
+        .then(async () => {
+          if (state.view.status !== "failed" || !active()) return;
+          if (session.retried.has(key)) {
+            notice = { tone: "error", text: `Prefetching stopped after an error: ${state.view.error ?? "generation failed"}` };
+            render();
+            stopPrefetch();
+            return;
+          }
+          // Back off briefly, for example after a rate limit, then try this function once more.
+          session.retried.add(key);
+          await new Promise((resolveWait) => setTimeout(resolveWait, 5_000));
+          if (!active() || state.view.status !== "failed") return;
+          forget(state);
+          release();
+          render();
+        })
+        .finally(() => wakeSession(session));
+    };
     while (active()) {
-      await whenNoExplicitGeneration();
-      if (!active()) return;
       const { enabled, window, dependencies } = prefetchSettings();
       if (!enabled) {
         stopPrefetch();
         return;
+      }
+      if (scheduler.prefetchCapacity === 0) {
+        await waitForWake(session);
+        continue;
       }
       const entry = nextPrefetchEntry(session, window);
       const reading = dependencies > 0 ? readingEntry(session) : undefined;
@@ -987,21 +1027,12 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
         const dependency = active() ? await nextDependencyState(session, reading, dependencies) : undefined;
         if (!active()) return;
         if (dependency) {
-          await generate(dependency, { prefetch: { shouldStart: active } });
-          if (dependency.view.status === "failed" && active()) {
-            notice = { tone: "error", text: `Prefetching stopped after an error: ${dependency.view.error ?? "generation failed"}` };
-            render();
-            stopPrefetch();
-            return;
-          }
+          launch(dependency.state, `dependency\0${dependency.state.key}`, dependency.release);
           continue;
         }
       }
       if (!entry) {
-        await new Promise<void>((resolve) => {
-          session.wake = resolve;
-        });
-        session.wake = undefined;
+        await waitForWake(session);
         continue;
       }
       if (!(await prefetchAllowed(session.root))) {
@@ -1025,13 +1056,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       if (!target || !active()) continue;
       const state = stateFor({ root: session.root, target, document: session.document });
       if (hasOutcome(state)) continue;
-      await generate(state, { prefetch: { shouldStart: active } });
-      if (state.view.status === "failed" && active()) {
-        notice = { tone: "error", text: `Prefetching stopped after an error: ${state.view.error ?? "generation failed"}` };
-        render();
-        stopPrefetch();
-        return;
-      }
+      launch(state, entry.qualifiedName, () => session.attempted.delete(entry.qualifiedName));
     }
   };
 
@@ -1048,7 +1073,9 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       attempted: new Set(),
       attemptedDependencies: new Set(),
       calledBy: new Map(),
-      stopped: false
+      retried: new Set(),
+      stopped: false,
+      woken: false
     };
     prefetchSession = session;
     void runPrefetch(session).catch(() => {
@@ -1193,7 +1220,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     notice = { tone: "progress", text: "Refreshing repository context by request…" };
     render();
     try {
-      const result = await enqueue(() => {
+      const result = await scheduler.schedule("explicit", () => {
         if (controller.signal.aborted) throw new DOMException("The request was cancelled.", "AbortError");
         return service.refreshRepositoryContext(root, controller.signal, (progress) => {
           if (repositoryJob !== controller) return;
@@ -1445,6 +1472,10 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
   });
 
   const onConfigChange = vscode.workspace.onDidChangeConfiguration((event) => {
+    if (event.affectsConfiguration("downsideUp.maxConcurrentRequests")) {
+      scheduler.pump();
+      wakePrefetch();
+    }
     if (event.affectsConfiguration("downsideUp.prefetch")) {
       if (!prefetchSettings().enabled) stopPrefetch();
       else if (prefetchSession) wakePrefetch();
