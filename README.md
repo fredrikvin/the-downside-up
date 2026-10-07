@@ -90,6 +90,21 @@ source to the OpenAI Responses API; `store:false` does not guarantee zero
 provider-side retention. See `docs/prototype.md` for data handling, cache
 freshness, limits, and known limitations.
 
+### Prefetching (optional)
+
+By default, explanations are generated only when you ask for one. To have them
+ready as you read, turn on **Downside Up › Prefetch: Enabled**
+(`downsideUp.prefetch.enabled`) in your user settings. While the preview is
+open, the extension then explains the shown file's functions in the
+background, starting where you are and spreading outward, one request at a
+time and after anything you ask for explicitly. **Prefetch: Window**
+(`downsideUp.prefetch.window`, default 10) limits it to that many functions
+nearest your position and follows you through the file; `0` prefetches every
+function. Prefetching runs only in trusted workspaces after you have explained
+one function with the current model, which approves code sharing for the
+repository; it never asks for approval itself. Every prefetched explanation
+counts toward your provider's usage limits or billing.
+
 ## Development
 
 `npm run typecheck` checks TypeScript, `npm test` runs deterministic unit tests,

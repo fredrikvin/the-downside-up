@@ -196,6 +196,29 @@ export async function run(): Promise<void> {
   );
   console.log("Downside Up integration tests: Go explanation command completed.");
 
+  const downsideUpSettings = vscode.workspace.getConfiguration("downsideUp");
+  await downsideUpSettings.update("prefetch.window", 1, vscode.ConfigurationTarget.Global);
+  await downsideUpSettings.update("prefetch.enabled", true, vscode.ConfigurationTarget.Global);
+  const statusOf = (name: string) => api.previewExplanations().find((view) => view.functionName === name);
+  const prefetchEditor = await vscode.window.showTextDocument(lookupDocument, vscode.ViewColumn.One);
+  const lineOf = (text: string) => lookupDocument.positionAt(lookupDocument.getText().indexOf(text)).line;
+  prefetchEditor.selection = new vscode.Selection(lineOf(") FindAvailable("), 0, lineOf(") FindAvailable("), 0);
+  await waitFor(
+    async () => statusOf("Catalog.FindAvailable")?.status === "current" ? true : undefined,
+    "the function nearest the cursor to be prefetched"
+  );
+  assert.equal(statusOf("Catalog.FindAvailable")?.expanded, false, "Prefetched explanations stay collapsed.");
+  await new Promise((resolveWait) => setTimeout(resolveWait, 1_500));
+  assert.equal(statusOf("Catalog.MarkUnavailable"), undefined, "Functions outside the prefetch window are not requested.");
+  prefetchEditor.selection = new vscode.Selection(lineOf(") MarkUnavailable("), 0, lineOf(") MarkUnavailable("), 0);
+  await waitFor(
+    async () => statusOf("Catalog.MarkUnavailable")?.status === "current" ? true : undefined,
+    "the prefetch window to follow the cursor"
+  );
+  await downsideUpSettings.update("prefetch.enabled", undefined, vscode.ConfigurationTarget.Global);
+  await downsideUpSettings.update("prefetch.window", undefined, vscode.ConfigurationTarget.Global);
+  console.log("Downside Up integration tests: prefetching followed the reader.");
+
   const unsupported = await vscode.workspace.openTextDocument({
     language: "plaintext",
     content: "an arbitrary block"

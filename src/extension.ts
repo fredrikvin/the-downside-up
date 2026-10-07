@@ -18,6 +18,7 @@ import {
   parseLanguageModelDescriptorId
 } from "./generation/languageModel";
 import { formatUsage } from "./generation/provider";
+import { nextPrefetch, prefetchFocusLine } from "./presentation/prefetch";
 import { findGoFunction, initializeGoParser, isGoDocument } from "./languages/go";
 import { findRustFunction, initializeRustParser } from "./languages/rust";
 import { findFunctionWithEditorTools } from "./languages/vscodeSymbols";
@@ -47,6 +48,17 @@ interface PreviewFile {
 }
 
 type StoredView = Omit<ExplanationView, "entryId" | "expanded">;
+
+/** Background prefetching for the file shown in the preview. */
+interface PrefetchSession {
+  readonly root: string;
+  readonly document: vscode.TextDocument;
+  /** Functions present when the file was shown; functions added by later edits are not prefetched. */
+  readonly names: ReadonlySet<string>;
+  readonly attempted: Set<string>;
+  stopped: boolean;
+  wake?: () => void;
+}
 
 /** The AI explanation section of one function, kept while the preview is open. */
 interface FunctionAi {
@@ -95,6 +107,12 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
   let savedLookupEpoch = 0;
   /** Files whose functions were already checked for saved explanations while the preview is open. */
   const savedLookupDone = new Set<string>();
+  let prefetchSession: PrefetchSession | undefined;
+  /** True while a prefetch request runs, so the consent check never prompts for it. */
+  let prefetchRequestActive = false;
+  /** Explicit generations in progress; prefetching waits until there are none. */
+  let explicitGenerations = 0;
+  const idleWaiters: Array<() => void> = [];
   let selectionTimer: ReturnType<typeof setTimeout> | undefined;
   let outlineTimer: ReturnType<typeof setTimeout> | undefined;
   let recheckTimer: ReturnType<typeof setTimeout> | undefined;
@@ -152,6 +170,13 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       return new OpenAIProvider(descriptor.modelId, key);
     },
     authorizeExternalData: async (root, descriptor, estimatedBytes) => {
+      if (prefetchRequestActive) {
+        // Prefetching only uses code-sharing consent that was already given; it never asks.
+        if (descriptor.kind === "mock") return true;
+        if (!vscode.workspace.isTrusted) return false;
+        const saved = (await cacheStore.read(root)).consent;
+        return saved?.provider === descriptor.kind && saved.model === descriptor.modelId;
+      }
       if (descriptor.kind === "mock") return true;
       if (!vscode.workspace.isTrusted) {
         await vscode.window.showErrorMessage(
@@ -477,11 +502,19 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     panel.setFileReferenceHandlers(handlers);
     if (fileChanged) {
       notice = undefined;
+      // Queued prefetches of the previous file are dropped; a request already sent finishes and is saved.
+      stopPrefetch();
       if (previewStates().some(({ state }) => state.result)) scheduleRecheck(filePath(root, document.uri));
     }
     render();
     if (fileChanged || !savedLookupDone.has(`${root}\0${document.uri.toString()}`)) {
-      void markSavedExplanations(document, root).catch(() => undefined);
+      const lookup = markSavedExplanations(document, root).catch(() => undefined);
+      // Prefetching starts after saved explanations are marked, so they are not requested again.
+      if (fileChanged) {
+        void lookup.then(() => {
+          if (preview && sameUri(preview.document.uri, document.uri)) startPrefetch(document, root);
+        });
+      }
     }
     // Only a file switch re-aligns the preview; rebuilding the same file keeps the reader's place.
     if (fileChanged) {
@@ -604,18 +637,31 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     }
   };
 
-  /** Generates (or loads a still-current saved) explanation for an explicit request. */
-  const generate = async (state: FunctionAi): Promise<void> => {
+  /**
+   * Generates (or loads a still-current saved) explanation for an explicit
+   * request, or for prefetching, which keeps the section collapsed, never
+   * prompts, and is dropped if `shouldStart` is false when its turn comes.
+   */
+  const generate = async (
+    state: FunctionAi,
+    options: { prefetch?: { shouldStart: () => boolean } } = {}
+  ): Promise<void> => {
     if (state.controller) return;
-    if (!(await ensureLanguageModelSelected()) || state.controller) return;
+    const prefetching = options.prefetch;
+    if (!prefetching && (!(await ensureLanguageModelSelected()) || state.controller)) return;
     const controller = new AbortController();
     const epoch = ++state.epoch;
     state.controller = controller;
-    state.expanded = true;
+    if (!prefetching) {
+      state.expanded = true;
+      explicitGenerations++;
+    }
     installRootWatcher(state.value.root);
     state.view = loadingView(
       state,
-      runningGenerations > 0 ? "Waiting for another explanation to finish…" : "Checking repository context and saved explanations…"
+      prefetching
+        ? "Prefetching…"
+        : runningGenerations > 0 ? "Waiting for another explanation to finish…" : "Checking repository context and saved explanations…"
     );
     render();
     let started = false;
@@ -630,8 +676,10 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     try {
       const result = await enqueue(async () => {
         if (controller.signal.aborted) throw new DOMException("The request was cancelled.", "AbortError");
+        if (prefetching && !prefetching.shouldStart()) throw new DOMException("Prefetching moved on.", "AbortError");
         started = true;
         runningGenerations++;
+        prefetchRequestActive = Boolean(prefetching);
         try {
           if (state.epoch === epoch) {
             state.view = loadingView(state, "Checking repository context and saved explanations…");
@@ -651,6 +699,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
           });
         } finally {
           runningGenerations--;
+          prefetchRequestActive = false;
         }
       });
       if (state.epoch !== epoch) return;
@@ -659,6 +708,11 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       if (state.epoch !== epoch) return;
       const userCancelled = controller.signal.aborted;
       const declined = !userCancelled && error instanceof DOMException && error.name === "AbortError";
+      if (prefetching && (declined || !started)) {
+        // A prefetch that was not approved or not started leaves the section untouched.
+        forget(state);
+        return;
+      }
       state.view = userCancelled || declined
         ? {
             ...state.view,
@@ -669,6 +723,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
         : { ...state.view, status: "failed", detail: "Generation failed", error: errorMessage(error) };
     } finally {
       if (state.controller === controller) state.controller = undefined;
+      if (!prefetching && --explicitGenerations === 0) idleWaiters.splice(0).forEach((resolve) => resolve());
       render();
     }
   };
@@ -727,6 +782,131 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       return undefined;
     }
     return stateFor({ root, target, document });
+  };
+
+  const prefetchSettings = (): { enabled: boolean; window: number } => {
+    const settings = vscode.workspace.getConfiguration("downsideUp");
+    const window = settings.get<number>("prefetch.window", 10) ?? 10;
+    return {
+      enabled: settings.get<boolean>("prefetch.enabled", false) === true,
+      window: Number.isFinite(window) ? Math.max(0, Math.floor(window)) : 10
+    };
+  };
+
+  /** Stops prefetching; a request already sent finishes and is saved, queued ones are dropped. */
+  const stopPrefetch = (): void => {
+    if (!prefetchSession) return;
+    prefetchSession.stopped = true;
+    prefetchSession.wake?.();
+    prefetchSession = undefined;
+  };
+
+  const wakePrefetch = (): void => prefetchSession?.wake?.();
+
+  const whenNoExplicitGeneration = (): Promise<void> =>
+    explicitGenerations === 0 ? Promise.resolve() : new Promise((resolve) => idleWaiters.push(resolve));
+
+  /** Whether prefetching may send code now, decided without any prompt. */
+  const prefetchAllowed = async (root: string): Promise<boolean> => {
+    const descriptor = describeProvider();
+    if (descriptor.kind === "mock") return true;
+    if (!vscode.workspace.isTrusted) return false;
+    if (descriptor.kind === "vscode-lm") {
+      const reference = parseLanguageModelDescriptorId(descriptor.modelId);
+      if (!reference || !isUsableLanguageModelVendor(reference.vendor)) return false;
+    }
+    const consent = (await cacheStore.read(root)).consent;
+    return consent?.provider === descriptor.kind && consent.model === descriptor.modelId;
+  };
+
+  /** A section that has, or is getting, an explanation or a result the reader should see. */
+  const hasOutcome = (state: FunctionAi | undefined): boolean =>
+    Boolean(state && (state.controller || state.view.explanation || state.view.status !== "loading"));
+
+  /** The function to prefetch next: the nearest one without an outcome in the window around the reader. */
+  const nextPrefetchEntry = (session: PrefetchSession, window: number): OutlineEntry | undefined => {
+    if (!preview || !sameUri(preview.document.uri, session.document.uri)) return undefined;
+    const candidates = preview.overview.entries
+      .filter((entry) => entry.explainable && session.names.has(entry.qualifiedName))
+      .map((entry) => ({ entry, key: entry.qualifiedName, startLine: entry.startLine, endLine: entry.endLine, nameLine: entry.nameLine }));
+    const done = new Set(session.attempted);
+    for (const { entry } of candidates) {
+      if (hasOutcome(existingStateForEntry(entry.id))) done.add(entry.qualifiedName);
+    }
+    const editor = vscode.window.visibleTextEditors.find((candidate) => sameUri(candidate.document.uri, session.document.uri));
+    const visible = editor?.visibleRanges[0];
+    const focus = prefetchFocusLine(
+      editor?.selection.active.line ?? lastEditorTopLine ?? 0,
+      visible ? { start: visible.start.line, end: visible.end.line } : undefined
+    );
+    return nextPrefetch(candidates, focus, window, done)?.entry;
+  };
+
+  /**
+   * Explains the shown file's functions in the background, one at a time and
+   * after any explicit request, nearest to the reader first. It waits for the
+   * reader to move when its window is done, and stops on a failure.
+   */
+  const runPrefetch = async (session: PrefetchSession): Promise<void> => {
+    const active = () => !session.stopped && prefetchSession === session;
+    while (active()) {
+      await whenNoExplicitGeneration();
+      if (!active()) return;
+      const { enabled, window } = prefetchSettings();
+      if (!enabled) {
+        stopPrefetch();
+        return;
+      }
+      const entry = nextPrefetchEntry(session, window);
+      if (!entry) {
+        await new Promise<void>((resolve) => {
+          session.wake = resolve;
+        });
+        session.wake = undefined;
+        continue;
+      }
+      if (!(await prefetchAllowed(session.root))) {
+        if (!active()) return;
+        notice = {
+          tone: "info",
+          text: "Prefetching is waiting: it runs only in a trusted workspace after you have explained one function with the current model, which approves code sharing for this repository."
+        };
+        render();
+        stopPrefetch();
+        return;
+      }
+      if (!active()) return;
+      session.attempted.add(entry.qualifiedName);
+      let target: FunctionTarget | undefined;
+      try {
+        target = await findFunctionTarget(session.document, new vscode.Position(entry.nameLine, entry.nameStart));
+      } catch {
+        target = undefined;
+      }
+      if (!target || !active()) continue;
+      const state = stateFor({ root: session.root, target, document: session.document });
+      if (hasOutcome(state)) continue;
+      await generate(state, { prefetch: { shouldStart: active } });
+      if (state.view.status === "failed" && active()) {
+        notice = { tone: "error", text: `Prefetching stopped after an error: ${state.view.error ?? "generation failed"}` };
+        render();
+        stopPrefetch();
+        return;
+      }
+    }
+  };
+
+  /** Starts prefetching for the shown file when the user setting allows it. */
+  const startPrefetch = (document: vscode.TextDocument, root: string): void => {
+    stopPrefetch();
+    if (!panel || !preview || !sameUri(preview.document.uri, document.uri) || !prefetchSettings().enabled) return;
+    const names = new Set(preview.overview.entries.filter((entry) => entry.explainable).map((entry) => entry.qualifiedName));
+    if (names.size === 0) return;
+    const session: PrefetchSession = { root, document, names, attempted: new Set(), stopped: false };
+    prefetchSession = session;
+    void runPrefetch(session).catch(() => {
+      if (prefetchSession === session) stopPrefetch();
+    });
   };
 
   async function handlePanelAction(action: PanelAction): Promise<void> {
@@ -790,6 +970,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       (action) => void handlePanelAction(action),
       () => {
         if (panel !== created) return;
+        stopPrefetch();
         for (const state of [...functions.values()]) forget(state);
         savedLookupEpoch++;
         savedLookupDone.clear();
@@ -905,6 +1086,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       "Clear repository cache"
     );
     if (answer !== "Clear repository cache") return;
+    stopPrefetch();
     savedLookupEpoch++;
     for (const state of [...functions.values()]) if (state.value.root === root) forget(state);
     repositoryJob?.abort();
@@ -1022,6 +1204,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
   };
 
   const cancelExplanations = (): void => {
+    stopPrefetch();
     repositoryJob?.abort();
     for (const state of functions.values()) state.controller?.abort();
   };
@@ -1085,6 +1268,8 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
 
   const onVisibleRangesChange = vscode.window.onDidChangeTextEditorVisibleRanges((event) => {
     if (!panel?.panel.visible || !preview || !sameUri(event.textEditor.document.uri, preview.document.uri)) return;
+    // Scrolling either side moves the reading position that prefetching spreads out from.
+    wakePrefetch();
     const line = event.visibleRanges[0]?.start.line ?? 0;
     // Ignore the editor scrolling that the preview itself requested, and repeated ranges.
     if (Date.now() < suppressEditorSyncUntil || line === lastEditorTopLine) return;
@@ -1097,6 +1282,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     if (!panel?.panel.visible || !preview || !sameUri(event.textEditor.document.uri, preview.document.uri)) return;
     const selection = event.selections[0];
     if (!selection) return;
+    wakePrefetch();
     panel.highlightEntry(innermostRangeAt(preview.overview.entries, selection.active.line)?.id);
     if (event.selections.length !== 1 || selection.isEmpty) return;
     if (selectionTimer) clearTimeout(selectionTimer);
@@ -1112,6 +1298,11 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
   });
 
   const onConfigChange = vscode.workspace.onDidChangeConfiguration((event) => {
+    if (event.affectsConfiguration("downsideUp.prefetch")) {
+      if (!prefetchSettings().enabled) stopPrefetch();
+      else if (prefetchSession) wakePrefetch();
+      else if (panel && preview) startPrefetch(preview.document, preview.root);
+    }
     if (
       !event.affectsConfiguration("downsideUp.provider") &&
       !event.affectsConfiguration("downsideUp.openai.model") &&
@@ -1120,7 +1311,13 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     scheduleRecheck();
     // Saved explanations are per model, so other functions may now have one.
     savedLookupDone.clear();
-    if (panel && preview) void markSavedExplanations(preview.document, preview.root).catch(() => undefined);
+    stopPrefetch();
+    if (panel && preview) {
+      const { document, root } = preview;
+      void markSavedExplanations(document, root).catch(() => undefined).then(() => {
+        if (preview && sameUri(preview.document.uri, document.uri)) startPrefetch(document, root);
+      });
+    }
     render();
   });
 

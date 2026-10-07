@@ -35,9 +35,31 @@ function context are gathered only for functions that have a saved record.
 Selecting non-empty text inside a function in the editor only checks for a
 fresh saved explanation and opens its section when one exists. A cache miss
 never triggers generation. Opening files, moving the cursor, scrolling, local
-outlining, and source edits do not call a provider. After edits, file changes,
+outlining, and source edits do not call a provider, unless the user turns on
+prefetching (below). After edits, file changes,
 or a model change, open explanations are rechecked against the cache locally
 and marked outdated when their recorded inputs no longer match.
+
+Prefetching is an opt-in exception to explicit-only generation. With
+`downsideUp.prefetch.enabled` (off by default, user settings only, so a
+repository cannot turn it on), the extension generates explanations in the
+background for the functions of the file shown in the preview. It starts with
+the function at the cursor (or the middle of the visible lines when the cursor
+is off screen) and spreads outward, re-evaluating the order after every
+request, so the reader's position acts like a priority. `downsideUp.prefetch.window`
+(default 10, `0` for every function) limits it to that many functions nearest
+the reader; moving through the file moves the window and fetches newly
+nearby functions. Prefetching starts after saved explanations are marked
+ready, runs one request at a time after any explicit request, keeps sections
+collapsed, and does not regenerate outdated, failed, or cancelled
+explanations or functions added by later edits. Switching files drops
+prefetches that have not been sent; one already sent finishes and is saved.
+Closing the preview, Cancel, Clear Repository Cache, or turning the setting
+off stops it, and a failed request stops it with a notice. It runs only in a
+trusted workspace and only after code sharing was approved for the repository
+and model by an explicit explanation; it never asks for approval itself and
+shows a notice when it is waiting for one. Prefetching uses the provider's
+usage limits or billing for every function it explains.
 
 The core is language-neutral. Rust and Go function discovery and source
 fingerprinting use bundled Tree-sitter WASM grammars, so neither needs a
@@ -138,7 +160,7 @@ provider-side retention; review the provider's current data controls before use.
 For VS Code language models, data handling follows the model provider's terms
 (for Copilot, the user's or organization's Copilot plan and policies). No
 provider request occurs without the user requesting an explanation or
-repository-context refresh.
+repository-context refresh, or turning on prefetching in user settings.
 
 ## Cache and freshness
 
@@ -214,7 +236,7 @@ API key using **Downside Up: Set OpenAI API Key**. Then explicitly accept the
 per-repository sharing prompt.
 
 The deterministic unit suite covers cache reuse across restart, batched
-saved-explanation lookup, Rust and Go dependency resolution and their
+saved-explanation lookup, prefetch ordering and windows, Rust and Go dependency resolution and their
 depth-1 freshness and signature-only budget, Go method naming, source and
 context invalidation, unrelated edits, overview content-version preservation,
 branch changes, in-flight edits, cancellation, clear-cache fencing, provider
@@ -225,7 +247,8 @@ server), distinct identities for
 same-named Rust methods in different `impl` blocks, document-ordered outlines,
 explanation commands, preview creation, selection changes during an in-flight
 request, saved explanations listed as ready after closing and reopening the
-preview, and unsupported plaintext discovery. Each run uses a fresh temporary
+preview, prefetching that starts at the cursor, stays within its window, and
+follows the cursor, and unsupported plaintext discovery. Each run uses a fresh temporary
 VS Code profile so earlier runs' windows are not restored.
 Local description tests cover Rust items (imports, modules, functions and
 methods with receivers, structs, enums, traits, impls, constants, statics,
