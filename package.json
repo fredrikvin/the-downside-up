@@ -100,6 +100,18 @@
           "minimum": 0,
           "scope": "application",
           "markdownDescription": "How many of the functions nearest to where you are reading are prefetched; the window moves as you move through the file. `0` prefetches every function in the file. Requires `#downsideUp.prefetch.enabled#`."
+        },
+        "downsideUp.prefetch.dependencies": {
+          "type": "integer",
+          "default": 3,
+          "minimum": 0,
+          "scope": "application",
+          "markdownDescription": "For the function you are reading, how many of the functions and methods it calls in other files (Rust and Go) are prefetched, right after the function itself. Only the first calls in order of use are considered, and ones already explained count toward the number. `0` prefetches none. Requires `#downsideUp.prefetch.enabled#`."
+        },
+        "downsideUp.hover.savedExplanations": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "When hovering a call to a Rust or Go function, show the purpose from its saved AI explanation. Reads only the local cache and never generates. Works once the extension is active, for example after opening the preview."
         }
       }
     },

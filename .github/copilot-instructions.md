@@ -8,7 +8,8 @@ behavior.
 ## Development rules
 
 - Preserve explicit-request-only generation. Local file outlines and cache-only
-  lookups (after selecting function text or when the preview shows a file) are
+  lookups (after selecting function text, when the preview shows a file, or on
+  hover) are
   allowed; a cache miss, file opening, cursor movement, or source edit must not
   initiate provider requests. The only exception is the opt-in, user-level
   `downsideUp.prefetch.*` setting, which must never prompt for consent and

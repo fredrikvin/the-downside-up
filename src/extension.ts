@@ -6,7 +6,8 @@ import {
   type ExplanationResult,
   type ProviderDescriptor
 } from "./controller";
-import { findRepositoryRoot } from "./context/inventory";
+import { findRepositoryRoot, gatherInventory, type RepositoryInventory } from "./context/inventory";
+import { findCalledFunctions, type CalledFunction } from "./context/related";
 import { buildFileOverview, type FileOverview, type OutlineEntry } from "./context/fileOverview";
 import type { FunctionTarget, RepositoryOverview } from "./core/types";
 import { MockProvider } from "./generation/mock";
@@ -56,6 +57,10 @@ interface PrefetchSession {
   /** Functions present when the file was shown; functions added by later edits are not prefetched. */
   readonly names: ReadonlySet<string>;
   readonly attempted: Set<string>;
+  /** Other-file functions already considered, by path and qualified name. */
+  readonly attemptedDependencies: Set<string>;
+  /** Other-file functions each function of the file calls, resolved once per session. */
+  readonly calledBy: Map<string, CalledFunction[]>;
   stopped: boolean;
   wake?: () => void;
 }
@@ -784,13 +789,44 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     return stateFor({ root, target, document });
   };
 
-  const prefetchSettings = (): { enabled: boolean; window: number } => {
+  const prefetchSettings = (): { enabled: boolean; window: number; dependencies: number } => {
     const settings = vscode.workspace.getConfiguration("downsideUp");
-    const window = settings.get<number>("prefetch.window", 10) ?? 10;
+    const count = (key: string, fallback: number) => {
+      const value = settings.get<number>(key, fallback) ?? fallback;
+      return Number.isFinite(value) ? Math.max(0, Math.floor(value)) : fallback;
+    };
     return {
       enabled: settings.get<boolean>("prefetch.enabled", false) === true,
-      window: Number.isFinite(window) ? Math.max(0, Math.floor(window)) : 10
+      window: count("prefetch.window", 10),
+      dependencies: count("prefetch.dependencies", 3)
     };
+  };
+
+  /** A recent inventory for resolving names; freshness checks still scan the repository themselves. */
+  const inventoryMemo = new Map<string, { at: number; value: Promise<RepositoryInventory> }>();
+  const recentInventory = (root: string): Promise<RepositoryInventory> => {
+    const hit = inventoryMemo.get(root);
+    if (hit && Date.now() - hit.at < 5_000) return hit.value;
+    const value = gatherInventory(root);
+    inventoryMemo.set(root, { at: Date.now(), value });
+    value.catch(() => inventoryMemo.delete(root));
+    return value;
+  };
+
+  /** Opens the file that defines a called function and finds the function there. */
+  const targetForCalled = async (
+    root: string,
+    called: CalledFunction
+  ): Promise<{ target: FunctionTarget; document: vscode.TextDocument } | undefined> => {
+    const absolute = resolve(root, called.path);
+    if (!isWithin(root, absolute)) return undefined;
+    const document = await vscode.workspace.openTextDocument(vscode.Uri.file(absolute));
+    const line = Math.min(called.line, document.lineCount - 1);
+    const target = await findFunctionTarget(
+      document,
+      new vscode.Position(line, document.lineAt(line).firstNonWhitespaceCharacterIndex)
+    );
+    return target && target.name === called.name ? { target, document } : undefined;
   };
 
   /** Stops prefetching; a request already sent finishes and is saved, queued ones are dropped. */
@@ -819,18 +855,56 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     return consent?.provider === descriptor.kind && consent.model === descriptor.modelId;
   };
 
+  /**
+   * Shows the saved explanation of a hovered call to a Rust or Go function.
+   * It reads only the local cache and never generates; generated text is
+   * escaped so it renders as plain text.
+   */
+  const hoverProvider: vscode.HoverProvider = {
+    provideHover: async (document, position, token) => {
+      if (document.uri.scheme !== "file") return undefined;
+      if (!vscode.workspace.getConfiguration("downsideUp").get<boolean>("hover.savedExplanations", true)) return undefined;
+      const wordRange = document.getWordRangeAtPosition(position, /[A-Za-z_][A-Za-z0-9_]*/);
+      if (!wordRange) return undefined;
+      const word = document.getText(wordRange);
+      const root = await resolveRoot(document).catch(() => undefined);
+      if (!root || token.isCancellationRequested) return undefined;
+      const enclosing = await findFunctionTarget(document, position).catch(() => undefined);
+      // Only calls inside a function body; hovering a function's own name is left to other hovers.
+      if (!enclosing || enclosing.selection.contains(position) || token.isCancellationRequested) return undefined;
+      const called = await recentInventory(root)
+        .then((inventory) => findCalledFunctions(enclosing, document, inventory))
+        .then((all) => all.find((entry) => entry.name === word))
+        .catch(() => undefined);
+      if (!called || token.isCancellationRequested) return undefined;
+      const resolved = await targetForCalled(root, called).catch(() => undefined);
+      if (!resolved || token.isCancellationRequested) return undefined;
+      const saved = functions.get(stateKey(root, resolved.target));
+      const explanation = saved?.view.status === "current" && saved.view.explanation
+        ? saved.view.explanation
+        : (await service.findCachedExplanation(root, resolved.target, resolved.document).catch(() => undefined))?.explanation;
+      if (!explanation || token.isCancellationRequested) return undefined;
+      const markdown = new vscode.MarkdownString();
+      markdown.appendMarkdown("**Downside Up** · saved AI explanation of ");
+      markdown.appendText(called.qualifiedName);
+      markdown.appendMarkdown("\n\n");
+      markdown.appendText(explanation.purpose);
+      return new vscode.Hover(markdown, wordRange);
+    }
+  };
+
   /** A section that has, or is getting, an explanation or a result the reader should see. */
   const hasOutcome = (state: FunctionAi | undefined): boolean =>
     Boolean(state && (state.controller || state.view.explanation || state.view.status !== "loading"));
 
   /** The function to prefetch next: the nearest one without an outcome in the window around the reader. */
-  const nextPrefetchEntry = (session: PrefetchSession, window: number): OutlineEntry | undefined => {
+  const nextPrefetchEntry = (session: PrefetchSession, window: number, includeDone = false): OutlineEntry | undefined => {
     if (!preview || !sameUri(preview.document.uri, session.document.uri)) return undefined;
     const candidates = preview.overview.entries
       .filter((entry) => entry.explainable && session.names.has(entry.qualifiedName))
       .map((entry) => ({ entry, key: entry.qualifiedName, startLine: entry.startLine, endLine: entry.endLine, nameLine: entry.nameLine }));
-    const done = new Set(session.attempted);
-    for (const { entry } of candidates) {
+    const done = new Set(includeDone ? [] : session.attempted);
+    for (const { entry } of includeDone ? [] : candidates) {
       if (hasOutcome(existingStateForEntry(entry.id))) done.add(entry.qualifiedName);
     }
     const editor = vscode.window.visibleTextEditors.find((candidate) => sameUri(candidate.document.uri, session.document.uri));
@@ -842,22 +916,82 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     return nextPrefetch(candidates, focus, window, done)?.entry;
   };
 
+  /** The shown file's function nearest the reader, done or not. */
+  const readingEntry = (session: PrefetchSession): OutlineEntry | undefined =>
+    nextPrefetchEntry(session, 1, true);
+
+  /**
+   * The next function in another file that the function being read calls,
+   * among the first `limit` it calls; ones already explained count toward the
+   * limit, so it never fetches more than `limit` for one function.
+   */
+  const nextDependencyState = async (
+    session: PrefetchSession,
+    reading: OutlineEntry,
+    limit: number
+  ): Promise<FunctionAi | undefined> => {
+    let called = session.calledBy.get(reading.qualifiedName);
+    if (!called) {
+      const target = await findFunctionTarget(session.document, new vscode.Position(reading.nameLine, reading.nameStart))
+        .catch(() => undefined);
+      const ownPath = filePath(session.root, session.document.uri);
+      const all = target
+        ? await recentInventory(session.root)
+          .then((inventory) => findCalledFunctions(target, session.document, inventory))
+          .catch(() => [])
+        : [];
+      called = all.filter((entry, index) =>
+        entry.path !== ownPath &&
+        all.findIndex((other) => other.path === entry.path && other.qualifiedName === entry.qualifiedName) === index
+      );
+      session.calledBy.set(reading.qualifiedName, called);
+    }
+    for (const entry of called.slice(0, limit)) {
+      const key = `${entry.path}\0${entry.qualifiedName}`;
+      if (session.attemptedDependencies.has(key)) continue;
+      session.attemptedDependencies.add(key);
+      const resolved = await targetForCalled(session.root, entry).catch(() => undefined);
+      if (!resolved) continue;
+      const existing = functions.get(stateKey(session.root, resolved.target));
+      if (hasOutcome(existing)) continue;
+      return stateFor({ root: session.root, target: resolved.target, document: resolved.document });
+    }
+    return undefined;
+  };
+
   /**
    * Explains the shown file's functions in the background, one at a time and
-   * after any explicit request, nearest to the reader first. It waits for the
-   * reader to move when its window is done, and stops on a failure.
+   * after any explicit request, nearest to the reader first. Right after the
+   * function being read, the functions it calls in other files come next. It
+   * waits for the reader to move when its window is done, and stops on a
+   * failure.
    */
   const runPrefetch = async (session: PrefetchSession): Promise<void> => {
     const active = () => !session.stopped && prefetchSession === session;
     while (active()) {
       await whenNoExplicitGeneration();
       if (!active()) return;
-      const { enabled, window } = prefetchSettings();
+      const { enabled, window, dependencies } = prefetchSettings();
       if (!enabled) {
         stopPrefetch();
         return;
       }
       const entry = nextPrefetchEntry(session, window);
+      const reading = dependencies > 0 ? readingEntry(session) : undefined;
+      if (reading && entry?.id !== reading.id && (await prefetchAllowed(session.root))) {
+        const dependency = active() ? await nextDependencyState(session, reading, dependencies) : undefined;
+        if (!active()) return;
+        if (dependency) {
+          await generate(dependency, { prefetch: { shouldStart: active } });
+          if (dependency.view.status === "failed" && active()) {
+            notice = { tone: "error", text: `Prefetching stopped after an error: ${dependency.view.error ?? "generation failed"}` };
+            render();
+            stopPrefetch();
+            return;
+          }
+          continue;
+        }
+      }
       if (!entry) {
         await new Promise<void>((resolve) => {
           session.wake = resolve;
@@ -902,7 +1036,15 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     if (!panel || !preview || !sameUri(preview.document.uri, document.uri) || !prefetchSettings().enabled) return;
     const names = new Set(preview.overview.entries.filter((entry) => entry.explainable).map((entry) => entry.qualifiedName));
     if (names.size === 0) return;
-    const session: PrefetchSession = { root, document, names, attempted: new Set(), stopped: false };
+    const session: PrefetchSession = {
+      root,
+      document,
+      names,
+      attempted: new Set(),
+      attemptedDependencies: new Set(),
+      calledBy: new Map(),
+      stopped: false
+    };
     prefetchSession = session;
     void runPrefetch(session).catch(() => {
       if (prefetchSession === session) stopPrefetch();
@@ -1338,6 +1480,14 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     onVisibleRangesChange,
     onTextSelectionChange,
     onConfigChange,
+    vscode.languages.registerHoverProvider(
+      [
+        { scheme: "file", language: "rust" },
+        { scheme: "file", language: "go" },
+        { scheme: "file", pattern: "**/*.{rs,go}" }
+      ],
+      hoverProvider
+    ),
     new vscode.Disposable(() => {
       cancelExplanations();
       if (selectionTimer) clearTimeout(selectionTimer);
@@ -1356,12 +1506,18 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       functionName: state.view.functionName,
       status: state.view.status,
       expanded: state.expanded
+    })),
+    allExplanations: () => [...functions.values()].map((state) => ({
+      functionName: state.view.functionName,
+      status: state.view.status,
+      path: filePath(state.value.root, state.value.document.uri)
     }))
   };
 }
 
 export interface DownsideUpTestApi {
   previewExplanations(): Array<{ functionName: string; status: string; expanded: boolean }>;
+  allExplanations(): Array<{ functionName: string; status: string; path: string }>;
 }
 
 export function deactivate(): void {}

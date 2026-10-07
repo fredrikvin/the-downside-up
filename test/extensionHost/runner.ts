@@ -198,6 +198,7 @@ export async function run(): Promise<void> {
 
   const downsideUpSettings = vscode.workspace.getConfiguration("downsideUp");
   await downsideUpSettings.update("prefetch.window", 1, vscode.ConfigurationTarget.Global);
+  await downsideUpSettings.update("prefetch.dependencies", 0, vscode.ConfigurationTarget.Global);
   await downsideUpSettings.update("prefetch.enabled", true, vscode.ConfigurationTarget.Global);
   const statusOf = (name: string) => api.previewExplanations().find((view) => view.functionName === name);
   const prefetchEditor = await vscode.window.showTextDocument(lookupDocument, vscode.ViewColumn.One);
@@ -215,9 +216,51 @@ export async function run(): Promise<void> {
     async () => statusOf("Catalog.MarkUnavailable")?.status === "current" ? true : undefined,
     "the prefetch window to follow the cursor"
   );
+  console.log("Downside Up integration tests: prefetching followed the reader.");
+
+  const hoverText = async (document: vscode.TextDocument, needle: string, offset: number): Promise<string> => {
+    const hovers = await vscode.commands.executeCommand<vscode.Hover[]>(
+      "vscode.executeHoverProvider",
+      document.uri,
+      document.positionAt(document.getText().indexOf(needle) + offset)
+    ) ?? [];
+    return hovers.flatMap((hover) => hover.contents)
+      .map((content) => typeof content === "string" ? content : content.value)
+      .join("\n");
+  };
+  const savedHover = await hoverText(goDocument, "catalog.FindAvailable(", "catalog.".length + 2);
+  assert.match(savedHover, /Downside Up/, "Hovering a call shows its saved explanation.");
+  assert.match(savedHover, /Catalog\.FindAvailable/);
+  assert.doesNotMatch(
+    await hoverText(goDocument, "storage.Persist(", "storage.".length + 2),
+    /Downside Up/,
+    "Hovering a call without a saved explanation shows nothing and generates nothing."
+  );
+  assert.equal(
+    api.allExplanations().some((view) => view.functionName === "Persist"),
+    false,
+    "Hovering did not request an explanation."
+  );
+
+  await downsideUpSettings.update("prefetch.dependencies", 3, vscode.ConfigurationTarget.Global);
+  const readingEditor = await vscode.window.showTextDocument(goDocument, vscode.ViewColumn.One);
+  const checkoutLine = goDocument.positionAt(goDocument.getText().indexOf("func checkout")).line + 2;
+  readingEditor.selection = new vscode.Selection(checkoutLine, 0, checkoutLine, 0);
+  await waitFor(
+    async () => api.allExplanations()
+      .some((view) => view.functionName === "Persist" && view.path.endsWith("storage/storage.go") && view.status === "current")
+      ? true : undefined,
+    "a function called from another package to be prefetched"
+  );
+  assert.match(
+    await hoverText(goDocument, "storage.Persist(", "storage.".length + 2),
+    /Downside Up/,
+    "The prefetched function's explanation now shows on hover."
+  );
   await downsideUpSettings.update("prefetch.enabled", undefined, vscode.ConfigurationTarget.Global);
   await downsideUpSettings.update("prefetch.window", undefined, vscode.ConfigurationTarget.Global);
-  console.log("Downside Up integration tests: prefetching followed the reader.");
+  await downsideUpSettings.update("prefetch.dependencies", undefined, vscode.ConfigurationTarget.Global);
+  console.log("Downside Up integration tests: other-file prefetching and saved-explanation hovers work.");
 
   const unsupported = await vscode.workspace.openTextDocument({
     language: "plaintext",

@@ -100,10 +100,22 @@ background, starting where you are and spreading outward, one request at a
 time and after anything you ask for explicitly. **Prefetch: Window**
 (`downsideUp.prefetch.window`, default 10) limits it to that many functions
 nearest your position and follows you through the file; `0` prefetches every
-function. Prefetching runs only in trusted workspaces after you have explained
+function. For Rust and Go, **Prefetch: Dependencies**
+(`downsideUp.prefetch.dependencies`, default 3, `0` for none) also prefetches
+up to that many functions in other files that the function you are reading
+calls, right after the function itself, so they are ready if you follow a
+call. Prefetching runs only in trusted workspaces after you have explained
 one function with the current model, which approves code sharing for the
 repository; it never asks for approval itself. Every prefetched explanation
 counts toward your provider's usage limits or billing.
+
+### Saved explanations on hover
+
+Hovering a call to a Rust or Go function shows the purpose from its saved AI
+explanation, if one is current. This only reads the local cache and never
+generates; turn it off with **Downside Up › Hover: Saved Explanations**
+(`downsideUp.hover.savedExplanations`). It works once the extension is active,
+for example after opening the preview.
 
 ## Development
 

@@ -164,6 +164,44 @@ function addDependencies(
 
 const UNRESOLVED_DEPENDENCIES = "Items this function uses could not be resolved; changes to them are not tracked.";
 
+export interface CalledFunction {
+  /** Repository-relative path of the file that defines it. */
+  readonly path: string;
+  readonly name: string;
+  readonly qualifiedName: string;
+  /** Zero-based line where its declaration starts. */
+  readonly line: number;
+}
+
+/**
+ * Functions and methods a Rust or Go function calls directly, in order of
+ * first use, including ones in the same file. Local analysis only.
+ */
+export async function findCalledFunctions(
+  target: FunctionTarget,
+  document: vscode.TextDocument,
+  inventory: RepositoryInventory
+): Promise<CalledFunction[]> {
+  const targetPath = pathFromUri(inventory.root, target.uri);
+  if (!targetPath || (target.languageId !== "rust" && target.languageId !== "go")) return [];
+  const request = dependencyRequest(target, targetPath, document, inventory);
+  const found = target.languageId === "rust" ? await findRustDependencies(request) : await findGoDependencies(request);
+  const called: CalledFunction[] = found.dependencies
+    .filter(({ item }) => item.kind === "function" || item.kind === "method")
+    .map(({ path, item }) => ({ path, name: item.name, qualifiedName: item.qualifiedName, line: item.line }));
+  if (target.languageId === "rust") {
+    for (const related of await listRustFunctions(document).catch(() => [])) {
+      if (
+        related.qualifiedName !== target.qualifiedName &&
+        new RegExp(`\\b${related.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*\\(`).test(target.source)
+      ) {
+        called.push({ path: targetPath, name: related.name, qualifiedName: related.qualifiedName, line: related.startLine });
+      }
+    }
+  }
+  return called;
+}
+
 export async function gatherFunctionContext(
   target: FunctionTarget,
   document: vscode.TextDocument,

@@ -23,6 +23,8 @@ export interface GoItem {
   readonly signature: string;
   readonly fingerprint: string;
   readonly signatureFingerprint: string;
+  /** Zero-based line where the declaration starts. */
+  readonly line: number;
   /** Same-package result types of a function or method, used to match later method calls. */
   readonly resultTypes?: readonly string[];
 }
@@ -107,7 +109,8 @@ function fileItems(root: SyntaxNode): ParsedFile {
       qualifiedName: owner ? `${owner}.${name}` : name,
       source: text,
       ...signatureOf(node, text),
-      fingerprint: fingerprint(structuralTokens(node))
+      fingerprint: fingerprint(structuralTokens(node)),
+      line: node.startPosition.row
     });
   };
   for (const { node, name, qualifiedName } of goFunctionNodes(root)) {
@@ -121,6 +124,7 @@ function fileItems(root: SyntaxNode): ParsedFile {
       source: node.text,
       ...signatureOf(node, node.text),
       fingerprint: fingerprint(structuralTokens(node)),
+      line: node.startPosition.row,
       resultTypes: resultTypes(node)
     });
   }

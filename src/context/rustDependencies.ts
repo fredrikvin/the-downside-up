@@ -31,6 +31,8 @@ export interface RustItem {
   readonly signature: string;
   readonly fingerprint: string;
   readonly signatureFingerprint: string;
+  /** Zero-based line where the item itself (not its attributes) starts. */
+  readonly line: number;
 }
 
 export interface RustDependency {
@@ -312,7 +314,8 @@ function fileItems(root: SyntaxNode): RustItem[] {
         source: [...leading.map((attribute) => attribute.text), entry.text].join("\n"),
         signature,
         fingerprint: fingerprint([...leading, entry].map(rustStructuralTokens).join("")),
-        signatureFingerprint: fingerprint(signature.replace(/\s+/g, " "))
+        signatureFingerprint: fingerprint(signature.replace(/\s+/g, " ")),
+        line: entry.startPosition.row
       });
     }
   };

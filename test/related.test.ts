@@ -4,7 +4,7 @@ import { resolve } from "node:path";
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { inputsMatch } from "../src/cache/freshness";
 import { gatherInventory } from "../src/context/inventory";
-import { gatherFunctionContext } from "../src/context/related";
+import { findCalledFunctions, gatherFunctionContext } from "../src/context/related";
 import type { FunctionTarget } from "../src/core/types";
 import { initializeGoParserAt, listGoFunctions } from "../src/languages/go";
 import { initializeRustParserAt, listRustFunctions } from "../src/languages/rust";
@@ -176,5 +176,46 @@ describe("Go function context", () => {
 
     await edit("inventory/lookup.go", "book.Available && book.Title == title", "book.Title == title");
     expect(inputsMatch(original.inputs, (await goContext("checkout")).inputs)).toBe(false);
+  });
+});
+
+describe("called functions for hovers and prefetching", () => {
+  async function calledFrom(root: string, file: string, languageId: "rust" | "go", name: string) {
+    const path = resolve(root, file);
+    const text = await readFile(path, "utf8");
+    const document = { uri: Uri.file(path), languageId, version: 1, getText: () => text } as unknown as import("vscode").TextDocument;
+    const entries = languageId === "rust" ? await listRustFunctions(document) : await listGoFunctions(document);
+    const entry = entries.find((candidate) => candidate.name === name)!;
+    const target = {
+      uri: document.uri,
+      range: new Range(new Position(entry.startLine, 0), new Position(entry.endLine, 1)),
+      selection: new Range(new Position(entry.startLine, 0), new Position(entry.startLine, 1)),
+      languageId,
+      name,
+      qualifiedName: entry.qualifiedName,
+      signature: entry.signature,
+      source: entry.source,
+      symbolId: `symbol-${name}`,
+      structuralFingerprint: entry.fingerprint,
+      analysis: `${languageId}-tree-sitter`
+    } as unknown as FunctionTarget;
+    return (await findCalledFunctions(target, document, await gatherInventory(root)))
+      .map((called) => `${called.path}:${called.line} ${called.qualifiedName}`);
+  }
+
+  it("lists Rust calls in other files and the same file with their lines", async () => {
+    expect(await calledFrom(root, "src/main.rs", "rust", "main")).toEqual([
+      "src/inventory.rs:12 Catalog::add",
+      "src/main.rs:19 checkout"
+    ]);
+  });
+
+  it("lists Go calls across packages in order of first use", async () => {
+    const goRoot = resolve("fixtures/go-app");
+    expect(await calledFrom(goRoot, "main.go", "go", "checkout")).toEqual([
+      "storage/storage.go:22 Persist",
+      "inventory/lookup.go:3 Catalog.FindAvailable",
+      "inventory/lookup.go:13 Catalog.MarkUnavailable"
+    ]);
   });
 });

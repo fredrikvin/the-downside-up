@@ -22,8 +22,8 @@ contract and project-specific constraints.
 
 - Preserve explicit-request-only generation. File opening, cursor movement, and
   source edits must not initiate provider requests. Local outlines and
-  cache-only lookups (after selecting function text or when the preview shows
-  a file) are allowed; cache misses wait for an explicit Explain action. The
+  cache-only lookups (after selecting function text, when the preview shows
+  a file, or on hover) are allowed; cache misses wait for an explicit Explain action. The
   only exception is the opt-in, user-level `downsideUp.prefetch.*` setting,
   which never prompts and uses only consent already given.
 - Keep repository scans bounded; honor Git ignore rules, VS Code exclusions,

@@ -49,7 +49,13 @@ is off screen) and spreads outward, re-evaluating the order after every
 request, so the reader's position acts like a priority. `downsideUp.prefetch.window`
 (default 10, `0` for every function) limits it to that many functions nearest
 the reader; moving through the file moves the window and fetches newly
-nearby functions. Prefetching starts after saved explanations are marked
+nearby functions. For Rust and Go, `downsideUp.prefetch.dependencies`
+(default 3, `0` for none) adds the functions and methods in other files that
+the function nearest the reader calls: among its first that many calls in
+order of use, the ones without an explanation are fetched right after that
+function and before the rest of the window. Calls that already have an
+explanation count toward the number, so at most that many are considered per
+function read. Prefetching starts after saved explanations are marked
 ready, runs one request at a time after any explicit request, keeps sections
 collapsed, and does not regenerate outdated, failed, or cancelled
 explanations or functions added by later edits. Switching files drops
@@ -60,6 +66,14 @@ trusted workspace and only after code sharing was approved for the repository
 and model by an explicit explanation; it never asks for approval itself and
 shows a notice when it is waiting for one. Prefetching uses the provider's
 usage limits or billing for every function it explains.
+
+Hovering a call to a Rust or Go function inside another function shows the
+purpose from that function's current saved explanation, found with the same
+local dependency resolution as explanation context. The hover reads only the
+local cache (after the usual freshness check), never generates, renders
+generated text as plain text, and can be turned off with
+`downsideUp.hover.savedExplanations`. Like the rest of the extension it is
+available once a Downside Up command has activated it.
 
 The core is language-neutral. Rust and Go function discovery and source
 fingerprinting use bundled Tree-sitter WASM grammars, so neither needs a
@@ -236,7 +250,8 @@ API key using **Downside Up: Set OpenAI API Key**. Then explicitly accept the
 per-repository sharing prompt.
 
 The deterministic unit suite covers cache reuse across restart, batched
-saved-explanation lookup, prefetch ordering and windows, Rust and Go dependency resolution and their
+saved-explanation lookup, prefetch ordering and windows, called-function
+lists for hovers and prefetching, Rust and Go dependency resolution and their
 depth-1 freshness and signature-only budget, Go method naming, source and
 context invalidation, unrelated edits, overview content-version preservation,
 branch changes, in-flight edits, cancellation, clear-cache fencing, provider
@@ -248,7 +263,9 @@ same-named Rust methods in different `impl` blocks, document-ordered outlines,
 explanation commands, preview creation, selection changes during an in-flight
 request, saved explanations listed as ready after closing and reopening the
 preview, prefetching that starts at the cursor, stays within its window, and
-follows the cursor, and unsupported plaintext discovery. Each run uses a fresh temporary
+follows the cursor, prefetching of a called function in another package,
+saved-explanation hovers that appear only when an explanation is saved and
+never generate, and unsupported plaintext discovery. Each run uses a fresh temporary
 VS Code profile so earlier runs' windows are not restored.
 Local description tests cover Rust items (imports, modules, functions and
 methods with receivers, structs, enums, traits, impls, constants, statics,
