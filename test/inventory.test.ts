@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { gatherInventory } from "../src/context/inventory";
+import { gatherInventory, sharingExclusion } from "../src/context/inventory";
 import { workspace } from "./vscode";
 
 let root: string;
@@ -90,6 +90,32 @@ describe("bounded repository inventory", () => {
     expect(getText).toHaveBeenCalled();
     expect(included.files.find((entry) => entry.relativePath === "src/main.js")?.content)
       .toContain("unsaved");
+  });
+
+  it("explains why a single file must not be shared, using the scanner's rules", async () => {
+    await mkdir(resolve(root, "src/ignored"), { recursive: true });
+    await mkdir(resolve(root, "lib/nested"), { recursive: true });
+    await writeFile(resolve(root, "src/ignored/code.js"), "ignored by a directory rule");
+    await writeFile(resolve(root, "lib/nested/.copilotignore"), "internal.js\n");
+    await writeFile(resolve(root, "lib/nested/internal.js"), "excluded by a nested rule");
+    await writeFile(resolve(root, "lib/nested/public.js"), "shared");
+    const reason = (path: string) => sharingExclusion(root, resolve(root, path));
+
+    expect(await reason("src/main.js")).toBeUndefined();
+    expect(await reason("lib/nested/public.js")).toBeUndefined();
+    expect(await reason("src/private.js")).toContain("secret");
+    await writeFile(resolve(root, ".copilotignore"), "private.js\nconfidential/\n");
+    await mkdir(resolve(root, "confidential"), { recursive: true });
+    await writeFile(resolve(root, "confidential/plan.js"), "excluded by the root rule");
+    expect(await reason("confidential/plan.js")).toContain(".copilotignore");
+    expect(await reason("src/ignored/code.js")).toContain(".gitignore");
+    expect(await reason("lib/nested/internal.js")).toContain(".copilotignore");
+    expect(await reason("vendor/library.js")).toContain("vendored");
+    expect(await reason(".hidden/secret.js")).toContain("hidden");
+    expect(await reason("credentials.pem")).toContain("secret");
+
+    workspace.__setConfiguration("files.exclude", { "**/main.js": true });
+    expect(await reason("src/main.js")).toContain("files.exclude");
   });
 
   it("never follows a symlink outside the repository root", async () => {

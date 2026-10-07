@@ -90,6 +90,25 @@ source to the OpenAI Responses API; `store:false` does not guarantee zero
 provider-side retention. See `docs/prototype.md` for data handling, cache
 freshness, limits, and known limitations.
 
+### Content exclusion and enterprise policies
+
+The extension never explains, prefetches, or sends as context any file that
+is excluded by `.gitignore` or `.copilotignore` (at any folder level), by VS
+Code's `files.exclude` or `search.exclude`, by being in a hidden, dependency,
+build, or vendored folder, or by having a secret-like or generated name.
+Explaining a function in such a file stops with the reason before anything is
+sent, and the preview notes it; local descriptions are still shown.
+
+GitHub Copilot's content exclusion, which organization and repository
+administrators configure on GitHub, is **not** applied to this extension's
+requests, even when the model is a Copilot model. GitHub enforces those rules
+in Copilot's own features; this extension builds its prompts itself and sends
+them through VS Code's Language Model API, so Copilot cannot tell which files
+the text came from. To apply your organization's rules, mirror the excluded
+paths into `.copilotignore` files in each repository, using the same path
+patterns. With an OpenAI API key, no Copilot policy applies at all; check that
+your organization allows sending source code to OpenAI before using it.
+
 ### Prefetching (optional)
 
 By default, explanations are generated only when you ask for one. To have them

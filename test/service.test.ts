@@ -16,11 +16,13 @@ const harness = vi.hoisted(() => ({
   primedPaths: ["README.md"],
   source: "export function checkout(catalog, title) { return catalog.find(title); }",
   gatherInventory: undefined as unknown as (...args: unknown[]) => unknown,
-  gatherFunctionContext: undefined as unknown as (...args: unknown[]) => unknown
+  gatherFunctionContext: undefined as unknown as (...args: unknown[]) => unknown,
+  exclusion: undefined as string | undefined
 }));
 
 vi.mock("../src/context/inventory", () => ({
-  gatherInventory: (...args: unknown[]) => harness.gatherInventory(...args)
+  gatherInventory: (...args: unknown[]) => harness.gatherInventory(...args),
+  sharingExclusion: async () => harness.exclusion
 }));
 vi.mock("../src/context/related", () => ({
   gatherFunctionContext: (...args: unknown[]) => harness.gatherFunctionContext(...args)
@@ -84,6 +86,7 @@ function setHarness(): void {
   harness.unrelatedHash = "unrelated-v1";
   harness.gitHeadHash = "head-main";
   harness.primedPaths = ["README.md"];
+  harness.exclusion = undefined;
   harness.source = "export function checkout(catalog, title) { return catalog.find(title); }";
   harness.gatherInventory = (...args: unknown[]) =>
     makeInventory(args[0] as string, args[1] as Record<string, string> | undefined);
@@ -369,6 +372,16 @@ describe("ExplanationService", () => {
     await expect(service.explain(root, target(), fakeDocument)).rejects.toThrow(/not valid JSON/i);
     provider.failure = "refusal";
     await expect(service.explain(root, target(), fakeDocument)).rejects.toThrow(/refused/i);
+  });
+
+  it("refuses to explain a function in an excluded file before any provider request", async () => {
+    const provider = new MockProvider();
+    const service = createService(new MemoryRepositoryCacheStore(), provider);
+    harness.exclusion = "a .gitignore or .copilotignore file excludes it";
+    await expect(service.explain(root, target(), fakeDocument)).rejects.toThrow(
+      "checkout.js is excluded from AI explanations because a .gitignore or .copilotignore file excludes it. Nothing was sent"
+    );
+    expect(provider.requests).toBe(0);
   });
 
   it("never requests external code after consent is declined", async () => {

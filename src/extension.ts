@@ -6,7 +6,7 @@ import {
   type ExplanationResult,
   type ProviderDescriptor
 } from "./controller";
-import { findRepositoryRoot, gatherInventory, type RepositoryInventory } from "./context/inventory";
+import { findRepositoryRoot, gatherInventory, sharingExclusion, type RepositoryInventory } from "./context/inventory";
 import { findCalledFunctions, type CalledFunction } from "./context/related";
 import { buildFileOverview, type FileOverview, type OutlineEntry } from "./context/fileOverview";
 import type { FunctionTarget, RepositoryOverview } from "./core/types";
@@ -46,6 +46,8 @@ interface PreviewFile {
   readonly document: vscode.TextDocument;
   readonly root: string;
   readonly overview: FileOverview;
+  /** Why the file must not be shared with a provider, if it must not. */
+  readonly exclusion?: string;
 }
 
 type StoredView = Omit<ExplanationView, "entryId" | "expanded">;
@@ -495,9 +497,10 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
   const showPreview = async (document: vscode.TextDocument, root: string): Promise<void> => {
     const epoch = ++previewEpoch;
     const overview = await buildFileOverview(document, filePath(root, document.uri));
+    const exclusion = await sharingExclusion(root, document.uri.fsPath).catch(() => undefined);
     if (epoch !== previewEpoch || !panel) return;
     const fileChanged = !preview || !sameUri(preview.document.uri, document.uri);
-    preview = { document, root, overview };
+    preview = { document, root, overview, ...(exclusion ? { exclusion } : {}) };
     panel.panel.title = `Downside Up: ${overview.fileName}`;
     const handlers = new Map<string, () => Promise<void>>();
     for (const entry of overview.entries) {
@@ -506,7 +509,9 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     }
     panel.setFileReferenceHandlers(handlers);
     if (fileChanged) {
-      notice = undefined;
+      notice = exclusion
+        ? { tone: "info", text: `AI explanations are off for this file because ${exclusion}. Local descriptions are still shown.` }
+        : undefined;
       // Queued prefetches of the previous file are dropped; a request already sent finishes and is saved.
       stopPrefetch();
       if (previewStates().some(({ state }) => state.result)) scheduleRecheck(filePath(root, document.uri));
@@ -1033,7 +1038,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
   /** Starts prefetching for the shown file when the user setting allows it. */
   const startPrefetch = (document: vscode.TextDocument, root: string): void => {
     stopPrefetch();
-    if (!panel || !preview || !sameUri(preview.document.uri, document.uri) || !prefetchSettings().enabled) return;
+    if (!panel || !preview || !sameUri(preview.document.uri, document.uri) || preview.exclusion || !prefetchSettings().enabled) return;
     const names = new Set(preview.overview.entries.filter((entry) => entry.explainable).map((entry) => entry.qualifiedName));
     if (names.size === 0) return;
     const session: PrefetchSession = {
@@ -1510,14 +1515,15 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     allExplanations: () => [...functions.values()].map((state) => ({
       functionName: state.view.functionName,
       status: state.view.status,
-      path: filePath(state.value.root, state.value.document.uri)
+      path: filePath(state.value.root, state.value.document.uri),
+      ...(state.view.error ? { error: state.view.error } : {})
     }))
   };
 }
 
 export interface DownsideUpTestApi {
   previewExplanations(): Array<{ functionName: string; status: string; expanded: boolean }>;
-  allExplanations(): Array<{ functionName: string; status: string; path: string }>;
+  allExplanations(): Array<{ functionName: string; status: string; path: string; error?: string }>;
 }
 
 export function deactivate(): void {}

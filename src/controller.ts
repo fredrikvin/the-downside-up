@@ -1,4 +1,4 @@
-import { relative, sep } from "node:path";
+import { basename, relative, sep } from "node:path";
 import type * as vscode from "vscode";
 import { inputsMatch, explanationCacheKey } from "./cache/freshness";
 import type { RepositoryCacheStore } from "./cache/store";
@@ -13,7 +13,7 @@ import type {
   RepositoryOverview,
   Usage
 } from "./core/types";
-import { gatherInventory, type RepositoryInventory } from "./context/inventory";
+import { gatherInventory, sharingExclusion, type RepositoryInventory } from "./context/inventory";
 import {
   gatherFunctionContext,
   type FunctionContext
@@ -266,6 +266,12 @@ export class ExplanationService {
     progress("checking", "Checking source, repository context, and local cache.");
     assertNotCancelled(signal);
     if (this.fence(root) !== startingFence) throw new Error("The repository cache was cleared.");
+    const exclusion = await sharingExclusion(root, target.uri.fsPath);
+    if (exclusion) {
+      throw new Error(
+        `${basename(target.uri.fsPath)} is excluded from AI explanations because ${exclusion}. Nothing was sent; its local description is still shown.`
+      );
+    }
 
     let cache = await this.options.store.read(root);
     const baseInventory = await gatherInventory(root, cache.overview?.checkedSnapshot);

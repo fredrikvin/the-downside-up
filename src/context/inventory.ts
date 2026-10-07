@@ -359,3 +359,31 @@ export function byteHash(text: string): string {
 export function isEligibleRelativePath(root: string, path: string): boolean {
   return isWithin(resolve(root), resolve(root, path)) && !isSecretOrGenerated(path) && eligiblePath(path);
 }
+
+/**
+ * Why a file must not be shared with a provider, or undefined when it may be.
+ * Applies the scanner's rules to one file: Git and Copilot ignore files at
+ * every level, VS Code file and search exclusions, hidden, dependency, and
+ * build folders, secret-like or generated names, and symlinks leaving the
+ * repository. GitHub's server-side Copilot content exclusion is not visible
+ * here; mirror it into `.copilotignore` to apply it.
+ */
+export async function sharingExclusion(rootPath: string, filePath: string): Promise<string | undefined> {
+  let root: string;
+  let file: string;
+  try {
+    root = await realpath(rootPath);
+    file = await realpath(filePath);
+  } catch {
+    root = resolve(rootPath);
+    file = resolve(filePath);
+  }
+  if (!isWithin(root, file)) return "it is outside the repository";
+  const rel = canonicalRelative(relative(root, file));
+  const folders = rel.split("/").slice(0, -1);
+  if (folders.some((folder) => ALWAYS_SKIP_DIRS.has(folder))) return "it is in a dependency, build, or vendored folder";
+  if (isSecretOrGenerated(rel)) return "it is hidden, secret-like, or generated";
+  if (isEditorExcluded(root, rel)) return "VS Code's files.exclude or search.exclude setting excludes it";
+  if (await isIgnored(root, rel)) return "a .gitignore or .copilotignore file excludes it";
+  return undefined;
+}

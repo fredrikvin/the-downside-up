@@ -127,6 +127,12 @@ symbol outline. Excessive complete prompts fail before source is sent.
 The scanner honors `.gitignore`, `.copilotignore`, and VS Code file/search
 exclusions. It avoids symlinks, hidden trees, common generated/dependency/vendor
 directories, secret-like names, credentials, binaries, and lock-binary files.
+The same rules apply to the file that holds the function being explained:
+before any scanning or provider request, an explanation (explicit or
+prefetched) of a function in an excluded file stops with the reason, nothing
+is sent, and the preview shows a notice for that file and never prefetches
+it. Its local description and any explanation saved before it was excluded
+remain local and visible.
 Open buffers take precedence over disk contents. Repository text is untrusted
 data, not instructions to the extension. The current Git branch and commit are
 also fingerprinted when Git metadata is available; branch changes enter the
@@ -171,6 +177,11 @@ repository overview, and bounded priming/review input as needed. Changing
 provider or model requires renewed consent. External sharing is disabled in
 untrusted workspaces. For OpenAI, `store:false` is not a guarantee of zero
 provider-side retention; review the provider's current data controls before use.
+GitHub Copilot content exclusion configured by administrators on GitHub is
+not applied to this extension's requests, even with Copilot models: GitHub
+enforces it in Copilot's own features, and requests through the VS Code
+Language Model API carry plain text without file identity. Organizations
+that rely on it should mirror the excluded paths into `.copilotignore`.
 For VS Code language models, data handling follows the model provider's terms
 (for Copilot, the user's or organization's Copilot plan and policies). No
 provider request occurs without the user requesting an explanation or
@@ -256,7 +267,8 @@ depth-1 freshness and signature-only budget, Go method naming, source and
 context invalidation, unrelated edits, overview content-version preservation,
 branch changes, in-flight edits, cancellation, clear-cache fencing, provider
 failures, VS Code language-model prompt/validation/error/cancellation handling,
-ignored files, unsaved buffers, and parser fingerprints. Extension
+ignored files, per-file sharing exclusion reasons and refusal before any
+provider request, unsaved buffers, and parser fingerprints. Extension
 host tests exercise Rust, Go, and JavaScript discovery (Go without a language
 server), distinct identities for
 same-named Rust methods in different `impl` blocks, document-ordered outlines,
@@ -265,7 +277,8 @@ request, saved explanations listed as ready after closing and reopening the
 preview, prefetching that starts at the cursor, stays within its window, and
 follows the cursor, prefetching of a called function in another package,
 saved-explanation hovers that appear only when an explanation is saved and
-never generate, and unsupported plaintext discovery. Each run uses a fresh temporary
+never generate, refusal to explain a function in a `.copilotignore`d file, and
+unsupported plaintext discovery. Each run uses a fresh temporary
 VS Code profile so earlier runs' windows are not restored.
 Local description tests cover Rust items (imports, modules, functions and
 methods with receivers, structs, enums, traits, impls, constants, statics,
@@ -280,6 +293,9 @@ webview's content-security policy.
 
 ## Limitations and verification status
 
+- GitHub Copilot's server-side content exclusion is not visible to the
+  extension and is not applied to its requests; only `.gitignore`,
+  `.copilotignore`, VS Code exclusions, and the built-in path rules are.
 - Rust macros, procedural macros, and conditional compilation may hide or alter
   syntax and relationships. Tree-sitter is not a Rust compiler.
 - Cross-file Rust tracking stops at depth 1 and resolves names without type

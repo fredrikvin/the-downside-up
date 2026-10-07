@@ -262,6 +262,18 @@ export async function run(): Promise<void> {
   await downsideUpSettings.update("prefetch.dependencies", undefined, vscode.ConfigurationTarget.Global);
   console.log("Downside Up integration tests: other-file prefetching and saved-explanation hovers work.");
 
+  const legacyDocument = await vscode.workspace.openTextDocument(vscode.Uri.file(resolve(goRoot, "legacy/legacy.go")));
+  const legacyEditor = await vscode.window.showTextDocument(legacyDocument, vscode.ViewColumn.One);
+  const rateCursor = legacyDocument.positionAt(legacyDocument.getText().indexOf("func Rate") + 6);
+  legacyEditor.selection = new vscode.Selection(rateCursor, rateCursor);
+  await vscode.commands.executeCommand("downsideUp.explainFunction");
+  const refused = await waitFor(
+    async () => api.allExplanations().find((view) => view.functionName === "Rate" && view.status === "failed"),
+    "an explanation request for a .copilotignore'd file to be refused"
+  );
+  assert.match(refused.error ?? "", /excluded from AI explanations because a \.gitignore or \.copilotignore file excludes it/);
+  console.log("Downside Up integration tests: excluded files are never explained.");
+
   const unsupported = await vscode.workspace.openTextDocument({
     language: "plaintext",
     content: "an arbitrary block"
