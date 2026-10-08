@@ -1,11 +1,13 @@
 # The Downside Up
 
 The Downside Up is a prototype VS Code extension that shows a document-style
-Downside Up preview beside your source, like the Markdown preview. It describes
-each import, function, type, and variable in plain language at the same
-position as in the file, and adds an AI explanation under a function when you
-ask for one. Descriptions are built locally; explanations are generated only
-when requested, and mock mode is the default and makes no external requests.
+Downside Up preview beside your source, like the Markdown preview. It lists the
+file's functions at the same position as in the file and adds a plain-language
+AI explanation under a function when you ask for one, written for someone who
+wants to know what the code does without knowing the language. More local
+detail (imports, types, values, and so on) can be turned on in settings.
+Explanations are generated only when requested (or prefetched, if you turn
+that on), and mock mode is the default and makes no external requests.
 
 ## Run locally
 
@@ -22,28 +24,37 @@ Open this project in VS Code and press **F5** to launch an Extension
 Development Host. In the host, open a source file and run **Downside Up: Open
 Preview to the Side** (or use the preview button in the editor title bar).
 
-- **Document preview.** The preview reads like rendered documentation: each
-  import, module, function, type, constant, local variable, and standalone
-  comment gets a plain-language sentence in source order, with doc comments
-  and attributes alongside. Nothing is regrouped. These descriptions are built
-  locally from the code and are not AI-generated. The preview follows the
-  active editor and updates as you edit.
+- **Document preview.** By default the preview is concise: the file name, a
+  one-sentence AI summary of the file once one of its functions has been
+  explained, and a heading per function in source order. **Downside Up ›
+  Preview: Include** (`downsideUp.preview.include`) adds imports, types,
+  values, locals, comments, modules, and one-line signature descriptions;
+  these are built locally from the code and are not AI-generated. The preview
+  follows the active editor and updates as you edit.
 - **Scroll sync.** Scrolling the editor scrolls the preview to the matching
   position and vice versa, and the item at the cursor is highlighted.
   Double-click an item to jump to its source.
-- **AI explanations.** Each function has a collapsed **AI explanation** section.
+- **AI explanations.** Each function has an **AI explanation** section.
   Open it (or click the function's name) to show its saved explanation, or to
   generate one if none is current; a spinner shows while it loads, and the
-  chevron collapses it again. Several can be open at once, and up to three
+  chevron collapses it again. An explanation gives the function a short
+  title (such as "Fetch a wearer"), says what it is for, and lists its inputs,
+  its result, the main steps in order, and extras such as cleanup only when
+  relevant. **More detail** adds where it fits, edge cases, language notes,
+  and related code; **Explanations: Show Details**
+  (`downsideUp.explanations.showDetails`) opens it by default. Current
+  explanations are shown open, so the preview reads like a document, unless
+  you collapse them. Several can be open at once, and up to three
   generations run at the same time (see **Max Concurrent Requests** below).
   Each explanation links to the related code the extension found.
   For Rust and Go, the explanation also uses the types, functions, and methods
   the function uses, including from other files and packages, and is marked
   outdated when any of them change. Rust and Go files are described, and their
   functions found, with bundled parsers, so no language server is needed.
-  Functions with a current saved explanation are marked **ready** whenever the
-  preview shows their file, including after reopening the preview or
-  restarting VS Code; this is a local cache check only.
+  Current saved explanations appear whenever the preview shows their file,
+  including after reopening the preview or restarting VS Code; this is a
+  local cache check only. The file summary is generated with the first new
+  explanation in a file and sends that file's text (up to 24 KiB).
   Selecting text inside a function
   in the editor opens its section only when a saved explanation exists.
   Selecting never starts generation by itself.

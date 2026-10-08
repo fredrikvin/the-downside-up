@@ -396,6 +396,32 @@ describe("ExplanationService", () => {
     await expect(service.explain(root, target(), fakeDocument)).rejects.toThrow(/refused/i);
   });
 
+  it("summarizes a file once, reuses it while current, and marks it outdated after edits", async () => {
+    const provider = new MockProvider();
+    const service = createService(new MemoryRepositoryCacheStore(), provider);
+    expect(await service.findFileSummary(root, fakeDocument)).toBeUndefined();
+
+    const first = await service.summarizeFile(root, fakeDocument);
+    expect(first?.summary).toContain("src/checkout.js");
+    expect(provider.requests).toBe(1);
+    expect(await service.findFileSummary(root, fakeDocument)).toEqual({ summary: first!.summary, current: true });
+
+    await service.summarizeFile(root, fakeDocument);
+    expect(provider.requests).toBe(1);
+
+    harness.source = "export  function checkout(catalog, title)\n{ return catalog.find(title); }";
+    expect((await service.findFileSummary(root, fakeDocument))?.current).toBe(true);
+    harness.source = "export function checkout(catalog, title) { return catalog.lookup(title); }";
+    expect((await service.findFileSummary(root, fakeDocument))?.current).toBe(false);
+    await service.summarizeFile(root, fakeDocument);
+    expect(provider.requests).toBe(2);
+
+    harness.exclusion = "a .gitignore or .copilotignore file excludes it";
+    harness.source = "export const changed = true;";
+    expect(await service.summarizeFile(root, fakeDocument)).toBeUndefined();
+    expect(provider.requests).toBe(2);
+  });
+
   it("refuses to explain a function in an excluded file before any provider request", async () => {
     const provider = new MockProvider();
     const service = createService(new MemoryRepositoryCacheStore(), provider);

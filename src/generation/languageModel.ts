@@ -1,18 +1,27 @@
 import * as vscode from "vscode";
 import { estimateTokens } from "../core/fingerprint";
 import type {
+  FileSummary,
   FunctionExplanation,
   GenerationResult,
   RepositoryOverview
 } from "../core/types";
-import { explanationPrompt, overviewPrompt, reviewPrompt } from "./prompts";
+import { explanationPrompt, fileSummaryPrompt, overviewPrompt, reviewPrompt } from "./prompts";
 import type {
   ExplanationPromptInput,
+  FileSummaryPromptInput,
   GenerationProvider,
   OverviewReviewPromptInput,
   RepositoryPromptInput
 } from "./provider";
-import { explanationSchema, overviewSchema, parseExplanation, parseOverview } from "./schema";
+import {
+  explanationSchema,
+  fileSummarySchema,
+  overviewSchema,
+  parseExplanation,
+  parseFileSummary,
+  parseOverview
+} from "./schema";
 
 const REQUEST_TIMEOUT_MS = 90_000;
 const MAX_OUTPUT_CHARACTERS = 64 * 1024;
@@ -113,6 +122,14 @@ export class LanguageModelProvider implements GenerationProvider {
   ): Promise<GenerationResult<FunctionExplanation>> {
     const [system, user] = explanationPrompt(input);
     return this.request(system, user, explanationSchema, parseExplanation, signal);
+  }
+
+  async summarizeFile(
+    input: FileSummaryPromptInput,
+    signal?: AbortSignal
+  ): Promise<GenerationResult<FileSummary>> {
+    const [system, user] = fileSummaryPrompt(input);
+    return this.request(system, user, fileSummarySchema, parseFileSummary, signal);
   }
 
   private async countTokens(

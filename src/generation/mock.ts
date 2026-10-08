@@ -1,11 +1,13 @@
 import { estimateTokens } from "../core/fingerprint";
 import type {
+  FileSummary,
   FunctionExplanation,
   GenerationResult,
   RepositoryOverview
 } from "../core/types";
 import type {
   ExplanationPromptInput,
+  FileSummaryPromptInput,
   GenerationProvider,
   OverviewReviewPromptInput,
   RepositoryPromptInput
@@ -90,14 +92,24 @@ export class MockProvider implements GenerationProvider {
     signal?: AbortSignal
   ): Promise<GenerationResult<FunctionExplanation>> {
     const value: FunctionExplanation = {
-      purpose: `Mock mode selected ${input.functionName}; source semantics have not been interpreted.`,
-      role: "The role in the application is not inferred in mock mode.",
-      inputsOutputsEffects: `Signature: ${input.signature}. Mock mode does not infer types or side effects.`,
-      steps: "Mock mode does not explain behavior. Configure OpenAI for a grounded explanation.",
-      errorsAndEdges: "Error paths and edge cases are not analyzed in mock mode.",
-      languageConcepts: `${input.languageId} concepts are not interpreted in mock mode.`,
+      title: `Mock explanation of ${input.functionName}`,
+      purpose: `Mock mode selected ${input.functionName}; what it does has not been interpreted.`,
+      inputs: [],
+      result: "Mock mode does not describe results.",
+      steps: [{ title: "Not interpreted", detail: "Mock mode does not explain behavior. Choose a language model for a real explanation." }],
+      notes: [],
+      role: "Mock mode does not infer where this fits in the application.",
+      edgeCases: "Mock mode does not analyze edge cases.",
+      languageNotes: `Mock mode does not explain ${input.languageId} features.`,
       limitations: ["Deterministic mock placeholder; not a real code explanation."]
     };
     return this.respond(input.source + input.relatedContext, value, signal);
+  }
+
+  summarizeFile(
+    input: FileSummaryPromptInput,
+    signal?: AbortSignal
+  ): Promise<GenerationResult<FileSummary>> {
+    return this.respond(input.source, { summary: `Mock summary of ${input.path}; the file has not been interpreted.` }, signal);
   }
 }

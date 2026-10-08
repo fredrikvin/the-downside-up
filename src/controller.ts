@@ -2,9 +2,10 @@ import { basename, relative, sep } from "node:path";
 import type * as vscode from "vscode";
 import { inputsMatch, explanationCacheKey } from "./cache/freshness";
 import type { RepositoryCacheStore } from "./cache/store";
-import { fingerprint } from "./core/fingerprint";
+import { cacheKey, fingerprint } from "./core/fingerprint";
 import type {
   ExplanationRecord,
+  FileSummaryRecord,
   FunctionExplanation,
   FunctionTarget,
   GenerationResult,
@@ -20,13 +21,16 @@ import {
 } from "./context/related";
 import { addLocalSymbolOutline } from "./context/symbolIndex";
 import {
+  EXPLANATION_PROMPT_VERSION,
   explanationPrompt,
+  fileSummaryPrompt,
   overviewPrompt,
   PROMPT_VERSION,
   reviewPrompt
 } from "./generation/prompts";
 import type {
   ExplanationPromptInput,
+  FileSummaryPromptInput,
   GenerationProvider,
   OverviewReviewPromptInput,
   RepositoryPromptInput
@@ -75,6 +79,16 @@ export interface ExplanationServiceOptions {
 
 const MAX_PRIMING_BYTES = 96 * 1024;
 const MAX_EXPLANATION_BYTES = 48 * 1024;
+const MAX_FILE_SUMMARY_SOURCE_BYTES = 24 * 1024;
+
+function fileSummaryKey(path: string, descriptor: ProviderDescriptor): string {
+  return cacheKey([path, descriptor.kind, descriptor.modelId, EXPLANATION_PROMPT_VERSION]);
+}
+
+/** Whitespace-insensitive, so reformatting alone does not outdate a file summary. */
+function fileTextFingerprint(text: string): string {
+  return fingerprint(text.replace(/\s+/g, " ").trim());
+}
 const EXPLANATION_SETTINGS = "experienced-programmer-v1";
 
 function assertNotCancelled(signal?: AbortSignal): void {
@@ -194,10 +208,10 @@ export class ExplanationService {
         descriptor.modelId,
         overview.contentVersion,
         settingsHash,
-        PROMPT_VERSION
+        EXPLANATION_PROMPT_VERSION
       )];
       return cached &&
-        cached.promptVersion === PROMPT_VERSION &&
+        cached.promptVersion === EXPLANATION_PROMPT_VERSION &&
         cached.explanationConfig === settingsHash &&
         cached.overviewVersion === overview.contentVersion
         ? [{ target, cached }]
@@ -404,12 +418,12 @@ export class ExplanationService {
       descriptor.modelId,
       overviewRecord.contentVersion,
       settingsHash,
-      PROMPT_VERSION
+      EXPLANATION_PROMPT_VERSION
     );
     const cached = cache.explanations[key];
     if (
       cached &&
-      cached.promptVersion === PROMPT_VERSION &&
+      cached.promptVersion === EXPLANATION_PROMPT_VERSION &&
       cached.explanationConfig === settingsHash &&
       cached.overviewVersion === overviewRecord.contentVersion &&
       inputsMatch(cached.inputs, context.inputs)
@@ -475,7 +489,7 @@ export class ExplanationService {
       inputs: context.inputs,
       overviewVersion: overviewRecord.contentVersion,
       explanationConfig: settingsHash,
-      promptVersion: PROMPT_VERSION,
+      promptVersion: EXPLANATION_PROMPT_VERSION,
       provider: descriptor.kind,
       savedAt: Date.now()
     };
@@ -584,6 +598,76 @@ export class ExplanationService {
       overview: overviewRecord
     }));
     return { overview: value, usage: result.usage };
+  }
+
+  /** Cache-only lookup of the AI summary of a file; `current` is false when the file changed since. */
+  async findFileSummary(
+    root: string,
+    document: vscode.TextDocument
+  ): Promise<{ summary: string; current: boolean } | undefined> {
+    const descriptor = this.options.describeProvider();
+    const path = relative(root, document.uri.fsPath).split(sep).join("/");
+    const record = (await this.options.store.read(root)).fileSummaries?.[fileSummaryKey(path, descriptor)];
+    if (!record) return undefined;
+    return { summary: record.summary, current: record.fingerprint === fileTextFingerprint(document.getText()) };
+  }
+
+  /**
+   * Generates a one-sentence summary of a file unless a current one is saved.
+   * Called only after a function in the file was explained, so code sharing
+   * for the repository and model is already approved. Excluded files and
+   * files that change during generation are never summarized or saved.
+   */
+  async summarizeFile(
+    root: string,
+    document: vscode.TextDocument,
+    signal?: AbortSignal
+  ): Promise<{ summary: string; usage?: Usage } | undefined> {
+    const startingFence = this.fence(root);
+    const descriptor = this.options.describeProvider();
+    if (await sharingExclusion(root, document.uri.fsPath)) return undefined;
+    const existing = await this.findFileSummary(root, document);
+    if (existing?.current) return { summary: existing.summary };
+    const text = document.getText();
+    const startingFingerprint = fileTextFingerprint(text);
+    const bytes = Buffer.from(text, "utf8");
+    const truncated = bytes.length > MAX_FILE_SUMMARY_SOURCE_BYTES;
+    const path = relative(root, document.uri.fsPath).split(sep).join("/");
+    const repositoryPurpose = (await this.options.store.read(root)).overview?.value.purpose;
+    const input: FileSummaryPromptInput = {
+      repositoryName: basename(root),
+      path,
+      languageId: document.languageId,
+      source: truncated ? bytes.subarray(0, MAX_FILE_SUMMARY_SOURCE_BYTES).toString("utf8") : text,
+      truncated,
+      ...(repositoryPurpose ? { repositoryPurpose } : {})
+    };
+    const [system, user] = fileSummaryPrompt(input);
+    const requestBytes = Buffer.byteLength(system + user, "utf8");
+    if (requestBytes > MAX_EXPLANATION_BYTES) return undefined;
+    assertNotCancelled(signal);
+    if (descriptor.kind !== "mock" && !(await this.options.authorizeExternalData(root, descriptor, requestBytes, signal))) {
+      throw new DOMException("External code sharing was not authorized.", "AbortError");
+    }
+    const generated = await (await this.options.createProvider(descriptor)).summarizeFile(input, signal);
+    assertNotCancelled(signal);
+    if (this.fence(root) !== startingFence || fileTextFingerprint(document.getText()) !== startingFingerprint) {
+      return undefined;
+    }
+    const record: FileSummaryRecord = {
+      path,
+      summary: generated.value.summary,
+      fingerprint: startingFingerprint,
+      provider: descriptor.kind,
+      model: descriptor.modelId,
+      promptVersion: EXPLANATION_PROMPT_VERSION,
+      savedAt: Date.now()
+    };
+    await this.options.store.update(root, (current) => this.fence(root) !== startingFence ? current : {
+      ...current,
+      fileSummaries: { ...current.fileSummaries, [fileSummaryKey(path, descriptor)]: record }
+    });
+    return { summary: record.summary, usage: generated.usage };
   }
 
   async clearCache(root: string): Promise<void> {

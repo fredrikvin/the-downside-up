@@ -1,13 +1,22 @@
 import type {
+  FileSummary,
   FunctionExplanation,
   GenerationResult,
   RepositoryOverview
 } from "../core/types";
 import { estimateTokens } from "../core/fingerprint";
-import { explanationSchema, overviewSchema, parseExplanation, parseOverview } from "./schema";
-import { explanationPrompt, overviewPrompt, reviewPrompt } from "./prompts";
+import {
+  explanationSchema,
+  fileSummarySchema,
+  overviewSchema,
+  parseExplanation,
+  parseFileSummary,
+  parseOverview
+} from "./schema";
+import { explanationPrompt, fileSummaryPrompt, overviewPrompt, reviewPrompt } from "./prompts";
 import type {
   ExplanationPromptInput,
+  FileSummaryPromptInput,
   GenerationProvider,
   OverviewReviewPromptInput,
   RepositoryPromptInput
@@ -54,6 +63,14 @@ export class OpenAIProvider implements GenerationProvider {
   ): Promise<GenerationResult<FunctionExplanation>> {
     const [system, user] = explanationPrompt(input);
     return this.request(system, user, "function_explanation", explanationSchema, parseExplanation, signal);
+  }
+
+  async summarizeFile(
+    input: FileSummaryPromptInput,
+    signal?: AbortSignal
+  ): Promise<GenerationResult<FileSummary>> {
+    const [system, user] = fileSummaryPrompt(input);
+    return this.request(system, user, "file_summary", fileSummarySchema, parseFileSummary, signal);
   }
 
   private async request<T>(

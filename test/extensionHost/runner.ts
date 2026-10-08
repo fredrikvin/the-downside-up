@@ -164,7 +164,19 @@ export async function run(): Promise<void> {
     const ready = views.filter((view) => view.status === "current").map((view) => view.functionName);
     return ready.includes("checkout") && ready.includes("describeCatalog") ? views : undefined;
   }, "saved explanations listed as ready after reopening the preview");
-  assert.ok(reopened.every((view) => !view.expanded), "Saved explanations are listed collapsed, not opened.");
+  assert.ok(
+    reopened.filter((view) => view.status === "current").every((view) => view.expanded),
+    "Current saved explanations open by default, like a document."
+  );
+  assert.deepEqual(
+    api.shownOutline().map((entry) => entry.kindLabel),
+    ["Function", "Function"],
+    "The concise preview lists only functions."
+  );
+  await waitFor(
+    async () => api.fileSummary()?.current ? true : undefined,
+    "the AI file summary made after explaining a function in the file"
+  );
   console.log("Downside Up integration tests: saved explanations listed after reopening the preview.");
 
   const goDocument = await vscode.workspace.openTextDocument(vscode.Uri.file(resolve(goRoot, "main.go")));
@@ -208,7 +220,7 @@ export async function run(): Promise<void> {
     async () => statusOf("Catalog.FindAvailable")?.status === "current" ? true : undefined,
     "the function nearest the cursor to be prefetched"
   );
-  assert.equal(statusOf("Catalog.FindAvailable")?.expanded, false, "Prefetched explanations stay collapsed.");
+  assert.equal(statusOf("Catalog.FindAvailable")?.expanded, true, "Prefetched explanations open when ready.");
   await new Promise((resolveWait) => setTimeout(resolveWait, 1_500));
   assert.equal(statusOf("Catalog.MarkUnavailable"), undefined, "Functions outside the prefetch window are not requested.");
   prefetchEditor.selection = new vscode.Selection(lineOf(") MarkUnavailable("), 0, lineOf(") MarkUnavailable("), 0);

@@ -1,4 +1,4 @@
-import type { FunctionExplanation, RepositoryOverview } from "../core/types";
+import type { FileSummary, FunctionExplanation, RepositoryOverview } from "../core/types";
 
 const string = { type: "string" };
 const stringArray = { type: "array", items: string };
@@ -29,26 +29,27 @@ export const overviewSchema = objectSchema(
   ]
 );
 
+const inputSchema = objectSchema({ label: string, name: string, description: string }, ["label", "name", "description"]);
+const stepSchema = objectSchema({ title: string, detail: string }, ["title", "detail"]);
+const noteSchema = objectSchema({ heading: string, text: string }, ["heading", "text"]);
+
 export const explanationSchema = objectSchema(
   {
+    title: string,
     purpose: string,
+    inputs: { type: "array", items: inputSchema },
+    result: string,
+    steps: { type: "array", items: stepSchema },
+    notes: { type: "array", items: noteSchema },
     role: string,
-    inputsOutputsEffects: string,
-    steps: string,
-    errorsAndEdges: string,
-    languageConcepts: string,
+    edgeCases: string,
+    languageNotes: string,
     limitations: stringArray
   },
-  [
-    "purpose",
-    "role",
-    "inputsOutputsEffects",
-    "steps",
-    "errorsAndEdges",
-    "languageConcepts",
-    "limitations"
-  ]
+  ["title", "purpose", "inputs", "result", "steps", "notes", "role", "edgeCases", "languageNotes", "limitations"]
 );
+
+export const fileSummarySchema = objectSchema({ summary: string }, ["summary"]);
 
 function record(value: unknown): Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -97,15 +98,44 @@ export function parseOverview(value: unknown): RepositoryOverview {
   return overview;
 }
 
+function readObjects<T>(
+  value: unknown,
+  label: string,
+  maxItems: number,
+  read: (item: Record<string, unknown>) => T
+): T[] {
+  if (!Array.isArray(value) || value.length > maxItems) {
+    throw new Error(`The provider response contains invalid ${label}.`);
+  }
+  return value.map((item) => read(record(item)));
+}
+
 export function parseExplanation(value: unknown): FunctionExplanation {
   const source = record(value);
   return {
+    title: readText(source, "title", 120),
     purpose: readText(source, "purpose", 2_000),
-    role: readText(source, "role"),
-    inputsOutputsEffects: readText(source, "inputsOutputsEffects"),
-    steps: readText(source, "steps"),
-    errorsAndEdges: readText(source, "errorsAndEdges"),
-    languageConcepts: readText(source, "languageConcepts"),
+    inputs: readObjects(source.inputs, "inputs", 20, (item) => ({
+      label: readText(item, "label", 120),
+      name: readText(item, "name", 200),
+      description: readText(item, "description", 1_000)
+    })),
+    result: readText(source, "result", 1_500),
+    steps: readObjects(source.steps, "steps", 15, (item) => ({
+      title: readText(item, "title", 160),
+      detail: readText(item, "detail", 1_500)
+    })),
+    notes: readObjects(source.notes, "notes", 6, (item) => ({
+      heading: readText(item, "heading", 80),
+      text: readText(item, "text", 1_500)
+    })),
+    role: readText(source, "role", 2_000),
+    edgeCases: readText(source, "edgeCases", 2_000),
+    languageNotes: readText(source, "languageNotes", 2_000),
     limitations: readStrings(source.limitations, "limitations")
   };
+}
+
+export function parseFileSummary(value: unknown): FileSummary {
+  return { summary: readText(record(value), "summary", 400).trim() };
 }

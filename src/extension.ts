@@ -21,6 +21,7 @@ import {
 import { formatUsage } from "./generation/provider";
 import { nextPrefetch, prefetchFocusLine } from "./presentation/prefetch";
 import { RequestScheduler, singleFlight } from "./presentation/requestScheduler";
+import { outlineInclude, visibleOutline } from "./presentation/outlineFilter";
 import { findGoFunction, initializeGoParser, isGoDocument } from "./languages/go";
 import { findRustFunction, initializeRustParser } from "./languages/rust";
 import { findFunctionWithEditorTools } from "./languages/vscodeSymbols";
@@ -79,6 +80,8 @@ interface FunctionAi {
   view: StoredView;
   result?: ExplanationResult;
   expanded: boolean;
+  /** Set when the reader collapsed the section, so it is not reopened automatically. */
+  collapsedByUser?: boolean;
   controller?: AbortController;
   /** Incremented to discard results of superseded lookups and generations. */
   epoch: number;
@@ -127,6 +130,9 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
   const prefetchSignals = new WeakSet<AbortSignal>();
   /** One code-sharing prompt per repository and model, shared by parallel requests. */
   const consentPrompts = new Map<string, Promise<boolean>>();
+  /** The AI summary of the previewed file, if one is saved. */
+  let fileSummary: { uri: string; text: string; current: boolean } | undefined;
+  const summaryRuns = new Map<string, Promise<void>>();
   let selectionTimer: ReturnType<typeof setTimeout> | undefined;
   let outlineTimer: ReturnType<typeof setTimeout> | undefined;
   let recheckTimer: ReturnType<typeof setTimeout> | undefined;
@@ -220,7 +226,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
           : "Your API usage is billed separately. Review OpenAI's data controls; store:false does not guarantee zero provider-side retention.";
         const accept = descriptor.kind === "vscode-lm" ? "Send code to language model" : "Send code to OpenAI";
         const action = await vscode.window.showWarningMessage(
-          `Downside Up will send selected source, relevant snippets, and repository documentation from:\n\n${root}\n\n${destination}\nEstimated context: about ${approximateTokens.toLocaleString()} tokens (byte-based estimate)\n\n${terms} This consent is saved for this repository and model. Clear the repository cache to revoke it.`,
+          `Downside Up will send selected functions, relevant snippets, repository documentation, and (for one-sentence file summaries) the text of files whose functions you explain, from:\n\n${root}\n\n${destination}\nEstimated context: about ${approximateTokens.toLocaleString()} tokens (byte-based estimate)\n\n${terms} This consent is saved for this repository and model. Clear the repository cache to revoke it.`,
           { modal: true },
           accept
         );
@@ -353,6 +359,11 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     });
   };
 
+  /** The preview's outline entries that the "Preview: Include" setting shows. */
+  const shownEntries = (): OutlineEntry[] => preview
+    ? visibleOutline(preview.overview.entries, outlineInclude(vscode.workspace.getConfiguration("downsideUp").get("preview.include")))
+    : [];
+
   const render = (): void => {
     if (!panel) return;
     const descriptor = describeProvider();
@@ -374,11 +385,14 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     }
     const shownContext = preview && repositoryContext?.root === preview.root ? repositoryContext : undefined;
     panel.setReferenceHandlers(handlers);
+    const summary = preview && fileSummary?.uri === preview.document.uri.toString() ? fileSummary : undefined;
     panel.update({
       provider: descriptor.kind,
       model: descriptor.modelId || "no model selected",
-      ...(preview ? { document: preview.overview } : {}),
+      ...(preview ? { document: { ...preview.overview, entries: shownEntries() } } : {}),
       explanations,
+      ...(summary ? { summary: { text: summary.text, current: summary.current } } : {}),
+      showDetails: vscode.workspace.getConfiguration("downsideUp").get<boolean>("explanations.showDetails", false) === true,
       ...(shownContext ? { overview: shownContext.overview } : {}),
       ...(notice ? { notice } : {}),
       busy: Boolean(repositoryJob),
@@ -416,8 +430,41 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
         ...(result.provider.kind === "mock" ? [MOCK_LIMITATION] : [])
       ])]
     };
+    // Current explanations read like a document, so they open unless the reader closed them.
+    if (!state.collapsedByUser) state.expanded = true;
     repositoryContext = { root: state.value.root, overview: result.overview };
     installRootWatcher(state.value.root);
+  };
+
+  /** Shows the saved AI summary of the previewed file, if any; local cache only. */
+  const loadFileSummary = async (document: vscode.TextDocument, root: string): Promise<void> => {
+    const found = await service.findFileSummary(root, document).catch(() => undefined);
+    if (!preview || !sameUri(preview.document.uri, document.uri)) return;
+    fileSummary = found ? { uri: document.uri.toString(), text: found.summary, current: found.current } : undefined;
+    render();
+  };
+
+  /**
+   * Summarizes a file after one of its functions was freshly explained, when
+   * no current summary is saved. Consent was already given for that
+   * explanation, so this never prompts; it shares the request slots.
+   */
+  const summarizeAfterExplanation = (
+    root: string,
+    document: vscode.TextDocument,
+    priority: "explicit" | "prefetch"
+  ): void => {
+    const key = `${root}\0${document.uri.toString()}`;
+    if (summaryRuns.has(key)) return;
+    const controller = new AbortController();
+    prefetchSignals.add(controller.signal);
+    const run = scheduler.schedule(priority, () => service.summarizeFile(root, document, controller.signal))
+      .then(async (result) => {
+        if (result && preview && sameUri(preview.document.uri, document.uri)) await loadFileSummary(document, root);
+      })
+      .catch(() => undefined)
+      .finally(() => summaryRuns.delete(key));
+    summaryRuns.set(key, run);
   };
 
   const stateFor = (value: SelectedFunction): FunctionAi => {
@@ -442,7 +489,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     if (!panel || !preview || !editor || !sameUri(editor.document.uri, preview.document.uri)) return;
     lastEditorTopLine = editor.visibleRanges[0]?.start.line ?? 0;
     panel.scrollToLine(lastEditorTopLine);
-    panel.highlightEntry(innermostRangeAt(preview.overview.entries, editor.selection.active.line)?.id);
+    panel.highlightEntry(innermostRangeAt(shownEntries(), editor.selection.active.line)?.id);
   };
 
   const scheduleRecheck = (path?: string): void => {
@@ -511,6 +558,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       handlers.set(entry.id, () => reveal(document.uri, line, startCharacter, endCharacter));
     }
     panel.setFileReferenceHandlers(handlers);
+    void loadFileSummary(document, root);
     if (fileChanged) {
       notice = exclusion
         ? { tone: "info", text: `AI explanations are off for this file because ${exclusion}. Local descriptions are still shown.` }
@@ -710,6 +758,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       });
       if (state.epoch !== epoch) return;
       applyResult(state, result);
+      if (!result.cached) summarizeAfterExplanation(state.value.root, state.value.document, prefetching ? "prefetch" : "explicit");
     } catch (error) {
       if (state.epoch !== epoch) return;
       const userCancelled = controller.signal.aborted;
@@ -903,7 +952,9 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
         : (await service.findCachedExplanation(root, resolved.target, resolved.document).catch(() => undefined))?.explanation;
       if (!explanation || token.isCancellationRequested) return undefined;
       const markdown = new vscode.MarkdownString();
-      markdown.appendMarkdown("**Downside Up** · saved AI explanation of ");
+      markdown.appendMarkdown("**");
+      markdown.appendText(explanation.title || called.qualifiedName);
+      markdown.appendMarkdown("** · Downside Up, saved AI explanation of ");
       markdown.appendText(called.qualifiedName);
       markdown.appendMarkdown("\n\n");
       markdown.appendText(explanation.purpose);
@@ -1090,13 +1141,17 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
         return;
       case "expand": {
         const state = await resolveEntryState(action.entryId);
-        if (state) await openExplanation(state);
+        if (state) {
+          state.collapsedByUser = false;
+          await openExplanation(state);
+        }
         return;
       }
       case "collapse": {
         const state = existingStateForEntry(action.entryId);
         if (state) {
           state.expanded = false;
+          state.collapsedByUser = true;
           render();
         }
         return;
@@ -1457,7 +1512,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     const selection = event.selections[0];
     if (!selection) return;
     wakePrefetch();
-    panel.highlightEntry(innermostRangeAt(preview.overview.entries, selection.active.line)?.id);
+    panel.highlightEntry(innermostRangeAt(shownEntries(), selection.active.line)?.id);
     if (event.selections.length !== 1 || selection.isEmpty) return;
     if (selectionTimer) clearTimeout(selectionTimer);
     const lookup = ++selectionLookupEpoch;
@@ -1472,6 +1527,9 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
   });
 
   const onConfigChange = vscode.workspace.onDidChangeConfiguration((event) => {
+    if (event.affectsConfiguration("downsideUp.preview.include") || event.affectsConfiguration("downsideUp.explanations.showDetails")) {
+      render();
+    }
     if (event.affectsConfiguration("downsideUp.maxConcurrentRequests")) {
       scheduler.pump();
       wakePrefetch();
@@ -1487,8 +1545,9 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       !event.affectsConfiguration("downsideUp.languageModel")
     ) return;
     scheduleRecheck();
-    // Saved explanations are per model, so other functions may now have one.
+    // Saved explanations and file summaries are per model, so other ones may now apply.
     savedLookupDone.clear();
+    if (preview) void loadFileSummary(preview.document, preview.root);
     stopPrefetch();
     if (panel && preview) {
       const { document, root } = preview;
@@ -1543,6 +1602,10 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       status: state.view.status,
       expanded: state.expanded
     })),
+    shownOutline: () => shownEntries().map((entry) => ({ kindLabel: entry.kindLabel, name: entry.name })),
+    fileSummary: () => fileSummary && preview && fileSummary.uri === preview.document.uri.toString()
+      ? { text: fileSummary.text, current: fileSummary.current }
+      : undefined,
     allExplanations: () => [...functions.values()].map((state) => ({
       functionName: state.view.functionName,
       status: state.view.status,
@@ -1555,6 +1618,8 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
 export interface DownsideUpTestApi {
   previewExplanations(): Array<{ functionName: string; status: string; expanded: boolean }>;
   allExplanations(): Array<{ functionName: string; status: string; path: string; error?: string }>;
+  shownOutline(): Array<{ kindLabel: string; name: string }>;
+  fileSummary(): { text: string; current: boolean } | undefined;
 }
 
 export function deactivate(): void {}

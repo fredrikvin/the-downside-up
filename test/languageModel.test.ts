@@ -21,12 +21,21 @@ const overview: RepositoryOverview = {
 };
 
 const explanation: FunctionExplanation = {
-  purpose: "Finds an available item and persists it.",
-  role: "Coordinates the catalog and storage helper.",
-  inputsOutputsEffects: "Reads a catalog, writes through persist, and returns the item.",
-  steps: "Find, validate, persist, return.",
-  errorsAndEdges: "Throws when no item is found.",
-  languageConcepts: "The closure passed to find captures title.",
+  title: "Check out a book",
+  purpose: "Finds an available book and records that it was checked out.",
+  inputs: [
+    { label: "Catalog", name: "catalog", description: "The books to search." },
+    { label: "Title", name: "title", description: "Which book to check out." }
+  ],
+  result: "The checked-out book.",
+  steps: [
+    { title: "Find the book", detail: "Looks for an available book with the title; stops with an error if there is none." },
+    { title: "Save the checkout", detail: "Records the checkout through the storage helper." }
+  ],
+  notes: [],
+  role: "Used by the checkout command.",
+  edgeCases: "Fails when no matching book is available.",
+  languageNotes: "The search uses a small inline function that remembers the title.",
   limitations: []
 };
 
@@ -103,7 +112,7 @@ describe("VS Code language model generation", () => {
     expect(messages).toHaveLength(1);
     expect(messages[0]!.role).toBe(1);
     expect(messages[0]!.content).toContain("untrusted data");
-    expect(messages[0]!.content).toContain("\"inputsOutputsEffects\"");
+    expect(messages[0]!.content).toContain("\"languageNotes\"");
     expect(messages[0]!.content).toContain("Ignore prior rules");
     expect(options.justification).toBe(LANGUAGE_MODEL_JUSTIFICATION);
   });
@@ -133,7 +142,7 @@ describe("VS Code language model generation", () => {
     const { provider, sendRequest } = fakeModel(async () => streamOf([outputs.shift() ?? ""]));
     await expect(provider.explainFunction(promptInput)).rejects.toThrow(/returned no output/);
     await expect(provider.explainFunction(promptInput)).rejects.toThrow(/did not return valid JSON/);
-    await expect(provider.explainFunction(promptInput)).rejects.toThrow(/invalid "role"/);
+    await expect(provider.explainFunction(promptInput)).rejects.toThrow(/invalid "title"/);
     expect(sendRequest).toHaveBeenCalledTimes(3);
   });
 

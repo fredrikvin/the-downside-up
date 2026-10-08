@@ -1,4 +1,5 @@
 import type {
+  FileSummary,
   FunctionExplanation,
   GenerationResult,
   ProviderKind,
@@ -23,6 +24,15 @@ export interface ExplanationPromptInput {
   readonly limitations: readonly string[];
 }
 
+export interface FileSummaryPromptInput {
+  readonly repositoryName: string;
+  readonly path: string;
+  readonly languageId: string;
+  readonly source: string;
+  readonly truncated: boolean;
+  readonly repositoryPurpose?: string;
+}
+
 export interface OverviewReviewPromptInput extends RepositoryPromptInput {
   readonly previous: RepositoryOverview;
   readonly changedPaths: readonly string[];
@@ -43,6 +53,10 @@ export interface GenerationProvider {
     input: ExplanationPromptInput,
     signal?: AbortSignal
   ): Promise<GenerationResult<FunctionExplanation>>;
+  summarizeFile(
+    input: FileSummaryPromptInput,
+    signal?: AbortSignal
+  ): Promise<GenerationResult<FileSummary>>;
 }
 
 export function formatUsage(usage: Usage): string {

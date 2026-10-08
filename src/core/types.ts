@@ -32,14 +32,51 @@ export interface RepositoryOverview {
   readonly limitations: string[];
 }
 
+export interface ExplanationInput {
+  /** Friendly name, such as "Organization ID". */
+  readonly label: string;
+  /** Name in the code, such as `orgID`. */
+  readonly name: string;
+  readonly description: string;
+}
+
+export interface ExplanationStep {
+  /** Short plain-language step title, such as "Request the wearer". */
+  readonly title: string;
+  readonly detail: string;
+}
+
+export interface ExplanationNote {
+  /** Section heading for something worth knowing, such as "Cleanup". */
+  readonly heading: string;
+  readonly text: string;
+}
+
+/**
+ * A plain-language explanation for readers who do not know the language.
+ * The core reads on its own; `role`, `edgeCases`, and `languageNotes` are
+ * extra detail shown on request.
+ */
 export interface FunctionExplanation {
+  /** Short action phrase, such as "Fetch a wearer". */
+  readonly title: string;
+  /** One sentence on what the function is for. */
   readonly purpose: string;
+  readonly inputs: readonly ExplanationInput[];
+  /** What comes back, or an empty string when nothing does. */
+  readonly result: string;
+  readonly steps: readonly ExplanationStep[];
+  /** Extra sections only when relevant, such as cleanup or background work. */
+  readonly notes: readonly ExplanationNote[];
   readonly role: string;
-  readonly inputsOutputsEffects: string;
-  readonly steps: string;
-  readonly errorsAndEdges: string;
-  readonly languageConcepts: string;
+  readonly edgeCases: string;
+  readonly languageNotes: string;
   readonly limitations: string[];
+}
+
+export interface FileSummary {
+  /** One plain-language sentence on what the file does. */
+  readonly summary: string;
 }
 
 export interface Usage {
@@ -103,4 +140,17 @@ export interface RepositoryCache {
   } | null;
   readonly overview: OverviewRecord | null;
   readonly explanations: Record<string, ExplanationRecord>;
+  /** AI file summaries keyed by path, provider, model, and prompt version. */
+  readonly fileSummaries?: Record<string, FileSummaryRecord>;
+}
+
+export interface FileSummaryRecord {
+  readonly path: string;
+  readonly summary: string;
+  /** Fingerprint of the file text (whitespace-insensitive) the summary was made from. */
+  readonly fingerprint: string;
+  readonly provider: ProviderKind;
+  readonly model: string;
+  readonly promptVersion: string;
+  readonly savedAt: number;
 }

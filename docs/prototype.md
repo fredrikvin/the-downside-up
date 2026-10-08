@@ -2,12 +2,19 @@
 
 ## Product scope
 
-The Downside Up helps programmers understand functions in unfamiliar languages.
-The side-by-side Downside Up preview reads like rendered Markdown. For the
-active file it describes every import, module, function/method, type,
-constant/static, local variable binding, and standalone comment in plain
-language, in source order and without regrouping, with attached doc comments
-and attributes. These descriptions are deterministic and local (Tree-sitter for
+The Downside Up helps people understand what code does without knowing the
+language. The side-by-side Downside Up preview reads like rendered Markdown.
+By default it is concise: the file name, an AI summary of the file (see
+below), and one heading per function or method in source order, with its doc
+comment. `downsideUp.preview.include` adds local descriptions of imports,
+types (structs, enums, interfaces, traits, aliases, implementations, fields),
+values outside functions, locals, standalone comments, modules and macros, and
+each function's one-line signature description and notes; nesting is
+recomputed from the items shown. With everything included it describes every
+import, module, function/method, type, constant/static, local variable
+binding, and standalone comment in plain language, in source order and
+without regrouping, with attached doc comments and attributes. These
+descriptions are deterministic and local (Tree-sitter for
 Rust and Go; VS Code document symbols plus line-based import and comment
 detection for other languages) and are labelled as not AI-generated. Go
 descriptions also explain Go-specific meaning, such as exported names,
@@ -21,7 +28,18 @@ item anchors, as the Markdown preview does; each side ignores the scrolling it
 caused, so the two do not feed back. The item at the cursor is highlighted, and
 double-clicking an item reveals its source.
 
-Every function has a collapsed **AI explanation** section. Opening it, or
+AI explanations are written for a reader who does not know the language:
+a 2–5 word action title shown in the function's heading, a one-sentence
+purpose, inputs with friendly labels, the result, the main steps in order
+(including what happens on failure), and extra sections such as cleanup only
+when relevant. Language features are described by what they do rather than by
+jargon. Every explanation also includes where the function fits, edge cases,
+language notes, related code, and limitations, shown under **More detail**
+(`downsideUp.explanations.showDetails` opens it by default); the detail level
+is display-only and never regenerates anything. Generated text is rendered as
+text, with backticked names shown as code.
+
+Every function has an **AI explanation** section. Opening it, or
 clicking the function name, is an explicit request: the extension first looks
 for a current saved explanation (local only) and generates one only when none
 exists and the section is still open. Loading shows a spinner and can be
@@ -32,9 +50,11 @@ exclusive per repository, so parallel requests wait for it and reuse it
 instead of priming twice, and parallel requests share a single code-sharing
 prompt per repository and model. Explicit requests always start before
 waiting prefetches. When the preview shows a file, it checks the local cache once for that
-file's functions and labels those with a current saved explanation as ready,
+file's functions and shows those with a current saved explanation, open,
 so saved explanations remain visible after the preview is closed and reopened
-or VS Code restarts; misses stay collapsed and unlabelled. Repository and
+or VS Code restarts; misses stay collapsed. Current explanations, saved or
+prefetched, open automatically unless the reader collapsed that section;
+outdated ones are not reopened. Repository and
 function context are gathered only for functions that have a saved record.
 Selecting non-empty text inside a function in the editor only checks for a
 fresh saved explanation and opens its section when one exists. A cache miss
@@ -62,8 +82,8 @@ explanation count toward the number, so at most that many are considered per
 function read. Prefetching starts after saved explanations are marked
 ready, fills the request slots explicit requests leave free (never the last
 one, unless the limit is 1), choosing the function nearest the reader each time
-a slot frees, keeps sections
-collapsed, and does not regenerate outdated, failed, or cancelled
+a slot frees, opens each explanation when it is ready (unless the reader
+collapsed it), and does not regenerate outdated, failed, or cancelled
 explanations or functions added by later edits. Switching files drops
 prefetches that have not been sent; one already sent finishes and is saved.
 Closing the preview, Cancel, Clear Repository Cache, or turning the setting
@@ -146,6 +166,20 @@ data, not instructions to the extension. The current Git branch and commit are
 also fingerprinted when Git metadata is available; branch changes enter the
 bounded overview review flow.
 
+## File summaries
+
+After a function is freshly explained (explicitly or by prefetching), the
+extension also asks for a one-sentence plain-language summary of that file,
+unless a current one is saved; this uses the same request slots and consent
+and never prompts. The request contains the file's text (up to 24 KiB,
+truncated with a note beyond that), its path and language, and the repository
+overview's purpose. Excluded files are never summarized. Summaries are cached
+per file, provider, model, and prompt version, with a whitespace-insensitive
+fingerprint of the file text: after other edits the preview shows the old
+summary marked outdated until a function in the file is explained again.
+Opening a file only reads the cache. When an AI summary is shown, it replaces
+the file's leading doc comment at the top of the preview.
+
 ## Providers and data handling
 
 Mock mode is the default and returns deterministic placeholder content. It is
@@ -198,7 +232,10 @@ repository-context refresh, or turning on prefetching in user settings.
 ## Cache and freshness
 
 Overview and explanation records are stored in VS Code global storage, outside
-the target repository. The cache includes prompt/schema/model settings and
+the target repository. Explanations and file summaries have their own prompt
+version, separate from the repository overview's, so changing the explanation
+format outdates saved explanations once without rebuilding overviews; the
+switch to plain-language explanations is such a change. The cache includes prompt/schema/model settings and
 fingerprints of the relevant source and context. Function identity does not
 depend on line numbers or navigation history. Rust methods are identified by
 their `impl` type and trait (for example `Catalog::add` or
@@ -290,6 +327,10 @@ saved-explanation hovers that appear only when an explanation is saved and
 never generate, refusal to explain a function in a `.copilotignore`d file, and
 unsupported plaintext discovery. Each run uses a fresh temporary
 VS Code profile so earlier runs' windows are not restored.
+Concise-outline tests cover which items each `preview.include` option adds and the
+recomputed nesting; schema tests cover the plain-language explanation and file
+summary formats; service tests cover file summaries being generated once,
+reused while current, outdated after edits, and never made for excluded files.
 Local description tests cover Rust items (imports, modules, functions and
 methods with receivers, structs, enums, traits, impls, constants, statics,
 aliases, macros, locals, doc comments, attributes, and standalone comments),
