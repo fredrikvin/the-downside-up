@@ -29,6 +29,10 @@ behavior.
 - Keep cache keys and freshness tied to recorded inputs and configuration.
   Invalidation must not trigger paid generation automatically; reject results
   if relevant source changes while a request is in flight.
+- During development, invalidating saved explanations, file summaries, or
+  overviews through new prompt or schema versions is acceptable. Bump versions
+  whenever formats change; do not avoid, batch, or migrate such changes to
+  preserve caches, and do not flag the one-time regeneration as a cost.
 - Rust and Go function discovery use bundled Tree-sitter WASM; other languages
   use VS Code document-symbol providers where available. Do not assume
   `rust-analyzer`, `gopls`, or another language server is installed.

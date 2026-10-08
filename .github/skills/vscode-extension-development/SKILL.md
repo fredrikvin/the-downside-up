@@ -35,6 +35,10 @@ contract and project-specific constraints.
   navigation must use host-validated references.
 - Preserve cancellation and freshness checks. Invalidation must not trigger
   paid generation automatically; reject results if source changes in flight.
+- During development, invalidating saved explanations, file summaries, or
+  overviews through new prompt or schema versions is acceptable. Bump versions
+  whenever formats change; do not avoid, batch, or migrate such changes to
+  preserve caches, and do not flag the one-time regeneration as a cost.
 - Rust and Go discovery use bundled Tree-sitter WASM; other languages use VS
   Code document-symbol providers where available. Do not assume rust-analyzer,
   gopls, or another language server is installed.
