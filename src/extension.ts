@@ -22,6 +22,7 @@ import { formatUsage } from "./generation/provider";
 import { nextPrefetch, prefetchFocusLine } from "./presentation/prefetch";
 import { RequestScheduler, singleFlight } from "./presentation/requestScheduler";
 import { outlineInclude, visibleOutline } from "./presentation/outlineFilter";
+import { stepRanges, stepsAt, type StepRange } from "./presentation/stepLines";
 import { findGoFunction, initializeGoParser, isGoDocument } from "./languages/go";
 import { findRustFunction, initializeRustParser } from "./languages/rust";
 import { findFunctionWithEditorTools } from "./languages/vscodeSymbols";
@@ -359,6 +360,56 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     });
   };
 
+  /** Document lines of each step of a current explanation, checked against the function as it is now. */
+  const currentStepRanges = (state: FunctionAi): Array<StepRange | undefined> | undefined => {
+    const explanation = state.view.explanation;
+    if (state.view.status !== "current" || !explanation) return undefined;
+    const { target } = state.value;
+    return stepRanges(explanation.steps, target.source, target.range.start.line);
+  };
+
+  /** The last step highlight, for the extension-host tests. */
+  let lastStepHighlight: { functionName: string; steps: number[] } | undefined;
+
+  /** Highlights the steps of the innermost explained function at the editor's cursor or selection. Local only. */
+  const syncStepHighlight = (selection?: vscode.Selection): void => {
+    if (!panel || !preview) return;
+    lastStepHighlight = undefined;
+    const editor = vscode.window.visibleTextEditors.find((candidate) => sameUri(candidate.document.uri, preview!.document.uri));
+    const current = selection ?? editor?.selection;
+    if (!current) {
+      panel.highlightSteps(undefined, []);
+      return;
+    }
+    const line = current.active.line;
+    const match = previewStates()
+      .filter(({ state }) => state.expanded && state.value.target.range.start.line <= line && state.value.target.range.end.line >= line)
+      .sort((left, right) =>
+        (left.state.value.target.range.end.line - left.state.value.target.range.start.line) -
+        (right.state.value.target.range.end.line - right.state.value.target.range.start.line)
+      )[0];
+    const ranges = match ? currentStepRanges(match.state) : undefined;
+    if (!match || !ranges) {
+      panel.highlightSteps(undefined, []);
+      return;
+    }
+    const steps = stepsAt(ranges, current.start.line, current.end.line);
+    lastStepHighlight = { functionName: match.state.view.functionName, steps };
+    panel.highlightSteps(match.entry.id, steps);
+  };
+
+  /** Selects a step's lines in the editor; the lines come from the host's own check, never the model alone. */
+  const revealStep = async (entryId: string, step: number): Promise<void> => {
+    const state = existingStateForEntry(entryId);
+    const range = state ? currentStepRanges(state)?.[step] : undefined;
+    if (!state || !range) return;
+    const document = state.value.document;
+    const end = Math.min(range.end, document.lineCount - 1);
+    const selection = new vscode.Selection(range.start, 0, end, document.lineAt(end).text.length);
+    const editor = await vscode.window.showTextDocument(document, { viewColumn: columnFor(document.uri), selection, preserveFocus: false });
+    editor.revealRange(selection, vscode.TextEditorRevealType.InCenterIfOutsideViewport);
+  };
+
   /** The preview's outline entries that the "Preview: Include" setting shows. */
   const shownEntries = (): OutlineEntry[] => preview
     ? visibleOutline(preview.overview.entries, outlineInclude(vscode.workspace.getConfiguration("downsideUp").get("preview.include")))
@@ -372,7 +423,14 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     for (const { state, entry } of previewStates()) {
       const result = state.result;
       const references = state.view.references.map((reference) => ({ ...reference, id: `${entry.id}:${reference.id}` }));
-      explanations.push({ ...state.view, references, entryId: entry.id, expanded: state.expanded });
+      const ranges = currentStepRanges(state);
+      explanations.push({
+        ...state.view,
+        references,
+        entryId: entry.id,
+        expanded: state.expanded,
+        ...(ranges ? { linkedSteps: ranges.map(Boolean) } : {})
+      });
       if (!result) continue;
       for (const reference of result.context.sourceReferences) {
         const uri = result.context.referenceUris.get(reference.id);
@@ -398,6 +456,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       busy: Boolean(repositoryJob),
       hasRepository: Boolean(preview)
     });
+    syncStepHighlight();
   };
 
   const emptyView = (target: FunctionTarget): StoredView => ({
@@ -1177,6 +1236,9 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
         await chooseLanguageModel();
         render();
         return;
+      case "revealStep":
+        await revealStep(action.entryId, action.step);
+        return;
       case "revealLine": {
         const current = preview;
         if (!current) return;
@@ -1513,6 +1575,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     if (!selection) return;
     wakePrefetch();
     panel.highlightEntry(innermostRangeAt(shownEntries(), selection.active.line)?.id);
+    syncStepHighlight(selection);
     if (event.selections.length !== 1 || selection.isEmpty) return;
     if (selectionTimer) clearTimeout(selectionTimer);
     const lookup = ++selectionLookupEpoch;
@@ -1602,6 +1665,11 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       status: state.view.status,
       expanded: state.expanded
     })),
+    stepHighlight: () => lastStepHighlight,
+    revealStep: async (functionName: string, step: number) => {
+      const found = previewStates().find(({ state }) => state.view.functionName === functionName);
+      if (found) await revealStep(found.entry.id, step);
+    },
     shownOutline: () => shownEntries().map((entry) => ({ kindLabel: entry.kindLabel, name: entry.name })),
     fileSummary: () => fileSummary && preview && fileSummary.uri === preview.document.uri.toString()
       ? { text: fileSummary.text, current: fileSummary.current }
@@ -1619,6 +1687,8 @@ export interface DownsideUpTestApi {
   previewExplanations(): Array<{ functionName: string; status: string; expanded: boolean }>;
   allExplanations(): Array<{ functionName: string; status: string; path: string; error?: string }>;
   shownOutline(): Array<{ kindLabel: string; name: string }>;
+  stepHighlight(): { functionName: string; steps: number[] } | undefined;
+  revealStep(functionName: string, step: number): Promise<void>;
   fileSummary(): { text: string; current: boolean } | undefined;
 }
 

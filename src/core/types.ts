@@ -44,6 +44,11 @@ export interface ExplanationStep {
   /** Short plain-language step title, such as "Request the wearer". */
   readonly title: string;
   readonly detail: string;
+  /** 1-based lines of the function source the step covers; 0 when not tied to lines. */
+  readonly startLine: number;
+  readonly endLine: number;
+  /** Trimmed text of the first line, recorded by the extension to find the step again after lines shift. */
+  readonly anchor?: string;
 }
 
 export interface ExplanationNote {

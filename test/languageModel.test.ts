@@ -29,8 +29,8 @@ const explanation: FunctionExplanation = {
   ],
   result: "The checked-out book.",
   steps: [
-    { title: "Find the book", detail: "Looks for an available book with the title; stops with an error if there is none." },
-    { title: "Save the checkout", detail: "Records the checkout through the storage helper." }
+    { title: "Find the book", detail: "Looks for an available book with the title; stops with an error if there is none.", startLine: 2, endLine: 3 },
+    { title: "Save the checkout", detail: "Records the checkout through the storage helper.", startLine: 4, endLine: 4 }
   ],
   notes: [],
   role: "Used by the checkout command.",

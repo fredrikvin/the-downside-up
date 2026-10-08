@@ -40,7 +40,8 @@ Preview to the Side** (or use the preview button in the editor title bar).
   chevron collapses it again. An explanation gives the function a short
   title (such as "Fetch a wearer"), says what it is for, and lists its inputs,
   its result, the main steps in order, and extras such as cleanup only when
-  relevant. **More detail** adds where it fits, edge cases, language notes,
+  relevant. The steps under the editor's cursor or selection are highlighted,
+  and clicking a step selects its lines in the editor. **More detail** adds where it fits, edge cases, language notes,
   and related code; **Explanations: Show Details**
   (`downsideUp.explanations.showDetails`) opens it by default. Current
   explanations are shown open, so the preview reads like a document, unless

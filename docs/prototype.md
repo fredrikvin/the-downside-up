@@ -39,6 +39,16 @@ language notes, related code, and limitations, shown under **More detail**
 is display-only and never regenerates anything. Generated text is rendered as
 text, with backticked names shown as code.
 
+The function source is sent with numbered lines, and each step names the
+lines it covers (or none). The extension keeps only ranges inside the
+function and records the text of each step's first line. While an
+explanation is current and open, the steps that cover the editor's cursor or
+selection are highlighted (local only), and clicking a step selects its
+lines. Lines are resolved against the function as it is now: if a step's
+first line moved, for example after a comment was added, the nearest line
+with the same text is used; if that text no longer exists, the step is not
+linked. Model-provided lines are never used without this check.
+
 Every function has an **AI explanation** section. Opening it, or
 clicking the function name, is an explicit request: the extension first looks
 for a current saved explanation (local only) and generates one only when none
@@ -321,7 +331,7 @@ server), distinct identities for
 same-named Rust methods in different `impl` blocks, document-ordered outlines,
 explanation commands, preview creation, selection changes during an in-flight
 request, saved explanations listed as ready after closing and reopening the
-preview, prefetching that starts at the cursor, stays within its window, and
+preview, steps that follow the cursor and select their lines when clicked, prefetching that starts at the cursor, stays within its window, and
 follows the cursor, prefetching of a called function in another package,
 saved-explanation hovers that appear only when an explanation is saved and
 never generate, refusal to explain a function in a `.copilotignore`d file, and
@@ -329,7 +339,8 @@ unsupported plaintext discovery. Each run uses a fresh temporary
 VS Code profile so earlier runs' windows are not restored.
 Concise-outline tests cover which items each `preview.include` option adds and the
 recomputed nesting; schema tests cover the plain-language explanation and file
-summary formats; service tests cover file summaries being generated once,
+summary formats; step-line tests cover numbering, validation, lines that
+moved, and cursor and selection matching; service tests cover file summaries being generated once,
 reused while current, outdated after edits, and never made for excluded files.
 Local description tests cover Rust items (imports, modules, functions and
 methods with receivers, structs, enums, traits, impls, constants, statics,

@@ -208,6 +208,20 @@ export async function run(): Promise<void> {
   );
   console.log("Downside Up integration tests: Go explanation command completed.");
 
+  const checkoutBody = goDocument.positionAt(goDocument.getText().indexOf("catalog.MarkUnavailable(book.Title)"));
+  goEditor.selection = new vscode.Selection(checkoutBody, checkoutBody);
+  await waitFor(
+    async () => api.stepHighlight()?.functionName === "checkout" && api.stepHighlight()!.steps.includes(0) ? true : undefined,
+    "the step under the cursor to be highlighted"
+  );
+  goEditor.selection = new vscode.Selection(0, 0, 0, 0);
+  await waitFor(async () => api.stepHighlight() === undefined ? true : undefined, "the step highlight to clear outside the function");
+  await api.revealStep("checkout", 0);
+  const stepSelection = vscode.window.activeTextEditor!.selection;
+  assert.equal(stepSelection.start.line, goDocument.positionAt(goDocument.getText().indexOf("func checkout")).line, "Clicking a step selects its lines.");
+  assert.ok(stepSelection.end.line > stepSelection.start.line);
+  console.log("Downside Up integration tests: steps follow the cursor and select their lines.");
+
   const downsideUpSettings = vscode.workspace.getConfiguration("downsideUp");
   await downsideUpSettings.update("prefetch.window", 1, vscode.ConfigurationTarget.Global);
   await downsideUpSettings.update("prefetch.dependencies", 0, vscode.ConfigurationTarget.Global);

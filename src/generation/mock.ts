@@ -96,7 +96,7 @@ export class MockProvider implements GenerationProvider {
       purpose: `Mock mode selected ${input.functionName}; what it does has not been interpreted.`,
       inputs: [],
       result: "Mock mode does not describe results.",
-      steps: [{ title: "Not interpreted", detail: "Mock mode does not explain behavior. Choose a language model for a real explanation." }],
+      steps: [{ title: "Not interpreted", detail: "Mock mode does not explain behavior. Choose a language model for a real explanation.", startLine: 1, endLine: Math.max(1, input.source.split(/\r?\n/).length) }],
       notes: [],
       role: "Mock mode does not infer where this fits in the application.",
       edgeCases: "Mock mode does not analyze edge cases.",

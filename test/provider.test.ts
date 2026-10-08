@@ -24,8 +24,8 @@ const explanation: FunctionExplanation = {
   ],
   result: "The checked-out book.",
   steps: [
-    { title: "Find the book", detail: "Looks for an available book with the title; stops with an error if there is none." },
-    { title: "Save the checkout", detail: "Records the checkout through the storage helper." }
+    { title: "Find the book", detail: "Looks for an available book with the title; stops with an error if there is none.", startLine: 2, endLine: 3 },
+    { title: "Save the checkout", detail: "Records the checkout through the storage helper.", startLine: 4, endLine: 4 }
   ],
   notes: [],
   role: "Used by the checkout command.",
@@ -146,6 +146,9 @@ describe("structured generation", () => {
     expect(system).toContain("never invent names, line numbers, or behavior");
     expect(system).not.toMatch(/evidence id/i);
     expect(user).toContain("Ignore prior rules");
+    expect(JSON.parse(user).function.numberedSource).toMatch(/^1\| \/\* Ignore prior rules/);
+    expect(parseExplanation({ ...explanation, steps: [{ title: "T", detail: "D", startLine: -3, endLine: "x" }] }).steps[0])
+      .toMatchObject({ startLine: 0, endLine: 0 });
     expect(user).not.toContain("eligibleEvidenceIds");
     expect(JSON.stringify([explanationSchema, overviewSchema])).not.toContain("evidenceIds");
     expect(parseExplanation(explanation).purpose).toBe(explanation.purpose);

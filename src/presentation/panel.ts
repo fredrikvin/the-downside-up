@@ -19,6 +19,8 @@ export interface ExplanationView {
   readonly explanation?: FunctionExplanation;
   readonly references: readonly SourceReference[];
   readonly limitations: readonly string[];
+  /** For each step, whether it maps to source lines and can be highlighted or clicked. */
+  readonly linkedSteps?: readonly boolean[];
 }
 
 export interface PanelNotice {
@@ -51,7 +53,8 @@ export type PanelAction =
   | { readonly type: "clearCache" }
   | { readonly type: "chooseModel" }
   | { readonly type: "navigate"; readonly referenceId: string }
-  | { readonly type: "revealLine"; readonly line: number };
+  | { readonly type: "revealLine"; readonly line: number }
+  | { readonly type: "revealStep"; readonly entryId: string; readonly step: number };
 
 export const panelHtml = (nonce: string): string => `<!doctype html>
 <html lang="en">
@@ -143,6 +146,10 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
     .more > summary { cursor: pointer; font-size: .85em; color: var(--vscode-textLink-foreground); }
     .summary { font-size: 1.1em; margin: 0 0 14px; }
     .ai-title { font-weight: 600; }
+    .step { border-radius: 4px; padding: 1px 4px; margin-left: -4px; }
+    .step.linked { cursor: pointer; }
+    .step.linked:hover { background: var(--vscode-list-hoverBackground, rgba(128, 128, 128, .12)); }
+    .step.active { background: var(--vscode-editor-selectionHighlightBackground, rgba(128, 128, 128, .22)); }
     .ai-body .lead { font-size: 1.05em; }
     .ai-meta { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: center; font-size: .8em; color: var(--vscode-descriptionForeground); margin-bottom: 8px; }
     .loading { display: flex; align-items: center; gap: 10px; margin: 4px 0 12px; color: var(--vscode-descriptionForeground); }
@@ -249,7 +256,7 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
       return meta;
     }
 
-    function renderExplanation(body, explanation) {
+    function renderExplanation(body, explanation, view) {
       if (explanation.purpose) body.append(inline(el("p", "lead"), explanation.purpose));
       if (explanation.inputs && explanation.inputs.length) {
         const list = el("ul");
@@ -267,12 +274,27 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
       if (explanation.result) body.append(el("h5", "", "Result"), inline(el("p"), explanation.result));
       if (explanation.steps && explanation.steps.length) {
         const list = el("ol");
-        for (const step of explanation.steps) {
-          const item = el("li");
+        explanation.steps.forEach((step, index) => {
+          const linked = Boolean(view.linkedSteps && view.linkedSteps[index]);
+          const item = el("li", "step" + (linked ? " linked" : ""));
+          item.dataset.step = String(index);
+          if (linked) {
+            item.tabIndex = 0;
+            item.title = "Select these lines in the editor";
+            const reveal = (target) => {
+              if (target && target.closest && target.closest("a")) return;
+              post({ type: "revealStep", entryId: view.entryId, step: index });
+            };
+            item.addEventListener("click", (clicked) => reveal(clicked.target));
+            item.addEventListener("keydown", (pressed) => {
+              const name = pressed["key"];
+              if (name === "Enter" || name === " ") { pressed.preventDefault(); reveal(undefined); }
+            });
+          }
           item.append(el("strong", "", step.title.replace(/[.:]?$/, ".")));
           inline(item, " " + step.detail);
           list.append(item);
-        }
+        });
         body.append(el("h5", "", "What happens"), list);
       }
       for (const note of explanation.notes || []) {
@@ -295,7 +317,7 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
       if (view.error) body.append(el("p", "error", view.error));
       const explanation = view.explanation;
       if (explanation) {
-        renderExplanation(body, explanation);
+        renderExplanation(body, explanation, view);
         const more = el("details", "more");
         const remembered = detailChoices.get(view.entryId);
         more.open = remembered === undefined ? Boolean(state && state.showDetails) : remembered;
@@ -436,6 +458,7 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
       byId("limitations").textContent = file ? file.limitations.join("\\n") : "";
       renderOverview(next.overview);
       highlight(currentEntry);
+      highlightSteps(activeSteps);
       if (focusedEntry && focusedEntry.id) {
         const target = document.querySelector("#" + CSS.escape(focusedEntry.id) + " ." + (focusedClass.split(" ")[0] || "ai-toggle"));
         if (target) target.focus({ preventScroll: true });
@@ -480,6 +503,14 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
         post({ type: "revealLine", line: Math.max(0, Math.floor(sourceLine)) });
       });
     }, { passive: true });
+    let activeSteps = { entryId: "", steps: [] };
+    function highlightSteps(next) {
+      activeSteps = next;
+      for (const node of document.querySelectorAll(".step.active")) node.classList.remove("active");
+      const body = next.entryId ? byId(next.entryId + "-ai") : null;
+      if (!body) return;
+      for (const index of next.steps) body.querySelector('[data-step="' + index + '"]')?.classList.add("active");
+    }
     function highlight(entryId) {
       currentEntry = entryId;
       for (const node of document.querySelectorAll(".entry.current")) node.classList.remove("current");
@@ -492,6 +523,12 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
       if (message.type === "state") render(message.state);
       else if (message.type === "scroll" && typeof message.line === "number") scrollToLine(message.line);
       else if (message.type === "cursor") highlight(typeof message.entryId === "string" ? message.entryId : undefined);
+      else if (message.type === "steps") {
+        highlightSteps({
+          entryId: typeof message.entryId === "string" ? message.entryId : "",
+          steps: Array.isArray(message.steps) ? message.steps.filter((step) => Number.isInteger(step)) : []
+        });
+      }
     });
     for (const [id, type] of [["chooseModel", "chooseModel"], ["cancel", "cancel"], ["refreshContext", "refreshContext"], ["clearCache", "clearCache"]]) {
       const link = byId(id);
@@ -514,6 +551,7 @@ export class ExplanationPanel {
   private state: PanelState | undefined;
   private scrollLine: number | undefined;
   private cursorEntry: string | undefined;
+  private activeSteps: { entryId: string; steps: number[] } = { entryId: "", steps: [] };
   private readonly disposables: vscode.Disposable[] = [];
   private readonly referenceHandlers = new Map<string, () => Promise<void>>();
   private readonly fileReferenceHandlers = new Map<string, () => Promise<void>>();
@@ -554,6 +592,12 @@ export class ExplanationPanel {
         } else if (type === "navigate") {
           const referenceId = stringField("referenceId");
           if (referenceId) onAction({ type, referenceId });
+        } else if (type === "revealStep") {
+          const entryId = stringField("entryId");
+          const step = fields.step;
+          if (entryId && typeof step === "number" && Number.isInteger(step) && step >= 0 && step < 50) {
+            onAction({ type, entryId, step });
+          }
         } else if (type === "revealLine") {
           const line = fields.line;
           if (typeof line === "number" && Number.isInteger(line) && line >= 0) onAction({ type, line });
@@ -571,6 +615,7 @@ export class ExplanationPanel {
     if (this.state) void this.panel.webview.postMessage({ type: "state", state: this.state });
     if (this.cursorEntry) void this.panel.webview.postMessage({ type: "cursor", entryId: this.cursorEntry });
     if (this.scrollLine !== undefined) void this.panel.webview.postMessage({ type: "scroll", line: this.scrollLine });
+    if (this.activeSteps.entryId) void this.panel.webview.postMessage({ type: "steps", ...this.activeSteps });
   }
 
   update(state: PanelState): void {
@@ -589,6 +634,14 @@ export class ExplanationPanel {
     if (entryId === this.cursorEntry) return;
     this.cursorEntry = entryId;
     void this.panel.webview.postMessage({ type: "cursor", entryId });
+  }
+
+  /** Highlights the explanation steps that cover the editor's cursor or selection. */
+  highlightSteps(entryId: string | undefined, steps: readonly number[]): void {
+    const next = { entryId: entryId ?? "", steps: entryId ? [...steps] : [] };
+    if (next.entryId === this.activeSteps.entryId && next.steps.join() === this.activeSteps.steps.join()) return;
+    this.activeSteps = next;
+    void this.panel.webview.postMessage({ type: "steps", ...next });
   }
 
   setReferenceHandlers(handlers: Map<string, () => Promise<void>>): void {

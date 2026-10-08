@@ -30,7 +30,11 @@ export const overviewSchema = objectSchema(
 );
 
 const inputSchema = objectSchema({ label: string, name: string, description: string }, ["label", "name", "description"]);
-const stepSchema = objectSchema({ title: string, detail: string }, ["title", "detail"]);
+const integer = { type: "integer" };
+const stepSchema = objectSchema(
+  { title: string, detail: string, startLine: integer, endLine: integer },
+  ["title", "detail", "startLine", "endLine"]
+);
 const noteSchema = objectSchema({ heading: string, text: string }, ["heading", "text"]);
 
 export const explanationSchema = objectSchema(
@@ -110,6 +114,12 @@ function readObjects<T>(
   return value.map((item) => read(record(item)));
 }
 
+/** A 1-based line number from the model, or 0; anything else counts as 0 rather than failing the explanation. */
+function readLine(source: Record<string, unknown>, key: string): number {
+  const value = source[key];
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= 100_000 ? value : 0;
+}
+
 export function parseExplanation(value: unknown): FunctionExplanation {
   const source = record(value);
   return {
@@ -123,7 +133,9 @@ export function parseExplanation(value: unknown): FunctionExplanation {
     result: readText(source, "result", 1_500),
     steps: readObjects(source.steps, "steps", 15, (item) => ({
       title: readText(item, "title", 160),
-      detail: readText(item, "detail", 1_500)
+      detail: readText(item, "detail", 1_500),
+      startLine: readLine(item, "startLine"),
+      endLine: readLine(item, "endLine")
     })),
     notes: readObjects(source.notes, "notes", 6, (item) => ({
       heading: readText(item, "heading", 80),

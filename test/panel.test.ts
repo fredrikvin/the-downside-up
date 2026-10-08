@@ -15,4 +15,11 @@ describe("preview webview document", () => {
     expect(html).toContain("const offsetForLine = (function offsetForLine(");
     expect(html).toContain("const lineForOffset = (function lineForOffset(");
   });
+
+  it("has a webview script that parses", () => {
+    const html = panelHtml("n");
+    const start = html.indexOf('<script nonce="n">') + '<script nonce="n">'.length;
+    const script = html.slice(start, html.indexOf("</script>", start));
+    expect(() => new Function(script)).not.toThrow();
+  });
 });

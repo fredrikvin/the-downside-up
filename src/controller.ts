@@ -20,6 +20,7 @@ import {
   type FunctionContext
 } from "./context/related";
 import { addLocalSymbolOutline } from "./context/symbolIndex";
+import { normalizeStepLines } from "./presentation/stepLines";
 import {
   EXPLANATION_PROMPT_VERSION,
   explanationPrompt,
@@ -462,7 +463,8 @@ export class ExplanationService {
       (provider) => provider.explainFunction(prompt, signal)
     );
     usages.push(generated.usage);
-    const explanation = generated.value;
+    // Step lines come from the model, so they are checked against the source before they are saved.
+    const explanation = normalizeStepLines(generated.value, target.source);
     assertNotCancelled(signal);
 
     progress("checking", "Rechecking source and tracked inputs before saving.");
