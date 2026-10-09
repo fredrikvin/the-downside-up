@@ -32,7 +32,10 @@ Preview to the Side** (or use the preview button in the editor title bar).
   these are built locally from the code and are not AI-generated. The preview
   follows the active editor and updates as you edit.
 - **Scroll sync.** Scrolling the editor scrolls the preview to the matching
-  position and vice versa, and the item at the cursor is highlighted.
+  position and vice versa, down to the step or pseudocode line describing
+  each code line, and the item at the cursor is highlighted. Clicking in the
+  code brings its explanation into view; clicking a step keeps the preview
+  still.
   Double-click an item to jump to its source.
 - **AI explanations.** Each function has an **AI explanation** section.
   Open it (or click the function's name) to show its saved explanation, or to

@@ -3,7 +3,7 @@ import { randomBytes } from "node:crypto";
 import type { ExplanationFormat, FunctionExplanation, RepositoryOverview } from "../core/types";
 import type { SourceReference } from "../context/related";
 import type { FileOverview } from "../context/fileOverview";
-import { lineForOffset, offsetForLine } from "./scrollSync";
+import { lineForOffset, monotonicAnchors, offsetForLine } from "./scrollSync";
 
 export type ExplanationStatus = "loading" | "current" | "outdated" | "cancelled" | "failed";
 
@@ -21,6 +21,12 @@ export interface ExplanationView {
   readonly limitations: readonly string[];
   /** Whether each step, pseudocode line, and flowchart node maps to source lines and can be highlighted or clicked. */
   readonly linked?: LinkedItems;
+  /** Zero-based document line where each linked item starts, or -1; used as scroll anchors. */
+  readonly itemLines?: {
+    readonly steps: readonly number[];
+    readonly pseudocode: readonly number[];
+    readonly nodes: readonly number[];
+  };
   /** Indentation and blank lines for pseudocode, taken from the code it describes. */
   readonly pseudocodeLayout?: ReadonlyArray<{ readonly level: number; readonly gap: boolean }>;
   /** An extra view being generated for this explanation. */
@@ -245,6 +251,7 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
   <script nonce="${nonce}">
     const offsetForLine = (${offsetForLine.toString()});
     const lineForOffset = (${lineForOffset.toString()});
+    const monotonicAnchors = (${monotonicAnchors.toString()});
     const vscode = acquireVsCodeApi();
     const byId = (id) => document.getElementById(id);
     const HEADING_KINDS = new Set(["function", "type", "impl", "module", "macro"]);
@@ -313,8 +320,12 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
     /** Makes an item clickable to select its source lines, and marks it for highlighting. */
     function linkItem(item, view, kind, index, attribute) {
       item.dataset[attribute] = String(index);
-      const linked = view.linked && view.linked[kind === "step" ? "steps" : kind === "pseudocode" ? "pseudocode" : "nodes"];
+      const key = kind === "step" ? "steps" : kind === "pseudocode" ? "pseudocode" : "nodes";
+      const linked = view.linked && view.linked[key];
       if (!linked || !linked[index]) return;
+      // Items are scroll anchors at their own code lines, so scrolling lands on what describes the code.
+      const line = view.itemLines && view.itemLines[key] ? view.itemLines[key][index] : -1;
+      if (Number.isInteger(line) && line >= 0) item.dataset.line = String(line);
       item.classList.add("linked");
       item.tabIndex = 0;
       item.title = "Select these lines in the editor";
@@ -766,7 +777,7 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
       for (const node of document.querySelectorAll("[data-line]")) {
         list.push({ line: Number(node.dataset.line), top: node.getBoundingClientRect().top + window.scrollY });
       }
-      return list.sort((left, right) => left.line - right.line || left.top - right.top);
+      return monotonicAnchors(list.sort((left, right) => left.line - right.line || left.top - right.top));
     }
     function documentEnd() {
       return byId("doc").getBoundingClientRect().bottom + window.scrollY;
@@ -803,6 +814,26 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
       mark("pseudo", next.pseudocode);
       mark("node", next.nodes);
     }
+    let revealActiveFrame = 0;
+    /**
+     * After the cursor moved in the code, brings what it highlights into view:
+     * the highlighted item if it is not fully visible, otherwise the entry if
+     * none of it is visible. This scroll does not move the editor.
+     */
+    function revealActive() {
+      cancelAnimationFrame(revealActiveFrame);
+      revealActiveFrame = requestAnimationFrame(() => {
+        const item = document.querySelector(".step.active, .pseudo-line.active, .flow-node.active");
+        const target = item || (currentEntry ? byId(currentEntry) : null);
+        if (!target) return;
+        const rect = target.getBoundingClientRect();
+        const visible = item ? rect.top >= 0 && rect.bottom <= window.innerHeight : rect.bottom > 0 && rect.top < window.innerHeight;
+        if (visible) return;
+        ignoreScrollUntil = performance.now() + 200;
+        target.scrollIntoView({ block: item && rect.height < window.innerHeight ? "center" : "start" });
+      });
+    }
+
     function highlight(entryId) {
       currentEntry = entryId;
       for (const node of document.querySelectorAll(".entry.current")) node.classList.remove("current");
@@ -823,6 +854,7 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
           pseudocode: indices(message.pseudocode),
           nodes: indices(message.nodes)
         });
+        if (message.reveal === true) revealActive();
       }
     });
     for (const [id, type] of [["chooseModel", "chooseModel"], ["cancel", "cancel"], ["refreshContext", "refreshContext"], ["clearCache", "clearCache"]]) {
@@ -943,14 +975,15 @@ export class ExplanationPanel {
   /** Highlights the steps, pseudocode lines, and flowchart nodes that cover the editor's cursor or selection. */
   highlightSteps(
     entryId: string | undefined,
-    items: { readonly steps: readonly number[]; readonly pseudocode: readonly number[]; readonly nodes: readonly number[] }
+    items: { readonly steps: readonly number[]; readonly pseudocode: readonly number[]; readonly nodes: readonly number[] },
+    reveal = false
   ): void {
     const next = entryId
       ? { entryId, steps: [...items.steps], pseudocode: [...items.pseudocode], nodes: [...items.nodes] }
       : { entryId: "", steps: [], pseudocode: [], nodes: [] };
-    if (JSON.stringify(next) === JSON.stringify(this.activeSteps)) return;
+    if (!reveal && JSON.stringify(next) === JSON.stringify(this.activeSteps)) return;
     this.activeSteps = next;
-    void this.panel.webview.postMessage({ type: "steps", ...next });
+    void this.panel.webview.postMessage({ type: "steps", ...next, ...(reveal ? { reveal: true } : {}) });
   }
 
   setReferenceHandlers(handlers: Map<string, () => Promise<void>>): void {

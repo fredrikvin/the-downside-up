@@ -39,6 +39,23 @@ export function offsetForLine(
   return Math.max(0, last.top + progress * (next.top - last.top));
 }
 
+/**
+ * Keeps anchors (sorted by line, then top) whose tops never go up, so the
+ * line-to-offset mapping stays monotonic even when items are laid out out of
+ * source order, such as an early-exit flowchart node beside its decision.
+ * Serialized into the webview, so it must stay self-contained.
+ */
+export function monotonicAnchors(anchors: readonly ScrollAnchor[]): ScrollAnchor[] {
+  const kept: ScrollAnchor[] = [];
+  let lastTop = Number.NEGATIVE_INFINITY;
+  for (const anchor of anchors) {
+    if (anchor.top < lastTop) continue;
+    kept.push(anchor);
+    lastTop = anchor.top;
+  }
+  return kept;
+}
+
 export interface LineRange {
   readonly id: string;
   readonly startLine: number;

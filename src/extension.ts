@@ -422,13 +422,13 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
   let lastStepHighlight: { functionName: string; steps: number[]; pseudocode: number[]; nodes: number[] } | undefined;
 
   /** Highlights the items of the innermost explained function at the editor's cursor or selection. Local only. */
-  const syncStepHighlight = (selection?: vscode.Selection): void => {
+  const syncStepHighlight = (selection?: vscode.Selection, reveal = false): void => {
     if (!panel || !preview) return;
     lastStepHighlight = undefined;
     const editor = vscode.window.visibleTextEditors.find((candidate) => sameUri(candidate.document.uri, preview!.document.uri));
     const current = selection ?? editor?.selection;
     if (!current) {
-      panel.highlightSteps(undefined, NO_ITEMS);
+      panel.highlightSteps(undefined, NO_ITEMS, reveal);
       return;
     }
     const line = current.active.line;
@@ -440,7 +440,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       )[0];
     const ranges = match ? currentItemRanges(match.state) : undefined;
     if (!match || !ranges) {
-      panel.highlightSteps(undefined, NO_ITEMS);
+      panel.highlightSteps(undefined, NO_ITEMS, reveal);
       return;
     }
     let items: { steps: number[]; pseudocode: number[]; nodes: number[] };
@@ -456,7 +456,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       items = { steps: at(ranges.steps), pseudocode: at(ranges.pseudocode), nodes: at(ranges.nodes) };
     }
     lastStepHighlight = { functionName: match.state.view.functionName, ...items };
-    panel.highlightSteps(match.entry.id, items);
+    panel.highlightSteps(match.entry.id, items, reveal);
   };
 
   /** Selects an item's lines in the editor; the lines come from the host's own check, never the model alone. */
@@ -471,6 +471,8 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     clearReveal();
     const current: NonNullable<typeof revealed> = { uri: document.uri.toString(), caret, entryId, kind, index, start: range.start, end };
     revealed = current;
+    // The click came from the preview, so the editor scroll it causes must not scroll the preview.
+    suppressEditorSyncUntil = Date.now() + 800;
     const editor = await vscode.window.showTextDocument(document, {
       viewColumn: columnFor(document.uri),
       selection: new vscode.Selection(caret, caret),
@@ -537,7 +539,14 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
         entryId: entry.id,
         expanded: state.expanded,
         ...(ranges
-          ? { linked: { steps: ranges.steps.map(Boolean), pseudocode: ranges.pseudocode.map(Boolean), nodes: ranges.nodes.map(Boolean) } }
+          ? {
+              linked: { steps: ranges.steps.map(Boolean), pseudocode: ranges.pseudocode.map(Boolean), nodes: ranges.nodes.map(Boolean) },
+              itemLines: {
+                steps: ranges.steps.map((range) => range?.start ?? -1),
+                pseudocode: ranges.pseudocode.map((range) => range?.start ?? -1),
+                nodes: ranges.nodes.map((range) => range?.start ?? -1)
+              }
+            }
           : {}),
         ...(ranges && state.view.explanation?.pseudocode
           ? {
@@ -1689,7 +1698,11 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     wakePrefetch();
     const line = event.visibleRanges[0]?.start.line ?? 0;
     // Ignore the editor scrolling that the preview itself requested, and repeated ranges.
-    if (Date.now() < suppressEditorSyncUntil || line === lastEditorTopLine) return;
+    if (Date.now() < suppressEditorSyncUntil) {
+      lastEditorTopLine = line;
+      return;
+    }
+    if (line === lastEditorTopLine) return;
     lastEditorTopLine = line;
     panel.scrollToLine(line);
   });
@@ -1705,7 +1718,8 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     if (!selection) return;
     wakePrefetch();
     panel.highlightEntry(innermostRangeAt(shownEntries(), selection.active.line)?.id);
-    syncStepHighlight(selection);
+    // A cursor move in the code brings what it highlights into view; a click in the preview does not scroll it.
+    syncStepHighlight(selection, !revealed);
     if (event.selections.length !== 1 || selection.isEmpty) return;
     if (selectionTimer) clearTimeout(selectionTimer);
     const lookup = ++selectionLookupEpoch;

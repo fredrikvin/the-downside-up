@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { innermostRangeAt, lineForOffset, offsetForLine } from "../src/presentation/scrollSync";
+import { innermostRangeAt, lineForOffset, monotonicAnchors, offsetForLine } from "../src/presentation/scrollSync";
 
 describe("preview scroll synchronization", () => {
   const anchors = [
@@ -38,6 +38,19 @@ describe("preview scroll synchronization", () => {
     for (const line of [0, 2, 3, 7.25, 12, 18]) {
       expect(lineForOffset(anchors, offsetForLine(anchors, line, 20, 600), 20, 600)).toBeCloseTo(line);
     }
+  });
+
+  it("drops anchors that would make scrolling go backwards", () => {
+    const anchors = [
+      { line: 10, top: 100 },
+      { line: 10, top: 300 },
+      { line: 12, top: 450 },
+      { line: 18, top: 380 },
+      { line: 20, top: 900 }
+    ];
+    expect(monotonicAnchors(anchors)).toEqual([anchors[0], anchors[1], anchors[2], anchors[4]]);
+    expect(offsetForLine(monotonicAnchors(anchors), 16, 40, 2000)).toBeGreaterThan(450);
+    expect(new Function(`return (${monotonicAnchors.toString()})`)()(anchors)).toHaveLength(4);
   });
 
   it("picks the innermost entry at a cursor line", () => {

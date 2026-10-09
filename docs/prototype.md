@@ -25,8 +25,15 @@ used instead. The preview follows
 the active editor and rebuilds after edits (debounced) without losing its
 place. Scrolling either side keeps the other aligned by interpolating between
 item anchors, as the Markdown preview does; each side ignores the scrolling it
-caused, so the two do not feed back. The item at the cursor is highlighted, and
-double-clicking an item reveals its source.
+caused, so the two do not feed back. Inside an open explanation, its linked
+steps, pseudocode lines, and flowchart nodes are anchors at their own code
+lines, so a scrolled code line lands on what describes it; anchors that would
+make the mapping run backwards (such as an exit node beside its decision) are
+skipped. Clicking an item in the preview scrolls the editor to its lines but
+leaves the preview where it is. Moving the cursor in the code brings what it
+highlights into view in the preview (the highlighted item, or else the item
+at the cursor) without scrolling the editor back. The item at the cursor is
+highlighted, and double-clicking an item reveals its source.
 
 AI explanations are written for a reader who does not know the language:
 a 2–5 word action title shown in the function's heading, a one-sentence
