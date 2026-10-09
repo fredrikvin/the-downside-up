@@ -206,9 +206,10 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
     .pseudo-line.linked { cursor: pointer; }
     .pseudo-line.linked:hover { background: var(--vscode-list-hoverBackground, rgba(128, 128, 128, .12)); }
     .flow-scroll { overflow-x: auto; margin: 6px 0 12px; }
-    .flow { position: relative; display: inline-grid; grid-auto-columns: max-content; column-gap: 32px; row-gap: 34px; align-items: center; padding: 4px 24px 8px 56px; }
+    .flow { position: relative; display: inline-grid; grid-auto-columns: max-content; column-gap: 32px; row-gap: 34px; align-items: center; padding: 4px 16px 8px 4px; }
+    .flow.has-loops { padding-left: 56px; }
     .flow-node {
-      position: relative; z-index: 1; justify-self: center; max-width: 220px; padding: 6px 12px; text-align: center; font-size: .9em; line-height: 1.35;
+      position: relative; z-index: 1; justify-self: center; max-width: 170px; padding: 6px 12px; text-align: center; font-size: .9em; line-height: 1.35;
       border: 1px solid var(--vscode-panel-border, var(--separator)); border-radius: 4px;
       background: var(--vscode-editorWidget-background, var(--vscode-editor-background));
     }
@@ -452,6 +453,8 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
       flow.setAttribute("aria-label", "Flowchart");
       scroll.append(flow);
       const { rows, back } = layoutFlow(chart);
+      // Room on the left only for charts with loops, which are routed there.
+      if (back.size) flow.classList.add("has-loops");
       const boxes = new Map();
       // Grid cells keep the main path in the first column, with exits to its right.
       rows.forEach((row, rowIndex) => {
@@ -464,8 +467,28 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
           flow.append(box);
         });
       });
+      /**
+       * Shrinks a chart wider than its column (down to 60%) so the whole flow
+       * stays visible; negative margins give back the space the scaling frees.
+       */
+      const fit = () => {
+        flow.style.transform = "";
+        flow.style.marginRight = "";
+        flow.style.marginBottom = "";
+        const natural = flow.offsetWidth;
+        const available = scroll.clientWidth;
+        const scale = natural > available && available > 0 ? Math.max(0.6, available / natural) : 1;
+        if (scale < 1) {
+          flow.style.transformOrigin = "0 0";
+          flow.style.transform = "scale(" + scale + ")";
+          flow.style.marginRight = -Math.ceil(natural * (1 - scale)) + "px";
+          flow.style.marginBottom = -Math.ceil(flow.offsetHeight * (1 - scale)) + "px";
+        }
+        return scale;
+      };
       const draw = () => {
         flow.querySelector(".flow-edges")?.remove();
+        const scale = fit();
         const base = flow.getBoundingClientRect();
         if (!base.width) return;
         const svg = document.createElementNS(SVG, "svg");
@@ -488,9 +511,14 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
         marker.append(tip);
         defs.append(marker);
         svg.append(defs);
+        // Screen positions are scaled; the SVG lives inside the scaled chart, so convert back.
         const rect = (id) => {
           const r = boxes.get(id).getBoundingClientRect();
-          return { left: r.left - base.left, right: r.right - base.left, top: r.top - base.top, bottom: r.bottom - base.top, x: (r.left + r.right) / 2 - base.left, y: (r.top + r.bottom) / 2 - base.top };
+          const left = (r.left - base.left) / scale;
+          const top = (r.top - base.top) / scale;
+          const right = (r.right - base.left) / scale;
+          const bottom = (r.bottom - base.top) / scale;
+          return { left, right, top, bottom, x: (left + right) / 2, y: (top + bottom) / 2 };
         };
         // Loops go up the left of the main path; exits use the right, so they never cross.
         const left = Math.min(...[...boxes.keys()].map((id) => rect(id).left));
@@ -531,7 +559,15 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
         flow.prepend(svg);
       };
       requestAnimationFrame(draw);
-      if (typeof ResizeObserver === "function") new ResizeObserver(() => requestAnimationFrame(draw)).observe(flow);
+      if (typeof ResizeObserver === "function") {
+        let lastWidth = 0;
+        new ResizeObserver(() => {
+          // Redraw when the column width changes, not when fitting changes the height.
+          if (scroll.clientWidth === lastWidth) return;
+          lastWidth = scroll.clientWidth;
+          requestAnimationFrame(draw);
+        }).observe(scroll);
+      }
       return scroll;
     }
 

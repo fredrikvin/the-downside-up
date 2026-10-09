@@ -83,7 +83,9 @@ invalid view is dropped without failing the explanation. The panel draws the
 flowchart itself from HTML boxes and SVG lines, with every label set as text:
 the main path runs downward in the first column, an early exit sits to the
 right of the node it leaves from, and edges that loop back are routed up the
-left side, so loops and exits never cross. No diagram library or HTML parsing is involved.
+left side, so loops and exits never cross. Room for loops is reserved only when
+a chart has them, and a chart wider than its column is scaled down (to at least
+60%) so the whole flow stays visible; below that it scrolls sideways. No diagram library or HTML parsing is involved.
 
 Every function has an **AI explanation** section. Opening it, or
 clicking the function name, is an explicit request: the extension first looks
