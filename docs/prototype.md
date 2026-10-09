@@ -44,7 +44,21 @@ a 2–5 word action title shown in the function's heading, a one-sentence
 purpose, inputs with friendly labels, the result, the main steps in order
 (including what happens on failure), and extra sections such as cleanup only
 when relevant. Language features are described by what they do rather than by
-jargon. Every explanation also includes where the function fits, edge cases,
+jargon. When parts of a function run at different times (such as a React
+component's effects and click handlers, or a callback run later), each step
+names when it runs, and the preview groups consecutive steps under that
+heading ("Each time it is shown", "When the person clicks Check out"), with
+numbering continuing across groups; for most functions every step runs in
+one call and no heading is shown. A language can add background on a kind
+of function to the prompt (`explanationGuidance` in `LanguageSupport`); it is
+the extension's own fixed text, never repository text, and depends only on
+the function's own source, which is tracked. For React components it says how
+React shows a component again when props or state change, to treat props as
+inputs and what is shown as the result, to phrase conditional rendering as
+conditions and `map` as "for each", what each built-in hook does in plain
+words, that handlers passed to props such as `onClick` run later, and how to
+group steps by when they run and lay out pseudocode and flowcharts; hooks and
+functions defined inside a component or hook get matching background. Every explanation also includes where the function fits, edge cases,
 language notes, related code, and limitations, shown under **More detail**
 (`downsideUp.explanations.showDetails` opens it by default); the detail level
 is display-only and never regenerates anything. Generated text is rendered as
@@ -486,7 +500,12 @@ summary formats; step-line tests cover numbering, validation, lines that
 moved, and cursor and selection matching; view tests cover pseudocode and
 flowchart parsing, rejection of malformed flowcharts, and adding a view to a
 saved explanation; service tests cover file summaries being generated once,
-reused while current, outdated after edits, and never made for excluded files.
+reused while current, outdated after edits, and never made for excluded files;
+provider tests cover step phases (kept, trimmed, or dropped when unusable),
+the phase instruction, and background added to the prompt only when given;
+React guidance tests cover components, memo-wrapped components, hooks, and
+functions inside them, and none for other code; and a service test checks the
+background reaches the provider for a component and not for a plain function.
 Local description tests cover Rust items (imports, modules, functions and
 methods with receivers, structs, enums, traits, impls, constants, statics,
 aliases, macros, locals, doc comments, attributes, and standalone comments),

@@ -6,6 +6,8 @@ import { FileRepositoryCacheStore, MemoryRepositoryCacheStore } from "../src/cac
 import type { FunctionTarget } from "../src/core/types";
 import { ExplanationService } from "../src/controller";
 import { MockProvider } from "../src/generation/mock";
+import { COMPONENT_GUIDANCE } from "../src/languages/javascript/guidance";
+import { initializeJavaScriptParsersAt } from "../src/languages/javascript/syntax";
 import { Range, Position, Uri } from "./vscode";
 
 const harness = vi.hoisted(() => ({
@@ -528,5 +530,18 @@ describe("ExplanationService", () => {
       expect(provider.requests).toBe(0);
       expect((await store.read(root)).overview).toBeNull();
     }
+  });
+
+  it("adds the language's background for React components to the prompt, and none for other functions", async () => {
+    await initializeJavaScriptParsersAt(resolve("."));
+    const provider = new MockProvider();
+    const explain = vi.spyOn(provider, "explainFunction");
+    const service = createService(new MemoryRepositoryCacheStore(), provider);
+    await service.explain(root, target(), fakeDocument);
+    expect(explain.mock.calls[0]![0].guidance).toBeUndefined();
+
+    harness.source = "export function Cart({ lines }) { return <ul>{lines.map((line) => <li>{line}</li>)}</ul>; }";
+    await service.explain(root, { ...target(), name: "Cart", qualifiedName: "Cart", symbolId: "symbol-cart", source: harness.source }, fakeDocument);
+    expect(explain.mock.calls[1]![0].guidance).toBe(COMPONENT_GUIDANCE);
   });
 });

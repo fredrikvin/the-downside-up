@@ -25,6 +25,8 @@ export interface ExplanationPromptInput {
   readonly limitations: readonly string[];
   /** Extra views to include besides the steps. */
   readonly formats: readonly ExplanationFormat[];
+  /** Background on this kind of function from the extension's language support, never from repository text. */
+  readonly guidance?: string;
 }
 
 /** Input for adding one extra view to a saved explanation. */
@@ -37,6 +39,8 @@ export interface FormatPromptInput {
   readonly format: ExplanationFormat;
   /** Titles of the saved steps, so the new view tells the same story. */
   readonly stepTitles: readonly string[];
+  /** Background on this kind of function from the extension's language support, never from repository text. */
+  readonly guidance?: string;
 }
 
 export interface FileSummaryPromptInput {

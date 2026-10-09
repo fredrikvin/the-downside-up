@@ -8,6 +8,7 @@ import { gatherInventory } from "../src/context/inventory";
 import { findCalledFunctions, gatherFunctionContext } from "../src/context/related";
 import type { Description } from "../src/context/outlineText";
 import { resetTypeScriptReadiness } from "../src/languages/javascript/dependencies";
+import { COMPONENT_GUIDANCE, HOOK_GUIDANCE, javascriptGuidance, nestedGuidance } from "../src/languages/javascript/guidance";
 import { describeJavaScriptSource } from "../src/languages/javascript/outline";
 import {
   findJavaScriptFunction,
@@ -168,6 +169,25 @@ describe("JavaScript and TypeScript file descriptions", () => {
       "14 Method: Method `add` of `Shelf` takes `book`.",
       "16 Export: Exports `LIMIT`."
     ]);
+  });
+});
+
+describe("React guidance for explanations", () => {
+  const guidanceFor = async (file: string, qualifiedName: string) => {
+    const path = resolve("fixtures/react-app/src", file);
+    const text = readFileSync(path, "utf8");
+    const entry = (await listJavaScriptFunctions(text, path)).find((candidate) => candidate.qualifiedName === qualifiedName)!;
+    return javascriptGuidance({ path, text, line: entry.startLine, name: entry.name, qualifiedName });
+  };
+
+  it("explains components, hooks, and functions inside them, and nothing else", async () => {
+    expect(await guidanceFor("CartView.tsx", "CartView")).toBe(COMPONENT_GUIDANCE);
+    expect(await guidanceFor("CartItem.tsx", "CartItem")).toBe(COMPONENT_GUIDANCE);
+    expect(await guidanceFor("useCart.ts", "useCart")).toBe(HOOK_GUIDANCE);
+    expect(await guidanceFor("CartView.tsx", "CartView.handleCheckout")).toBe(nestedGuidance("CartView"));
+    expect(await guidanceFor("useCart.ts", "useCart.remove")).toContain("inside the React hook useCart");
+    expect(await guidanceFor("format.ts", "formatPrice")).toBeUndefined();
+    expect(COMPONENT_GUIDANCE).toContain("phase field");
   });
 });
 

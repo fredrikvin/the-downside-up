@@ -39,8 +39,8 @@ export const overviewSchema = objectSchema(
 
 const inputSchema = objectSchema({ label: string, name: string, description: string }, ["label", "name", "description"]);
 const stepSchema = objectSchema(
-  { title: string, detail: string, startLine: integer, endLine: integer },
-  ["title", "detail", "startLine", "endLine"]
+  { title: string, detail: string, phase: string, startLine: integer, endLine: integer },
+  ["title", "detail", "phase", "startLine", "endLine"]
 );
 const noteSchema = objectSchema({ heading: string, text: string }, ["heading", "text"]);
 
@@ -172,12 +172,17 @@ export function parseExplanation(value: unknown): FunctionExplanation {
       description: readText(item, "description", 1_000)
     })),
     result: readText(source, "result", 1_500),
-    steps: readObjects(source.steps, "steps", 15, (item) => ({
-      title: readText(item, "title", 160),
-      detail: readText(item, "detail", 1_500),
-      startLine: readLine(item, "startLine"),
-      endLine: readLine(item, "endLine")
-    })),
+    steps: readObjects(source.steps, "steps", 15, (item) => {
+      // A missing or unusable phase only loses the grouping, not the explanation.
+      const phase = typeof item.phase === "string" ? item.phase.trim().slice(0, 80) : "";
+      return {
+        title: readText(item, "title", 160),
+        detail: readText(item, "detail", 1_500),
+        ...(phase ? { phase } : {}),
+        startLine: readLine(item, "startLine"),
+        endLine: readLine(item, "endLine")
+      };
+    }),
     notes: readObjects(source.notes, "notes", 6, (item) => ({
       heading: readText(item, "heading", 80),
       text: readText(item, "text", 1_500)

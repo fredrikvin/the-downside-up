@@ -1,6 +1,7 @@
 import type { LanguageSupport } from "../support";
 import { namedChildren } from "../treeSitter";
 import { findJavaScriptDependencies } from "./dependencies";
+import { javascriptGuidance } from "./guidance";
 import { describeJavaScriptSource } from "./outline";
 import {
   findJavaScriptFunction,
@@ -31,5 +32,6 @@ export const javascriptSupport: LanguageSupport = {
       .map((node) => node.text)
       .join("\n"))) ?? "";
   },
-  findDependencies: findJavaScriptDependencies
+  findDependencies: findJavaScriptDependencies,
+  explanationGuidance: javascriptGuidance
 };

@@ -192,6 +192,8 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
     .summary { font-size: 1.1em; margin: 0 0 14px; }
     .ai-title { font-weight: 600; }
     .step { border-radius: 4px; padding: 1px 4px; margin-left: -4px; }
+    .step-phase { margin: 10px 0 4px; font-weight: 600; color: var(--vscode-descriptionForeground); }
+    .steps > ol { margin-bottom: 8px; }
     .step.linked { cursor: pointer; }
     .step.linked:hover { background: var(--vscode-list-hoverBackground, rgba(128, 128, 128, .12)); }
     .step.active, .pseudo-line.active { background: var(--vscode-editor-selectionHighlightBackground, rgba(128, 128, 128, .22)); }
@@ -359,16 +361,28 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
       });
     }
 
+    /** Numbered steps; when parts run at different times, consecutive steps are grouped under when they run. */
     function renderSteps(explanation, view) {
-      const list = el("ol");
+      const container = el("div", "steps");
+      let list;
+      let phase;
       explanation.steps.forEach((step, index) => {
+        const stepPhase = typeof step.phase === "string" ? step.phase : "";
+        if (!list || stepPhase !== phase) {
+          phase = stepPhase;
+          if (stepPhase) container.append(el("p", "step-phase", stepPhase));
+          list = el("ol");
+          // Numbering continues across groups, matching the step numbers used for highlighting.
+          if (index > 0) list.start = index + 1;
+          container.append(list);
+        }
         const item = el("li", "step");
         linkItem(item, view, "step", index, "step");
         item.append(el("strong", "", step.title.replace(/[.:]?$/, ".")));
         inline(item, " " + step.detail);
         list.append(item);
       });
-      return list;
+      return container;
     }
 
     function renderPseudocode(lines, view) {

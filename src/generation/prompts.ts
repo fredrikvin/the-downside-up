@@ -11,7 +11,7 @@ import type {
 /** Version of the repository overview prompt; changing it rebuilds overviews. */
 export const PROMPT_VERSION = "downside-up-2";
 /** Version of the function explanation and file summary prompts; changing it outdates saved explanations. */
-export const EXPLANATION_PROMPT_VERSION = "downside-up-plain-6";
+export const EXPLANATION_PROMPT_VERSION = "downside-up-plain-7";
 
 const system = [
   "You explain source code to an experienced programmer learning the source language.",
@@ -64,14 +64,20 @@ const FORMAT_INSTRUCTIONS: Record<ExplanationFormat, string> = {
   flowchart: "flowchart: the control flow as at most 20 nodes and 30 edges. Each node has a short unique id, a kind (start, action, decision, or end), a label of a few plain words (a decision is a short yes/no question, such as \"Did the request fail?\"), and startLine and endLine from the numbered source, or 0 for both. Use exactly one start node, make every return or early exit an end node, and merge minor details so the main path is easy to follow. Each edge has from and to node ids and a label such as \"yes\", \"no\", or \"error\", or an empty label for plain sequence."
 };
 
+/** Background from the extension's language support (its own fixed text, not repository text). */
+function guidanceText(guidance: string | undefined): string {
+  return guidance ? ` Background on this kind of function: ${guidance}` : "";
+}
+
 export function explanationPrompt(input: ExplanationPromptInput): [string, string] {
   return [
-    `${plainSystem} Explain only the selected ${input.languageId} function. Fill the fields as follows.
+    `${plainSystem} Explain only the selected ${input.languageId} function.${guidanceText(input.guidance)} Fill the fields as follows.
 title: a 2-5 word action phrase in sentence case starting with a verb, such as "Fetch a wearer".
 purpose: one sentence on what the function is for and what it works with.
 inputs: one entry per parameter the reader should know about, with a friendly label (such as "Organization ID"), the name in the code, and what it is used for; empty when there are none.
 result: what the caller gets back and when, in plain words; empty when nothing is returned.
-steps: the 2-7 main things that happen, in order; each with a short imperative title, one or two sentences that include what happens when something goes wrong, and startLine and endLine: the first and last line numbers of the numbered source that the step describes, or 0 for both when it is not tied to specific lines. Group small details instead of restating every line.
+steps: the 2-7 main things that happen, in order; each with a short imperative title, one or two sentences that include what happens when something goes wrong, phase, and startLine and endLine: the first and last line numbers of the numbered source that the step describes, or 0 for both when it is not tied to specific lines. Group small details instead of restating every line.
+phase: an empty string when all steps run during one call, which is most functions. When parts of the function run at different times (for example later, when someone clicks a button, when a timer fires, after something appears on screen, or in the background), a short plain heading saying when, such as "When the person clicks Check out", shared by the consecutive steps that run then, with the steps that run first listed first.
 notes: only when relevant, short extra sections with a plain heading, such as "Cleanup", "Runs in the background", or "Changes shared data"; empty otherwise.
 role, edgeCases, languageNotes: brief extra detail for curious readers: where the function fits in the application, unusual inputs or failure cases, and the language features it relies on explained in plain words. Use an empty string when there is nothing useful to add.
 limitations: anything you could not see or are unsure about.${input.formats.map((format) => `\n${FORMAT_INSTRUCTIONS[format]}`).join("")}
@@ -108,7 +114,7 @@ export function fileSummaryPrompt(input: FileSummaryPromptInput): [string, strin
 
 export function formatPrompt(input: FormatPromptInput): [string, string] {
   return [
-    `${plainSystem} Describe only the selected ${input.languageId} function in the requested view, consistent with its saved steps.\n${FORMAT_INSTRUCTIONS[input.format]}`,
+    `${plainSystem} Describe only the selected ${input.languageId} function in the requested view, consistent with its saved steps.${guidanceText(input.guidance)}\n${FORMAT_INSTRUCTIONS[input.format]}`,
     JSON.stringify({
       task: `Add a ${input.format} view of the function.`,
       repository: input.repositoryName,

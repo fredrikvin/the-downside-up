@@ -30,6 +30,23 @@ export interface LanguageSupport {
   preamble?(source: string, path: string): Promise<string>;
   /** Items the function uses directly, for explanation context, tracking, hovers, and prefetching. */
   findDependencies(request: DependencyRequest): Promise<DependencyResult>;
+  /**
+   * Background for explaining this kind of function, such as how a React
+   * component runs. It must be the language support's own fixed text, never
+   * repository text, and depend only on the function's own source so saved
+   * explanations stay tied to their tracked inputs.
+   */
+  explanationGuidance?(request: GuidanceRequest): Promise<string | undefined>;
+}
+
+export interface GuidanceRequest {
+  /** Path and current text of the function's file. */
+  readonly path: string;
+  readonly text: string;
+  /** Zero-based line where the function starts, and its names. */
+  readonly line: number;
+  readonly name: string;
+  readonly qualifiedName: string;
 }
 
 export interface FunctionSlice {

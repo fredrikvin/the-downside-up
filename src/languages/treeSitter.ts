@@ -40,8 +40,14 @@ export interface TreeSitterGrammar {
  */
 export function treeSitterGrammar(grammarFile: string, languageName: string): TreeSitterGrammar {
   let parserPromise: Promise<Parser> | undefined;
-  const parser = (extensionPath = resolve(__dirname, "..")) =>
-    (parserPromise ??= createTreeSitterParser(extensionPath, grammarFile, languageName));
+  const parser = (extensionPath = resolve(__dirname, "..")) => {
+    // A failed load is forgotten, so a later `initialize` with the right path can still succeed.
+    parserPromise ??= createTreeSitterParser(extensionPath, grammarFile, languageName).catch((error: unknown) => {
+      parserPromise = undefined;
+      throw error;
+    });
+    return parserPromise;
+  };
   return {
     initialize: (extensionPath) => parser(extensionPath).then(() => undefined),
     async withSyntaxTree(source, use) {

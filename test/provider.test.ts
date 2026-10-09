@@ -162,6 +162,20 @@ describe("structured generation", () => {
     expect(parseExplanation(explanation).purpose).toBe(explanation.purpose);
     expect(parseExplanation(explanation)).toEqual(explanation);
     expect(() => parseExplanation({ ...explanation, steps: [{ title: "Only a title" }] })).toThrow(/invalid "detail"/);
+    const phased = parseExplanation({
+      ...explanation,
+      steps: [
+        { title: "Show the cart", detail: "D", phase: "  Each time it is shown ", startLine: 1, endLine: 2 },
+        { title: "Pay", detail: "D", phase: 7, startLine: 0, endLine: 0 },
+        { title: "Log", detail: "D", phase: "", startLine: 0, endLine: 0 }
+      ]
+    });
+    expect(phased.steps.map((step) => step.phase)).toEqual(["Each time it is shown", undefined, undefined]);
+    expect(JSON.stringify(explanationSchema)).toContain('"phase"');
+    expect(system).toContain("phase: an empty string when all steps run during one call");
+    expect(system).not.toContain("Background on this kind of function");
+    const [guided] = explanationPrompt({ ...promptInput, guidance: "This function is a React component." });
+    expect(guided).toContain("Background on this kind of function: This function is a React component.");
     expect(parseFileSummary({ summary: "  Reads books.  " })).toEqual({ summary: "Reads books." });
     const flowchart = {
       nodes: [

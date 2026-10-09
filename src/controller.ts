@@ -21,6 +21,7 @@ import {
   type FunctionContext
 } from "./context/related";
 import { addLocalSymbolOutline } from "./context/symbolIndex";
+import { languageFor } from "./languages/registry";
 import { normalizeStepLines } from "./presentation/stepLines";
 import {
   EXPLANATION_PROMPT_VERSION,
@@ -242,6 +243,23 @@ export class ExplanationService {
     return results;
   }
 
+  /** Background on this kind of function from its language support, such as how a React component runs. */
+  private async guidanceFor(
+    root: string,
+    target: FunctionTarget,
+    document: vscode.TextDocument
+  ): Promise<{ guidance?: string }> {
+    const path = relative(root, target.uri.fsPath).split(sep).join("/");
+    const guidance = await languageFor({ languageId: target.languageId, path }).explanationGuidance?.({
+      path,
+      text: document.getText(),
+      line: target.range.start.line,
+      name: target.name,
+      qualifiedName: target.qualifiedName
+    }).catch(() => undefined);
+    return guidance ? { guidance } : {};
+  }
+
   private readonly overviewLocks = new Map<string, Promise<unknown>>();
 
   /** Runs `task` after earlier tasks for the same repository have settled. */
@@ -460,6 +478,7 @@ export class ExplanationService {
       source: target.source,
       overview: overviewRecord.value,
       formats: this.options.explanationFormats?.() ?? [],
+      ...await this.guidanceFor(root, target, document),
       relatedContext: context.text,
       limitations: [...new Set([...inventory.limitations, ...context.limitations])]
     };
@@ -638,7 +657,8 @@ export class ExplanationService {
       signature: target.signature,
       source: target.source,
       format,
-      stepTitles: saved.explanation.steps.map((step) => step.title)
+      stepTitles: saved.explanation.steps.map((step) => step.title),
+      ...await this.guidanceFor(root, target, document)
     };
     const [system, user] = formatPrompt(input);
     const requestBytes = Buffer.byteLength(system + user, "utf8");

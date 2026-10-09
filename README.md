@@ -44,7 +44,11 @@ Preview to the Side** (or use the preview button in the editor title bar).
   chevron collapses it again. An explanation gives the function a short
   title (such as "Fetch a wearer"), says what it is for, and lists its inputs,
   its result, the main steps in order, and extras such as cleanup only when
-  relevant. The innermost steps at the editor's cursor (or all steps a
+  relevant. When parts of a function run at different times, such as a React
+  component's effects and click handlers, the steps are grouped under when
+  they run ("Each time it is shown", "When the person clicks Check out"), and
+  React components and hooks are explained in React's terms: props as inputs,
+  what is shown as the result, and hooks in plain words. The innermost steps at the editor's cursor (or all steps a
   multi-line selection touches) are highlighted, and clicking a step
   highlights its lines in the editor. **Explanations:
   Formats** (`downsideUp.explanations.formats`) adds **Pseudocode** and
@@ -191,7 +195,8 @@ production Tree-sitter runtime.
 Language support is modular. Each language with bundled analysis has a
 folder under `src/languages/` that exports one `LanguageSupport`
 (`src/languages/support.ts`): how to find a function at a position, list
-functions, describe the file, and find what a function uses. To add one, add
+functions, describe the file, find what a function uses, and optionally add
+background for explaining a kind of function (as for React components). To add one, add
 the folder, list it in `src/languages/registry.ts`, and, for a Tree-sitter
 grammar, add the grammar's name to `esbuild.config.mjs`. Languages without
 one use `src/languages/editor/` (VS Code document symbols and

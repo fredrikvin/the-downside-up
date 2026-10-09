@@ -83,6 +83,12 @@ export interface ExplanationStep extends LineLinked {
   /** Short plain-language step title, such as "Request the wearer". */
   readonly title: string;
   readonly detail: string;
+  /**
+   * When the step runs, for code that runs at different times, such as
+   * "Each time it is shown" or "When the person clicks Check out"; absent
+   * when every step runs in one call.
+   */
+  readonly phase?: string;
 }
 
 export interface ExplanationNote {
