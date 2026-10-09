@@ -35,7 +35,8 @@ Preview to the Side** (or use the preview button in the editor title bar).
   position and vice versa, down to the step or pseudocode line describing
   each code line, and the item at the cursor is highlighted. Clicking in the
   code brings its explanation into view; clicking a step keeps the preview
-  still.
+  still. A function's heading stays pinned at the top while you read its
+  explanation.
   Double-click an item to jump to its source.
 - **AI explanations.** Each function has an **AI explanation** section.
   Open it (or click the function's name) to show its saved explanation, or to

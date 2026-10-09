@@ -139,6 +139,23 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
     .entry.depth-2 { margin-left: 36px; }
     .entry.depth-3, .entry.depth-4 { margin-left: 54px; }
     .entry > h2, .entry > h3, .entry > h4 { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+    /* Headings stay in view while their section is read, and are pushed away by the next one. */
+    .entry > h2, .entry > h3, .entry > h4 {
+      position: sticky; top: 0; z-index: 5;
+      padding: 8px 0 6px; margin-bottom: 6px;
+      background: color-mix(in srgb, var(--vscode-editor-background, #fff) 88%, transparent);
+      -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px);
+      transition: box-shadow .15s ease, border-color .15s ease;
+    }
+    /* One line, so the sticky heading stays small: the title shortens, the name stays whole. */
+    .entry > h2:has(.ai-title), .entry > h3:has(.ai-title), .entry > h4:has(.ai-title) { flex-wrap: nowrap; }
+    .ai-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .entry > h2 > .heading-name, .entry > h3 > .heading-name, .entry > h4 > .heading-name { flex-shrink: 0; }
+    .entry > .stuck {
+      border-bottom-color: color-mix(in srgb, var(--vscode-textLink-foreground, #3794ff) 55%, transparent);
+      box-shadow: 0 8px 12px -10px rgba(0, 0, 0, .45);
+    }
+    @media (prefers-reduced-motion: reduce) { .entry > h2, .entry > h3, .entry > h4 { transition: none; } }
     .entry.depth-0 > h2 { margin-top: 28px; }
     .kind { font-size: .7em; font-weight: 500; text-transform: uppercase; letter-spacing: .06em; color: var(--vscode-descriptionForeground); }
     .heading-name code { font-size: .92em; background: none; padding: 0; }
@@ -682,7 +699,11 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
       const aiTitle = view && view.status === "current" && view.explanation ? view.explanation.title : "";
       if (HEADING_KINDS.has(entry.kind)) {
         const heading = el(entry.depth === 0 ? "h2" : entry.depth === 1 ? "h3" : "h4");
-        if (aiTitle) heading.append(el("span", "ai-title", aiTitle + " —"));
+        if (aiTitle) {
+          const title = el("span", "ai-title", aiTitle + " —");
+          title.title = aiTitle;
+          heading.append(title);
+        }
         else heading.append(el("span", "kind", entry.kindLabel));
         const nameLink = action("", entry.explainable
           ? () => post({ type: "expand", entryId: entry.id })
@@ -755,6 +776,7 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
       renderOverview(next.overview);
       highlight(currentEntry);
       highlightSteps(activeSteps);
+      updateStuck();
       if (focusedEntry && focusedEntry.id) {
         const focusedKind = focusedClass.split(" ")[0] || "ai-toggle";
         const selector = focusedKind === "tab" ? '.tab[aria-selected="true"]' : "." + focusedKind;
@@ -771,6 +793,25 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
         window.scrollTo(0, previousScroll);
       }
     }
+
+    /** Height of a stuck function heading, so code lines map to the visible area below it. */
+    function stickyInset() {
+      const heading = document.querySelector(".entry.depth-0 > h2");
+      return heading ? heading.offsetHeight : 0;
+    }
+
+    let stuckFrame = 0;
+    /** Marks headings that are currently stuck, to show their shadow. */
+    function updateStuck() {
+      cancelAnimationFrame(stuckFrame);
+      stuckFrame = requestAnimationFrame(() => {
+        for (const heading of document.querySelectorAll(".entry > h2, .entry > h3, .entry > h4")) {
+          const section = heading.parentElement.getBoundingClientRect();
+          heading.classList.toggle("stuck", section.top < -1 && section.bottom > heading.offsetHeight);
+        }
+      });
+    }
+    window.addEventListener("scroll", updateStuck, { passive: true });
 
     function anchors() {
       const list = [];
@@ -790,14 +831,14 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
       cancelAnimationFrame(scrollFrame);
       scrollFrame = requestAnimationFrame(() => {
         ignoreScrollUntil = performance.now() + 100;
-        window.scrollTo(0, offsetForLine(anchors(), sourceLine, lineCount(), documentEnd()));
+        window.scrollTo(0, offsetForLine(anchors(), sourceLine, lineCount(), documentEnd()) - stickyInset());
       });
     }
     window.addEventListener("scroll", () => {
       if (performance.now() < ignoreScrollUntil || !state || !state.document) return;
       cancelAnimationFrame(revealFrame);
       revealFrame = requestAnimationFrame(() => {
-        sourceLine = lineForOffset(anchors(), window.scrollY, lineCount(), documentEnd());
+        sourceLine = lineForOffset(anchors(), window.scrollY + stickyInset(), lineCount(), documentEnd());
         post({ type: "revealLine", line: Math.max(0, Math.floor(sourceLine)) });
       });
     }, { passive: true });
@@ -827,10 +868,14 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
         const target = item || (currentEntry ? byId(currentEntry) : null);
         if (!target) return;
         const rect = target.getBoundingClientRect();
-        const visible = item ? rect.top >= 0 && rect.bottom <= window.innerHeight : rect.bottom > 0 && rect.top < window.innerHeight;
+        const inset = stickyInset();
+        const visible = item ? rect.top >= inset && rect.bottom <= window.innerHeight : rect.bottom > inset && rect.top < window.innerHeight;
         if (visible) return;
         ignoreScrollUntil = performance.now() + 200;
-        target.scrollIntoView({ block: item && rect.height < window.innerHeight ? "center" : "start" });
+        const centered = item && rect.height < window.innerHeight - inset;
+        target.scrollIntoView({ block: centered ? "center" : "start" });
+        // A tall item would start under the sticky heading.
+        if (item && !centered) window.scrollBy(0, -inset);
       });
     }
 

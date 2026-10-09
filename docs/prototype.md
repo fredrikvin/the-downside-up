@@ -32,8 +32,12 @@ make the mapping run backwards (such as an exit node beside its decision) are
 skipped. Clicking an item in the preview scrolls the editor to its lines but
 leaves the preview where it is. Moving the cursor in the code brings what it
 highlights into view in the preview (the highlighted item, or else the item
-at the cursor) without scrolling the editor back. The item at the cursor is
-highlighted, and double-clicking an item reveals its source.
+at the cursor) without scrolling the editor back. Item headings are sticky:
+a function's heading stays at the top of the preview, on one line with its
+AI title shortened if needed, while its explanation scrolls under it, and
+the next heading pushes it away; scroll sync and scrolling into view account
+for its height. The item at the cursor is highlighted, and double-clicking
+an item reveals its source.
 
 AI explanations are written for a reader who does not know the language:
 a 2–5 word action title shown in the function's heading, a one-sentence
