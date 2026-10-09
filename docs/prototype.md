@@ -175,7 +175,10 @@ types, found by following `use` declarations and paths (`crate::`, `self::`,
 from `tests/`, `examples/`, or `bin/` files) with Tree-sitter and Cargo's
 file layout. Items are sent whole up to 4 KiB each and 16 KiB in total; a
 larger item is sent as its signature only, and items beyond the budget are
-omitted with a stated limitation. External crates and the standard library are
+omitted with a stated limitation. At depth 2, for Rust and Go, the signatures
+(not bodies) of the functions and methods that the depth-1 functions sent whole
+call are added, from up to 8 such functions, at most 12 signatures and 4 KiB in
+total; anything already tracked is skipped. External crates and the standard library are
 not followed. For Go, function context adds the file's package clause and
 import block and, under the same budget, the package-level functions, methods,
 types, constants, and variables the function uses directly: from any file of
@@ -314,11 +317,13 @@ generation.
 
 Each explanation records what it was built from, so tracking matches what the
 model saw. Every tracked input notes its depth (0 for the function itself, 1
-for items it uses directly) and whether it covers the whole item or only its
-signature. A Rust or Go function's explanation becomes outdated when its own
-source, its file's imports, or any directly used item changes, including items
-in other files. Changes only to items that those items use (depth 2), or to other items
-in the same files, do not by themselves make it outdated; a change to a file
+for items it uses directly, 2 for functions those call) and whether it covers
+the whole item or only its signature. A Rust or Go function's explanation
+becomes outdated when its own source, its file's imports, or any directly used
+item changes, including items in other files, or when the signature of a
+depth-2 function changes. Rewriting a depth-2 function's body, changes beyond
+depth 2, or changes to other items in the same files do not by themselves make
+it outdated; a change to a file
 sent for priming still enters the overview review described above. For an item
 tracked by signature only, body edits keep the explanation current.
 Formatting-only edits do not change Rust or Go
@@ -365,7 +370,8 @@ saved-explanation lookup, request scheduling with priorities and a reserved
 slot, a single overview build for parallel explanations, shared consent
 prompts, prefetch ordering and windows, called-function
 lists for hovers and prefetching, Rust and Go dependency resolution and their
-depth-1 freshness and signature-only budget, Go method naming, source and
+depth-1 freshness and signature-only budget, depth-2 signatures (body edits
+keep an explanation current, signature edits outdate it), Go method naming, source and
 context invalidation, unrelated edits, explanations staying current when only
 the overview changes, overview content-version preservation,
 branch changes, in-flight edits, cancellation, clear-cache fencing, provider
@@ -409,7 +415,8 @@ webview's content-security policy.
   `.copilotignore`, VS Code exclusions, and the built-in path rules are.
 - Rust macros, procedural macros, and conditional compilation may hide or alter
   syntax and relationships. Tree-sitter is not a Rust compiler.
-- Cross-file Rust tracking stops at depth 1 and resolves names without type
+- Cross-file Rust tracking follows bodies at depth 1 and signatures at depth 2,
+  and stops there; it resolves names without type
   inference. A method call such as `value.find(...)` is matched by name against
   methods of the types the function uses, so it may track an extra same-named
   method or miss one whose type is never named. It follows Cargo's default
@@ -417,7 +424,8 @@ webview's content-security policy.
   other crates in a Cargo workspace, finds `impl` blocks only in the file that
   defines the type, and skips module files outside the inventory's read budget
   (stated as a limitation).
-- Go tracking also stops at depth 1 and matches method calls by name against
+- Go tracking also follows bodies at depth 1 and signatures at depth 2, and
+  matches method calls by name against
   methods of the types the function names or receives from calls, so it may
   track an extra same-named method or miss one reached only through an
   interface, embedding, or a variable of an unnamed type. Build tags and

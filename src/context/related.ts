@@ -84,6 +84,10 @@ async function loadAllowedSource(
 
 const MAX_DEPENDENCY_ITEM_BYTES = 4 * 1024;
 const MAX_DEPENDENCY_BYTES = 16 * 1024;
+/** Depth 2: signatures of functions that the functions used directly call. */
+const MAX_DEPTH2_SOURCES = 8;
+const MAX_DEPTH2_ITEMS = 12;
+const MAX_DEPTH2_BYTES = 4 * 1024;
 
 type AddInput = (
   path: string,
@@ -95,6 +99,8 @@ type AddInput = (
 
 interface DependencyItem {
   readonly kind: string;
+  readonly name: string;
+  readonly line: number;
   readonly qualifiedName: string;
   readonly source: string;
   readonly signature: string;
@@ -135,11 +141,21 @@ function dependencyRequest(
  * tracked whole when it fits the budget, by signature when only that fits,
  * and otherwise omitted with a limitation, so tracking matches what was sent.
  */
+interface Dependency {
+  readonly path: string;
+  readonly item: DependencyItem;
+}
+
+type Resolver = (request: DependencyRequest) => Promise<{ readonly dependencies: readonly Dependency[] }>;
+
+const dependencyKey = (path: string, qualifiedName: string) => `${path}\0${qualifiedName}`;
+
 function addDependencies(
-  dependencies: ReadonlyArray<{ readonly path: string; readonly item: DependencyItem }>,
+  dependencies: readonly Dependency[],
   addInput: AddInput,
   limitations: string[]
-): void {
+): Dependency[] {
+  const sentWhole: Dependency[] = [];
   let budget = MAX_DEPENDENCY_BYTES;
   for (const { path, item } of dependencies) {
     const label = `${item.kind} ${item.qualifiedName}`;
@@ -147,6 +163,7 @@ function addDependencies(
     if (fullBytes <= MAX_DEPENDENCY_ITEM_BYTES && fullBytes <= budget) {
       addInput(path, label, item.source, item.fingerprint, { depth: 1, scope: "body" });
       budget -= fullBytes;
+      sentWhole.push({ path, item });
       continue;
     }
     const signatureBytes = Buffer.byteLength(item.signature, "utf8");
@@ -159,6 +176,55 @@ function addDependencies(
     limitations.push(
       "Some items this function uses were omitted to fit the request budget; changes to them do not mark this explanation outdated."
     );
+  }
+  return sentWhole;
+}
+
+/**
+ * Adds depth 2: the signatures of functions and methods that the functions
+ * sent whole at depth 1 call. Only signatures are sent and tracked, so a
+ * changed parameter or result outdates the explanation while a rewritten body
+ * does not. Items already tracked, and the explained function, are skipped.
+ */
+async function addDepthTwoSignatures(
+  sources: readonly Dependency[],
+  base: DependencyRequest,
+  resolve: Resolver,
+  known: Set<string>,
+  addInput: AddInput,
+  limitations: string[]
+): Promise<void> {
+  let budget = MAX_DEPTH2_BYTES;
+  let count = 0;
+  let dropped = false;
+  const callable = (item: DependencyItem) => item.kind === "function" || item.kind === "method";
+  for (const { path, item } of sources.filter(({ item }) => callable(item)).slice(0, MAX_DEPTH2_SOURCES)) {
+    const text = path === base.path ? base.text : await base.load(path);
+    if (text === undefined) continue;
+    const found = await resolve({ ...base, path, text, line: item.line, name: item.name }).catch(() => undefined);
+    for (const next of found?.dependencies ?? []) {
+      if (!callable(next.item)) continue;
+      const key = dependencyKey(next.path, next.item.qualifiedName);
+      if (known.has(key)) continue;
+      known.add(key);
+      const bytes = Buffer.byteLength(next.item.signature, "utf8");
+      if (count >= MAX_DEPTH2_ITEMS || bytes > budget) {
+        dropped = true;
+        continue;
+      }
+      addInput(
+        next.path,
+        `signature of ${next.item.kind} ${next.item.qualifiedName}, used by ${item.qualifiedName}`,
+        next.item.signature,
+        next.item.signatureFingerprint,
+        { depth: 2, scope: "signature" }
+      );
+      budget -= bytes;
+      count++;
+    }
+  }
+  if (dropped) {
+    limitations.push("Some functions that this function's helpers call were left out to fit the request budget; changes to them are not tracked.");
   }
 }
 
@@ -256,12 +322,25 @@ export async function gatherFunctionContext(
   if (preamble) addInput(targetPath, "module imports and declarations", preamble);
   if (goFound) {
     limitations.push(...goFound.limitations);
-    addDependencies(goFound.dependencies, addInput, limitations);
+    const sentWhole = addDependencies(goFound.dependencies, addInput, limitations);
+    const known = new Set([
+      dependencyKey(targetPath, target.qualifiedName),
+      ...goFound.dependencies.map(({ path, item }) => dependencyKey(path, item.qualifiedName))
+    ]);
+    await addDepthTwoSignatures(
+      sentWhole,
+      dependencyRequest(target, targetPath, document, inventory),
+      findGoDependencies,
+      known,
+      addInput,
+      limitations
+    );
   }
 
   const textToScan = `${target.signature}\n${target.source}`;
   const names = namedIdentifiers(textToScan);
   if (target.languageId === "rust") {
+    const sameFileCalls: Dependency[] = [];
     for (const related of functions) {
       if (
         related.qualifiedName !== target.qualifiedName &&
@@ -270,6 +349,10 @@ export async function gatherFunctionContext(
           .test(target.source)
       ) {
         addInput(targetPath, `called function ${related.qualifiedName}`, related.source, related.fingerprint, { depth: 1 });
+        sameFileCalls.push({
+          path: targetPath,
+          item: { ...related, kind: "function", line: related.startLine, signatureFingerprint: "" }
+        });
       }
     }
     const declarations = await findRustDeclarations(document, names).catch(() => []);
@@ -285,7 +368,19 @@ export async function gatherFunctionContext(
     const rustFound = await findRustDependencies(dependencyRequest(target, targetPath, document, inventory))
       .catch(() => ({ dependencies: [], limitations: [UNRESOLVED_DEPENDENCIES] }));
     limitations.push(...rustFound.limitations);
-    addDependencies(rustFound.dependencies, addInput, limitations);
+    const sentWhole = addDependencies(rustFound.dependencies, addInput, limitations);
+    const known = new Set([
+      dependencyKey(targetPath, target.qualifiedName),
+      ...[...sameFileCalls, ...rustFound.dependencies].map(({ path, item }) => dependencyKey(path, item.qualifiedName))
+    ]);
+    await addDepthTwoSignatures(
+      [...sameFileCalls, ...sentWhole],
+      dependencyRequest(target, targetPath, document, inventory),
+      findRustDependencies,
+      known,
+      addInput,
+      limitations
+    );
   }
 
   let languageLocations: vscode.Location[] = [];

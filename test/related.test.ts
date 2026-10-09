@@ -89,6 +89,22 @@ describe("Rust function context across files", () => {
     expect(inputsMatch(original.inputs, (await checkoutContext()).inputs)).toBe(false);
   });
 
+  it("adds depth-2 signatures of functions that helpers in other files call", async () => {
+    const inventoryPath = resolve(root, "src/inventory.rs");
+    await writeFile(inventoryPath, (await readFile(inventoryPath, "utf8")) + "\npub fn audit(book: &Book) -> bool {\n    !book.title.is_empty()\n}\n");
+    await editStorage("    if book.title.is_empty() {", "    crate::inventory::audit(book);\n    if book.title.is_empty() {");
+    const context = await checkoutContext();
+    const audit = context.inputs.find((input) => input.description.includes("audit"));
+    expect(audit).toMatchObject({
+      path: "src/inventory.rs",
+      description: "signature of function audit, used by persist",
+      depth: 2,
+      scope: "signature"
+    });
+    expect(context.text).toContain("pub fn audit(book: &Book) -> bool");
+    expect(context.text).not.toContain("!book.title.is_empty()");
+  });
+
   it("tracks a dependency too large to send by its signature only", async () => {
     const padding = Array.from({ length: 200 }, (_, index) => `    let _unused_${index} = ${index};`).join("\n");
     await editStorage("    if book.title.is_empty() {", `${padding}\n    if book.title.is_empty() {`);
@@ -160,12 +176,27 @@ describe("Go function context", () => {
       ["inventory/inventory.go", "function NewCatalog", 1, "body"],
       ["inventory/inventory.go", "method Catalog.Add", 1, "body"],
       ["inventory/inventory.go", "type Book", 1, "body"],
+      ["inventory/lookup.go", "signature of method Catalog.FindAvailable, used by checkout", 2, "signature"],
+      ["inventory/lookup.go", "signature of method Catalog.MarkUnavailable, used by checkout", 2, "signature"],
       ["main.go", "function checkout", 1, "body"],
       ["main.go", "module imports and declarations", undefined, undefined],
       ["main.go", "selected main", 0, undefined],
-      ["report.go", "function describe", 1, "body"]
+      ["report.go", "function describe", 1, "body"],
+      ["storage/storage.go", "signature of function Persist, used by checkout", 2, "signature"]
     ]);
+    expect(context.text).toContain("func Persist(book inventory.Book) error");
+    expect(context.text).not.toContain("len(book.Title) > MaxTitleLength");
     expect(context.text).toContain("\"example.com/library/storage\"");
+  });
+
+  it("tracks depth-2 functions by signature: body edits keep it current, signature edits outdate it", async () => {
+    const original = await goContext("main");
+
+    await edit("storage/storage.go", "len(book.Title) > MaxTitleLength", "len(book.Title) >= MaxTitleLength");
+    expect(inputsMatch(original.inputs, (await goContext("main")).inputs)).toBe(true);
+
+    await edit("storage/storage.go", "func Persist(book inventory.Book) error", "func Persist(book inventory.Book, force bool) error");
+    expect(inputsMatch(original.inputs, (await goContext("main")).inputs)).toBe(false);
   });
 
   it("marks the explanation outdated only when a used item changes", async () => {

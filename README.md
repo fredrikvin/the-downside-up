@@ -60,8 +60,9 @@ Preview to the Side** (or use the preview button in the editor title bar).
   generations run at the same time (see **Max Concurrent Requests** below).
   Each explanation links to the related code the extension found.
   For Rust and Go, the explanation also uses the types, functions, and methods
-  the function uses, including from other files and packages, and is marked
-  outdated when any of them change. Rust and Go files are described, and their
+  the function uses, including from other files and packages, plus the
+  signatures of the functions those call, and is marked outdated when any of
+  them change. Rust and Go files are described, and their
   functions found, with bundled parsers, so no language server is needed.
   Current saved explanations appear whenever the preview shows their file,
   including after reopening the preview or restarting VS Code; this is a
