@@ -2,7 +2,7 @@
   "name": "the-downside-up",
   "displayName": "The Downside Up",
   "description": "Understand unfamiliar code with grounded, cached explanations beside the source.",
-  "version": "0.9.7",
+  "version": "0.9.8",
   "publisher": "the-downside-up",
   "license": "UNLICENSED",
   "engines": {
@@ -92,13 +92,34 @@
           "type": "object",
           "markdownDescription": "Which items the preview lists besides functions and methods. All off gives a concise preview; turn items on for more detail. These descriptions are built locally and never call the AI.",
           "properties": {
-            "imports": { "type": "boolean", "description": "Import statements." },
-            "types": { "type": "boolean", "description": "Structs, enums, interfaces, traits, type aliases, implementations, and fields." },
-            "values": { "type": "boolean", "description": "Constants and variables outside functions." },
-            "locals": { "type": "boolean", "description": "Variables and constants declared inside functions." },
-            "comments": { "type": "boolean", "description": "Standalone comments." },
-            "modules": { "type": "boolean", "description": "Modules, packages, and macros." },
-            "functionDetails": { "type": "boolean", "description": "A one-line description of each function's parameters and results, and notes such as receivers or test roles." }
+            "imports": {
+              "type": "boolean",
+              "description": "Import statements."
+            },
+            "types": {
+              "type": "boolean",
+              "description": "Structs, enums, interfaces, traits, type aliases, implementations, and fields."
+            },
+            "values": {
+              "type": "boolean",
+              "description": "Constants and variables outside functions."
+            },
+            "locals": {
+              "type": "boolean",
+              "description": "Variables and constants declared inside functions."
+            },
+            "comments": {
+              "type": "boolean",
+              "description": "Standalone comments."
+            },
+            "modules": {
+              "type": "boolean",
+              "description": "Modules, packages, and macros."
+            },
+            "functionDetails": {
+              "type": "boolean",
+              "description": "A one-line description of each function's parameters and results, and notes such as receivers or test roles."
+            }
           },
           "additionalProperties": false,
           "default": {
