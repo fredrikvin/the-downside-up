@@ -6,17 +6,20 @@ import type {
 } from "../core/types";
 import { estimateTokens } from "../core/fingerprint";
 import {
-  explanationSchema,
+  explanationSchemaFor,
+  formatSchemaFor,
   fileSummarySchema,
   overviewSchema,
   parseExplanation,
   parseFileSummary,
+  parseFormat,
   parseOverview
 } from "./schema";
-import { explanationPrompt, fileSummaryPrompt, overviewPrompt, reviewPrompt } from "./prompts";
+import { explanationPrompt, fileSummaryPrompt, formatPrompt, overviewPrompt, reviewPrompt } from "./prompts";
 import type {
   ExplanationPromptInput,
   FileSummaryPromptInput,
+  FormatPromptInput,
   GenerationProvider,
   OverviewReviewPromptInput,
   RepositoryPromptInput
@@ -62,7 +65,7 @@ export class OpenAIProvider implements GenerationProvider {
     signal?: AbortSignal
   ): Promise<GenerationResult<FunctionExplanation>> {
     const [system, user] = explanationPrompt(input);
-    return this.request(system, user, "function_explanation", explanationSchema, parseExplanation, signal);
+    return this.request(system, user, "function_explanation", explanationSchemaFor(input.formats), parseExplanation, signal);
   }
 
   async summarizeFile(
@@ -71,6 +74,14 @@ export class OpenAIProvider implements GenerationProvider {
   ): Promise<GenerationResult<FileSummary>> {
     const [system, user] = fileSummaryPrompt(input);
     return this.request(system, user, "file_summary", fileSummarySchema, parseFileSummary, signal);
+  }
+
+  async explainFormat(
+    input: FormatPromptInput,
+    signal?: AbortSignal
+  ): Promise<GenerationResult<Pick<FunctionExplanation, "pseudocode" | "flowchart">>> {
+    const [system, user] = formatPrompt(input);
+    return this.request(system, user, `function_${input.format}`, formatSchemaFor(input.format), (value) => parseFormat(value, input.format), signal);
   }
 
   private async request<T>(

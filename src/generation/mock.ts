@@ -1,5 +1,6 @@
 import { estimateTokens } from "../core/fingerprint";
 import type {
+  ExplanationFormat,
   FileSummary,
   FunctionExplanation,
   GenerationResult,
@@ -8,10 +9,41 @@ import type {
 import type {
   ExplanationPromptInput,
   FileSummaryPromptInput,
+  FormatPromptInput,
   GenerationProvider,
   OverviewReviewPromptInput,
   RepositoryPromptInput
 } from "./provider";
+
+/** Placeholder views that cover the whole function, so tests can exercise rendering and line links. */
+function mockFormats(formats: readonly ExplanationFormat[], source: string): Pick<FunctionExplanation, "pseudocode" | "flowchart"> {
+  const lastLine = Math.max(1, source.split(/\r?\n/).length);
+  return {
+    ...(formats.includes("pseudocode") ? {
+      pseudocode: [
+        { text: "start the function (mock mode does not interpret it)", depth: 0, startLine: 1, endLine: 1 },
+        { text: "do the work shown in the source", depth: 1, startLine: 1, endLine: lastLine }
+      ]
+    } : {}),
+    ...(formats.includes("flowchart") ? {
+      flowchart: {
+        nodes: [
+          { id: "start", kind: "start" as const, label: "Start", startLine: 1, endLine: 1 },
+          { id: "check", kind: "decision" as const, label: "Mock check?", startLine: 1, endLine: lastLine },
+          { id: "work", kind: "action" as const, label: "Do the work", startLine: 1, endLine: lastLine },
+          { id: "stop", kind: "end" as const, label: "Return early", startLine: 0, endLine: 0 },
+          { id: "done", kind: "end" as const, label: "Done", startLine: 0, endLine: 0 }
+        ],
+        edges: [
+          { from: "start", to: "check", label: "" },
+          { from: "check", to: "stop", label: "yes" },
+          { from: "check", to: "work", label: "no" },
+          { from: "work", to: "done", label: "" }
+        ]
+      }
+    } : {})
+  };
+}
 
 export class MockProvider implements GenerationProvider {
   readonly kind = "mock" as const;
@@ -101,7 +133,8 @@ export class MockProvider implements GenerationProvider {
       role: "Mock mode does not infer where this fits in the application.",
       edgeCases: "Mock mode does not analyze edge cases.",
       languageNotes: `Mock mode does not explain ${input.languageId} features.`,
-      limitations: ["Deterministic mock placeholder; not a real code explanation."]
+      limitations: ["Deterministic mock placeholder; not a real code explanation."],
+      ...mockFormats(input.formats, input.source)
     };
     return this.respond(input.source + input.relatedContext, value, signal);
   }
@@ -111,5 +144,12 @@ export class MockProvider implements GenerationProvider {
     signal?: AbortSignal
   ): Promise<GenerationResult<FileSummary>> {
     return this.respond(input.source, { summary: `Mock summary of ${input.path}; the file has not been interpreted.` }, signal);
+  }
+
+  explainFormat(
+    input: FormatPromptInput,
+    signal?: AbortSignal
+  ): Promise<GenerationResult<Pick<FunctionExplanation, "pseudocode" | "flowchart">>> {
+    return this.respond(input.source, mockFormats([input.format], input.source), signal);
   }
 }

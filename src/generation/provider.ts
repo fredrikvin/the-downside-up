@@ -1,4 +1,5 @@
 import type {
+  ExplanationFormat,
   FileSummary,
   FunctionExplanation,
   GenerationResult,
@@ -22,6 +23,20 @@ export interface ExplanationPromptInput {
   readonly overview: RepositoryOverview;
   readonly relatedContext: string;
   readonly limitations: readonly string[];
+  /** Extra views to include besides the steps. */
+  readonly formats: readonly ExplanationFormat[];
+}
+
+/** Input for adding one extra view to a saved explanation. */
+export interface FormatPromptInput {
+  readonly repositoryName: string;
+  readonly languageId: string;
+  readonly functionName: string;
+  readonly signature: string;
+  readonly source: string;
+  readonly format: ExplanationFormat;
+  /** Titles of the saved steps, so the new view tells the same story. */
+  readonly stepTitles: readonly string[];
 }
 
 export interface FileSummaryPromptInput {
@@ -57,6 +72,10 @@ export interface GenerationProvider {
     input: FileSummaryPromptInput,
     signal?: AbortSignal
   ): Promise<GenerationResult<FileSummary>>;
+  explainFormat(
+    input: FormatPromptInput,
+    signal?: AbortSignal
+  ): Promise<GenerationResult<Pick<FunctionExplanation, "pseudocode" | "flowchart">>>;
 }
 
 export function formatUsage(usage: Usage): string {

@@ -9,7 +9,7 @@ import {
 import { findRepositoryRoot, gatherInventory, sharingExclusion, type RepositoryInventory } from "./context/inventory";
 import { findCalledFunctions, type CalledFunction } from "./context/related";
 import { buildFileOverview, type FileOverview, type OutlineEntry } from "./context/fileOverview";
-import type { FunctionTarget, RepositoryOverview } from "./core/types";
+import type { ExplanationFormat, FunctionExplanation, FunctionTarget, LineLinked, RepositoryOverview } from "./core/types";
 import { MockProvider } from "./generation/mock";
 import { OpenAIProvider } from "./generation/openai";
 import {
@@ -30,6 +30,8 @@ import {
   ExplanationPanel,
   type ExplanationView,
   type PanelAction,
+  type FormatSettings,
+  type LinkedKind,
   type PanelNotice
 } from "./presentation/panel";
 import { innermostRangeAt } from "./presentation/scrollSync";
@@ -83,6 +85,9 @@ interface FunctionAi {
   expanded: boolean;
   /** Set when the reader collapsed the section, so it is not reopened automatically. */
   collapsedByUser?: boolean;
+  /** An extra view being added on request, and the last error doing so. */
+  loadingFormat?: ExplanationFormat;
+  formatError?: string;
   controller?: AbortController;
   /** Incremented to discard results of superseded lookups and generations. */
   epoch: number;
@@ -189,6 +194,13 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
         throw new Error("No OpenAI API key is stored. Run “Downside Up: Set OpenAI API Key”.");
       }
       return new OpenAIProvider(descriptor.modelId, key);
+    },
+    explanationFormats: () => {
+      const formats = formatSettings();
+      return [
+        ...(formats.pseudocode ? ["pseudocode" as const] : []),
+        ...(formats.flowchart ? ["flowchart" as const] : [])
+      ];
     },
     authorizeExternalData: async (root, descriptor, estimatedBytes, signal) => {
       if (signal && prefetchSignals.has(signal)) {
@@ -360,25 +372,34 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     });
   };
 
-  /** Document lines of each step of a current explanation, checked against the function as it is now. */
-  const currentStepRanges = (state: FunctionAi): Array<StepRange | undefined> | undefined => {
+  interface ItemRanges {
+    readonly steps: Array<StepRange | undefined>;
+    readonly pseudocode: Array<StepRange | undefined>;
+    readonly nodes: Array<StepRange | undefined>;
+  }
+
+  /** Document lines of each step, pseudocode line, and flowchart node, checked against the function as it is now. */
+  const currentItemRanges = (state: FunctionAi): ItemRanges | undefined => {
     const explanation = state.view.explanation;
     if (state.view.status !== "current" || !explanation) return undefined;
     const { target } = state.value;
-    return stepRanges(explanation.steps, target.source, target.range.start.line);
+    const map = (items: readonly LineLinked[] | undefined) => stepRanges(items ?? [], target.source, target.range.start.line);
+    return { steps: map(explanation.steps), pseudocode: map(explanation.pseudocode), nodes: map(explanation.flowchart?.nodes) };
   };
 
-  /** The last step highlight, for the extension-host tests. */
-  let lastStepHighlight: { functionName: string; steps: number[] } | undefined;
+  const NO_ITEMS = { steps: [], pseudocode: [], nodes: [] };
 
-  /** Highlights the steps of the innermost explained function at the editor's cursor or selection. Local only. */
+  /** The last highlight, for the extension-host tests. */
+  let lastStepHighlight: { functionName: string; steps: number[]; pseudocode: number[]; nodes: number[] } | undefined;
+
+  /** Highlights the items of the innermost explained function at the editor's cursor or selection. Local only. */
   const syncStepHighlight = (selection?: vscode.Selection): void => {
     if (!panel || !preview) return;
     lastStepHighlight = undefined;
     const editor = vscode.window.visibleTextEditors.find((candidate) => sameUri(candidate.document.uri, preview!.document.uri));
     const current = selection ?? editor?.selection;
     if (!current) {
-      panel.highlightSteps(undefined, []);
+      panel.highlightSteps(undefined, NO_ITEMS);
       return;
     }
     const line = current.active.line;
@@ -388,26 +409,61 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
         (left.state.value.target.range.end.line - left.state.value.target.range.start.line) -
         (right.state.value.target.range.end.line - right.state.value.target.range.start.line)
       )[0];
-    const ranges = match ? currentStepRanges(match.state) : undefined;
+    const ranges = match ? currentItemRanges(match.state) : undefined;
     if (!match || !ranges) {
-      panel.highlightSteps(undefined, []);
+      panel.highlightSteps(undefined, NO_ITEMS);
       return;
     }
-    const steps = stepsAt(ranges, current.start.line, current.end.line);
-    lastStepHighlight = { functionName: match.state.view.functionName, steps };
-    panel.highlightSteps(match.entry.id, steps);
+    const at = (list: Array<StepRange | undefined>) => stepsAt(list, current.start.line, current.end.line);
+    const items = { steps: at(ranges.steps), pseudocode: at(ranges.pseudocode), nodes: at(ranges.nodes) };
+    lastStepHighlight = { functionName: match.state.view.functionName, ...items };
+    panel.highlightSteps(match.entry.id, items);
   };
 
-  /** Selects a step's lines in the editor; the lines come from the host's own check, never the model alone. */
-  const revealStep = async (entryId: string, step: number): Promise<void> => {
+  /** Selects an item's lines in the editor; the lines come from the host's own check, never the model alone. */
+  const revealItem = async (entryId: string, kind: LinkedKind, index: number): Promise<void> => {
     const state = existingStateForEntry(entryId);
-    const range = state ? currentStepRanges(state)?.[step] : undefined;
+    const ranges = state ? currentItemRanges(state) : undefined;
+    const range = ranges?.[kind === "step" ? "steps" : kind === "pseudocode" ? "pseudocode" : "nodes"][index];
     if (!state || !range) return;
     const document = state.value.document;
     const end = Math.min(range.end, document.lineCount - 1);
     const selection = new vscode.Selection(range.start, 0, end, document.lineAt(end).text.length);
     const editor = await vscode.window.showTextDocument(document, { viewColumn: columnFor(document.uri), selection, preserveFocus: false });
     editor.revealRange(selection, vscode.TextEditorRevealType.InCenterIfOutsideViewport);
+  };
+
+  const formatSettings = (): FormatSettings => {
+    const settings = vscode.workspace.getConfiguration("downsideUp");
+    const formats = settings.get<Record<string, unknown>>("explanations.formats") ?? {};
+    const initial = settings.get<string>("explanations.initialFormat", "steps");
+    return {
+      pseudocode: formats.pseudocode === true,
+      flowchart: formats.flowchart === true,
+      initial: initial === "pseudocode" || initial === "flowchart" ? initial : "steps"
+    };
+  };
+
+  /** Generates one missing view for a current saved explanation, on the reader's request. */
+  const addFormat = async (entryId: string, format: ExplanationFormat): Promise<void> => {
+    const state = existingStateForEntry(entryId);
+    if (!state || !state.result || state.loadingFormat || state.view.status !== "current") return;
+    state.loadingFormat = format;
+    state.formatError = undefined;
+    const epoch = state.epoch;
+    render();
+    try {
+      const result = await scheduler.schedule("explicit", () =>
+        service.addExplanationFormat(state.value.root, state.value.target, state.value.document, format)
+      );
+      if (state.epoch !== epoch || !functions.has(state.key)) return;
+      applyResult(state, result);
+    } catch (error) {
+      if (state.epoch === epoch) state.formatError = errorMessage(error);
+    } finally {
+      state.loadingFormat = undefined;
+      render();
+    }
   };
 
   /** The preview's outline entries that the "Preview: Include" setting shows. */
@@ -423,13 +479,17 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     for (const { state, entry } of previewStates()) {
       const result = state.result;
       const references = state.view.references.map((reference) => ({ ...reference, id: `${entry.id}:${reference.id}` }));
-      const ranges = currentStepRanges(state);
+      const ranges = currentItemRanges(state);
       explanations.push({
         ...state.view,
         references,
         entryId: entry.id,
         expanded: state.expanded,
-        ...(ranges ? { linkedSteps: ranges.map(Boolean) } : {})
+        ...(ranges
+          ? { linked: { steps: ranges.steps.map(Boolean), pseudocode: ranges.pseudocode.map(Boolean), nodes: ranges.nodes.map(Boolean) } }
+          : {}),
+        ...(state.loadingFormat ? { loadingFormat: state.loadingFormat } : {}),
+        ...(state.formatError ? { formatError: state.formatError } : {})
       });
       if (!result) continue;
       for (const reference of result.context.sourceReferences) {
@@ -451,6 +511,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       explanations,
       ...(summary ? { summary: { text: summary.text, current: summary.current } } : {}),
       showDetails: vscode.workspace.getConfiguration("downsideUp").get<boolean>("explanations.showDetails", false) === true,
+      formats: formatSettings(),
       ...(shownContext ? { overview: shownContext.overview } : {}),
       ...(notice ? { notice } : {}),
       busy: Boolean(repositoryJob),
@@ -1236,8 +1297,11 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
         await chooseLanguageModel();
         render();
         return;
-      case "revealStep":
-        await revealStep(action.entryId, action.step);
+      case "revealItem":
+        await revealItem(action.entryId, action.kind, action.index);
+        return;
+      case "addFormat":
+        await addFormat(action.entryId, action.format);
         return;
       case "revealLine": {
         const current = preview;
@@ -1590,7 +1654,10 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
   });
 
   const onConfigChange = vscode.workspace.onDidChangeConfiguration((event) => {
-    if (event.affectsConfiguration("downsideUp.preview.include") || event.affectsConfiguration("downsideUp.explanations.showDetails")) {
+    if (
+      event.affectsConfiguration("downsideUp.preview.include") ||
+      event.affectsConfiguration("downsideUp.explanations")
+    ) {
       render();
     }
     if (event.affectsConfiguration("downsideUp.maxConcurrentRequests")) {
@@ -1666,10 +1733,16 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       expanded: state.expanded
     })),
     stepHighlight: () => lastStepHighlight,
-    revealStep: async (functionName: string, step: number) => {
+    revealStep: async (functionName: string, step: number, kind: LinkedKind = "step") => {
       const found = previewStates().find(({ state }) => state.view.functionName === functionName);
-      if (found) await revealStep(found.entry.id, step);
+      if (found) await revealItem(found.entry.id, kind, step);
     },
+    addFormat: async (functionName: string, format: ExplanationFormat) => {
+      const found = previewStates().find(({ state }) => state.view.functionName === functionName);
+      if (found) await addFormat(found.entry.id, format);
+    },
+    explanationOf: (functionName: string) =>
+      previewStates().find(({ state }) => state.view.functionName === functionName)?.state.view.explanation,
     shownOutline: () => shownEntries().map((entry) => ({ kindLabel: entry.kindLabel, name: entry.name })),
     fileSummary: () => fileSummary && preview && fileSummary.uri === preview.document.uri.toString()
       ? { text: fileSummary.text, current: fileSummary.current }
@@ -1687,8 +1760,10 @@ export interface DownsideUpTestApi {
   previewExplanations(): Array<{ functionName: string; status: string; expanded: boolean }>;
   allExplanations(): Array<{ functionName: string; status: string; path: string; error?: string }>;
   shownOutline(): Array<{ kindLabel: string; name: string }>;
-  stepHighlight(): { functionName: string; steps: number[] } | undefined;
-  revealStep(functionName: string, step: number): Promise<void>;
+  stepHighlight(): { functionName: string; steps: number[]; pseudocode: number[]; nodes: number[] } | undefined;
+  revealStep(functionName: string, index: number, kind?: LinkedKind): Promise<void>;
+  addFormat(functionName: string, format: ExplanationFormat): Promise<void>;
+  explanationOf(functionName: string): FunctionExplanation | undefined;
   fileSummary(): { text: string; current: boolean } | undefined;
 }
 

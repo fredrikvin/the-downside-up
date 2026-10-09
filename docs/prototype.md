@@ -49,6 +49,24 @@ first line moved, for example after a comment was added, the nearest line
 with the same text is used; if that text no longer exists, the step is not
 linked. Model-provided lines are never used without this check.
 
+`downsideUp.explanations.formats` adds two optional views of "What happens",
+shown as tabs beside the steps (`downsideUp.explanations.initialFormat` picks
+the first tab): plain-language pseudocode lines with indentation, and a
+flowchart of start, action, decision, and end nodes with labelled edges. Both
+carry source lines checked like steps, so they highlight at the cursor and
+select their lines when clicked. Enabled views are requested together with
+new explanations (making each request somewhat larger). For a saved
+explanation without a view, its tab offers **Generate**, an explicit request
+that sends the function source with numbered lines and the saved step titles,
+and saves the view into the explanation only if the function and its context
+are unchanged afterwards. The flowchart is validated before use (at most 24
+nodes and 40 edges, unique node IDs, edges only between known nodes); an
+invalid view is dropped without failing the explanation. The panel draws the
+flowchart itself from HTML boxes and SVG lines, with every label set as text:
+the main path runs downward in the first column, an early exit sits to the
+right of the node it leaves from, and edges that loop back are routed along the
+right side. No diagram library or HTML parsing is involved.
+
 Every function has an **AI explanation** section. Opening it, or
 clicking the function name, is an explicit request: the extension first looks
 for a current saved explanation (local only) and generates one only when none
@@ -331,7 +349,8 @@ server), distinct identities for
 same-named Rust methods in different `impl` blocks, document-ordered outlines,
 explanation commands, preview creation, selection changes during an in-flight
 request, saved explanations listed as ready after closing and reopening the
-preview, steps that follow the cursor and select their lines when clicked, prefetching that starts at the cursor, stays within its window, and
+preview, steps that follow the cursor and select their lines when clicked, a flowchart
+added on request whose nodes follow the cursor and select their lines, prefetching that starts at the cursor, stays within its window, and
 follows the cursor, prefetching of a called function in another package,
 saved-explanation hovers that appear only when an explanation is saved and
 never generate, refusal to explain a function in a `.copilotignore`d file, and
@@ -340,7 +359,9 @@ VS Code profile so earlier runs' windows are not restored.
 Concise-outline tests cover which items each `preview.include` option adds and the
 recomputed nesting; schema tests cover the plain-language explanation and file
 summary formats; step-line tests cover numbering, validation, lines that
-moved, and cursor and selection matching; service tests cover file summaries being generated once,
+moved, and cursor and selection matching; view tests cover pseudocode and
+flowchart parsing, rejection of malformed flowcharts, and adding a view to a
+saved explanation; service tests cover file summaries being generated once,
 reused while current, outdated after edits, and never made for excluded files.
 Local description tests cover Rust items (imports, modules, functions and
 methods with receivers, structs, enums, traits, impls, constants, statics,

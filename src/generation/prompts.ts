@@ -1,7 +1,9 @@
 import { numberLines } from "../presentation/stepLines";
+import type { ExplanationFormat } from "../core/types";
 import type {
   ExplanationPromptInput,
   FileSummaryPromptInput,
+  FormatPromptInput,
   OverviewReviewPromptInput,
   RepositoryPromptInput
 } from "./provider";
@@ -9,7 +11,7 @@ import type {
 /** Version of the repository overview prompt; changing it rebuilds overviews. */
 export const PROMPT_VERSION = "downside-up-2";
 /** Version of the function explanation and file summary prompts; changing it outdates saved explanations. */
-export const EXPLANATION_PROMPT_VERSION = "downside-up-plain-4";
+export const EXPLANATION_PROMPT_VERSION = "downside-up-plain-5";
 
 const system = [
   "You explain source code to an experienced programmer learning the source language.",
@@ -57,6 +59,11 @@ const plainSystem = [
   "Return only the requested schema."
 ].join(" ");
 
+const FORMAT_INSTRUCTIONS: Record<ExplanationFormat, string> = {
+  pseudocode: "pseudocode: the function as 3-25 lines of plain-language pseudocode that someone who does not program could follow, in the same order as the code, such as \"if the request fails: log the error and return an internal error\". Each line has depth (indentation level 0-4 for nested conditions and loops) and startLine and endLine from the numbered source, or 0 for both when not tied to lines. Use words, not syntax from the source language.",
+  flowchart: "flowchart: the control flow as at most 20 nodes and 30 edges. Each node has a short unique id, a kind (start, action, decision, or end), a label of a few plain words (a decision is a short yes/no question, such as \"Did the request fail?\"), and startLine and endLine from the numbered source, or 0 for both. Use exactly one start node, make every return or early exit an end node, and merge minor details so the main path is easy to follow. Each edge has from and to node ids and a label such as \"yes\", \"no\", or \"error\", or an empty label for plain sequence."
+};
+
 export function explanationPrompt(input: ExplanationPromptInput): [string, string] {
   return [
     `${plainSystem} Explain only the selected ${input.languageId} function. Fill the fields as follows.
@@ -67,7 +74,7 @@ result: what the caller gets back and when, in plain words; empty when nothing i
 steps: the 2-7 main things that happen, in order; each with a short imperative title, one or two sentences that include what happens when something goes wrong, and startLine and endLine: the first and last line numbers of the numbered source that the step describes, or 0 for both when it is not tied to specific lines. Group small details instead of restating every line.
 notes: only when relevant, short extra sections with a plain heading, such as "Cleanup", "Runs in the background", or "Changes shared data"; empty otherwise.
 role, edgeCases, languageNotes: brief extra detail for curious readers: where the function fits in the application, unusual inputs or failure cases, and the language features it relies on explained in plain words. Use an empty string when there is nothing useful to add.
-limitations: anything you could not see or are unsure about.
+limitations: anything you could not see or are unsure about.${input.formats.map((format) => `\n${FORMAT_INSTRUCTIONS[format]}`).join("")}
 Treat the repository overview as orientation, not proof about this function.`,
     JSON.stringify({
       task: "Explain the selected function in plain language using bounded repository context.",
@@ -95,6 +102,22 @@ export function fileSummaryPrompt(input: FileSummaryPromptInput): [string, strin
       repositoryPurpose: input.repositoryPurpose,
       source: input.source,
       ...(input.truncated ? { note: "The source was truncated to fit the request budget." } : {})
+    })
+  ];
+}
+
+export function formatPrompt(input: FormatPromptInput): [string, string] {
+  return [
+    `${plainSystem} Describe only the selected ${input.languageId} function in the requested view, consistent with its saved steps.\n${FORMAT_INSTRUCTIONS[input.format]}`,
+    JSON.stringify({
+      task: `Add a ${input.format} view of the function.`,
+      repository: input.repositoryName,
+      function: {
+        name: input.functionName,
+        signature: input.signature,
+        numberedSource: numberLines(input.source)
+      },
+      savedSteps: input.stepTitles
     })
   ];
 }

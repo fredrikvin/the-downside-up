@@ -6,20 +6,23 @@ import type {
   GenerationResult,
   RepositoryOverview
 } from "../core/types";
-import { explanationPrompt, fileSummaryPrompt, overviewPrompt, reviewPrompt } from "./prompts";
+import { explanationPrompt, fileSummaryPrompt, formatPrompt, overviewPrompt, reviewPrompt } from "./prompts";
 import type {
   ExplanationPromptInput,
   FileSummaryPromptInput,
+  FormatPromptInput,
   GenerationProvider,
   OverviewReviewPromptInput,
   RepositoryPromptInput
 } from "./provider";
 import {
-  explanationSchema,
+  explanationSchemaFor,
+  formatSchemaFor,
   fileSummarySchema,
   overviewSchema,
   parseExplanation,
   parseFileSummary,
+  parseFormat,
   parseOverview
 } from "./schema";
 
@@ -121,7 +124,7 @@ export class LanguageModelProvider implements GenerationProvider {
     signal?: AbortSignal
   ): Promise<GenerationResult<FunctionExplanation>> {
     const [system, user] = explanationPrompt(input);
-    return this.request(system, user, explanationSchema, parseExplanation, signal);
+    return this.request(system, user, explanationSchemaFor(input.formats), parseExplanation, signal);
   }
 
   async summarizeFile(
@@ -130,6 +133,14 @@ export class LanguageModelProvider implements GenerationProvider {
   ): Promise<GenerationResult<FileSummary>> {
     const [system, user] = fileSummaryPrompt(input);
     return this.request(system, user, fileSummarySchema, parseFileSummary, signal);
+  }
+
+  async explainFormat(
+    input: FormatPromptInput,
+    signal?: AbortSignal
+  ): Promise<GenerationResult<Pick<FunctionExplanation, "pseudocode" | "flowchart">>> {
+    const [system, user] = formatPrompt(input);
+    return this.request(system, user, formatSchemaFor(input.format), (value) => parseFormat(value, input.format), signal);
   }
 
   private async countTokens(

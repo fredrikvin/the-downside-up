@@ -1,6 +1,14 @@
-import type { FileSummary, FunctionExplanation, RepositoryOverview } from "../core/types";
+import type {
+  ExplanationFormat,
+  FileSummary,
+  Flowchart,
+  FunctionExplanation,
+  PseudocodeLine,
+  RepositoryOverview
+} from "../core/types";
 
 const string = { type: "string" };
+const integer = { type: "integer" };
 const stringArray = { type: "array", items: string };
 
 function objectSchema(
@@ -30,15 +38,40 @@ export const overviewSchema = objectSchema(
 );
 
 const inputSchema = objectSchema({ label: string, name: string, description: string }, ["label", "name", "description"]);
-const integer = { type: "integer" };
 const stepSchema = objectSchema(
   { title: string, detail: string, startLine: integer, endLine: integer },
   ["title", "detail", "startLine", "endLine"]
 );
 const noteSchema = objectSchema({ heading: string, text: string }, ["heading", "text"]);
 
-export const explanationSchema = objectSchema(
+const pseudocodeSchema = {
+  type: "array",
+  items: objectSchema(
+    { text: string, depth: integer, startLine: integer, endLine: integer },
+    ["text", "depth", "startLine", "endLine"]
+  )
+};
+const flowchartSchema = objectSchema(
   {
+    nodes: {
+      type: "array",
+      items: objectSchema(
+        { id: string, kind: { type: "string", enum: ["start", "action", "decision", "end"] }, label: string, startLine: integer, endLine: integer },
+        ["id", "kind", "label", "startLine", "endLine"]
+      )
+    },
+    edges: { type: "array", items: objectSchema({ from: string, to: string, label: string }, ["from", "to", "label"]) }
+  },
+  ["nodes", "edges"]
+);
+const formatSchemas: Record<ExplanationFormat, Record<string, unknown>> = {
+  pseudocode: pseudocodeSchema,
+  flowchart: flowchartSchema
+};
+
+/** The explanation schema with the requested extra views as required fields. */
+export function explanationSchemaFor(formats: readonly ExplanationFormat[]): Record<string, unknown> {
+  const base: Record<string, unknown> = {
     title: string,
     purpose: string,
     inputs: { type: "array", items: inputSchema },
@@ -49,9 +82,17 @@ export const explanationSchema = objectSchema(
     edgeCases: string,
     languageNotes: string,
     limitations: stringArray
-  },
-  ["title", "purpose", "inputs", "result", "steps", "notes", "role", "edgeCases", "languageNotes", "limitations"]
-);
+  };
+  for (const format of formats) base[format] = formatSchemas[format];
+  return objectSchema(base, Object.keys(base));
+}
+
+export const explanationSchema = explanationSchemaFor([]);
+
+/** Schema for adding one view to a saved explanation. */
+export function formatSchemaFor(format: ExplanationFormat): Record<string, unknown> {
+  return objectSchema({ [format]: formatSchemas[format] }, [format]);
+}
 
 export const fileSummarySchema = objectSchema({ summary: string }, ["summary"]);
 
@@ -144,8 +185,86 @@ export function parseExplanation(value: unknown): FunctionExplanation {
     role: readText(source, "role", 2_000),
     edgeCases: readText(source, "edgeCases", 2_000),
     languageNotes: readText(source, "languageNotes", 2_000),
-    limitations: readStrings(source.limitations, "limitations")
+    limitations: readStrings(source.limitations, "limitations"),
+    ...readFormats(source)
   };
+}
+
+const MAX_FLOW_NODES = 24;
+const MAX_FLOW_EDGES = 40;
+
+function parsePseudocode(value: unknown): PseudocodeLine[] {
+  return readObjects(value, "pseudocode", 40, (item) => {
+    const depth = item.depth;
+    return {
+      text: readText(item, "text", 300),
+      depth: typeof depth === "number" && Number.isInteger(depth) ? Math.min(4, Math.max(0, depth)) : 0,
+      startLine: readLine(item, "startLine"),
+      endLine: readLine(item, "endLine")
+    };
+  });
+}
+
+/** Checks the flowchart's structure: bounded size, unique node IDs, and edges between known nodes. */
+function parseFlowchart(value: unknown): Flowchart {
+  const source = record(value);
+  const nodes = readObjects(source.nodes, "flowchart nodes", MAX_FLOW_NODES, (item) => {
+    const kind = item.kind;
+    if (kind !== "start" && kind !== "action" && kind !== "decision" && kind !== "end") {
+      throw new Error("The provider response contains an invalid flowchart node kind.");
+    }
+    return {
+      id: readText(item, "id", 40),
+      kind,
+      label: readText(item, "label", 160),
+      startLine: readLine(item, "startLine"),
+      endLine: readLine(item, "endLine")
+    } as const;
+  });
+  const ids = new Set(nodes.map((node) => node.id));
+  if (nodes.length === 0 || ids.size !== nodes.length) {
+    throw new Error("The provider response contains an invalid flowchart.");
+  }
+  const edges = readObjects(source.edges, "flowchart edges", MAX_FLOW_EDGES, (item) => ({
+    from: readText(item, "from", 40),
+    to: readText(item, "to", 40),
+    label: readText(item, "label", 40)
+  }));
+  if (edges.some((edge) => !ids.has(edge.from) || !ids.has(edge.to))) {
+    throw new Error("The provider response contains a flowchart edge to an unknown node.");
+  }
+  return { nodes, edges };
+}
+
+/**
+ * Reads optional extra views. An invalid view is dropped with a limitation
+ * instead of failing the whole explanation.
+ */
+function readFormats(source: Record<string, unknown>): Pick<FunctionExplanation, "pseudocode" | "flowchart"> {
+  const result: { pseudocode?: PseudocodeLine[]; flowchart?: Flowchart } = {};
+  if (source.pseudocode !== undefined) {
+    try {
+      result.pseudocode = parsePseudocode(source.pseudocode);
+    } catch {
+      // Dropped; the panel offers to generate it again.
+    }
+  }
+  if (source.flowchart !== undefined) {
+    try {
+      result.flowchart = parseFlowchart(source.flowchart);
+    } catch {
+      // Dropped; the panel offers to generate it again.
+    }
+  }
+  return result;
+}
+
+/** Parses a single view added to a saved explanation; an invalid view fails the request. */
+export function parseFormat(value: unknown, format: ExplanationFormat): Pick<FunctionExplanation, "pseudocode" | "flowchart"> {
+  const source = record(value);
+  return format === "pseudocode"
+    ? { pseudocode: parsePseudocode(source.pseudocode) }
+    : { flowchart: parseFlowchart(source.flowchart) };
 }
 
 export function parseFileSummary(value: unknown): FileSummary {

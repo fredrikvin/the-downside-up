@@ -1,4 +1,4 @@
-import type { ExplanationStep, FunctionExplanation } from "../core/types";
+import type { FunctionExplanation, LineLinked } from "../core/types";
 
 /** Prefixes each source line with its 1-based number, as sent to the model. */
 export function numberLines(source: string): string {
@@ -7,25 +7,38 @@ export function numberLines(source: string): string {
   return lines.map((line, index) => `${String(index + 1).padStart(width)}| ${line}`).join("\n");
 }
 
-/**
- * Checks model-provided step lines against the function source. Valid ranges
- * are clamped to the function and remember the text of their first line, so
- * they can be found again after lines shift; anything else becomes 0 (not
- * tied to lines).
- */
-export function normalizeStepLines(explanation: FunctionExplanation, source: string): FunctionExplanation {
-  const lines = source.split(/\r?\n/);
-  const steps = explanation.steps.map((step): ExplanationStep => {
-    const start = step.startLine;
-    const end = Math.min(step.endLine, lines.length);
+function normalizeItems<T extends LineLinked>(items: readonly T[], lines: readonly string[]): T[] {
+  return items.map((item): T => {
+    const start = item.startLine;
+    const end = Math.min(item.endLine, lines.length);
     const anchor = Number.isInteger(start) && start >= 1 && start <= lines.length ? lines[start - 1]!.trim() : "";
     if (!anchor || !Number.isInteger(end) || end < start) {
-      const { anchor: _ignored, ...rest } = step;
-      return { ...rest, startLine: 0, endLine: 0 };
+      const { anchor: _ignored, ...rest } = item;
+      return { ...rest, startLine: 0, endLine: 0 } as T;
     }
-    return { ...step, startLine: start, endLine: end, anchor };
+    return { ...item, startLine: start, endLine: end, anchor };
   });
-  return { ...explanation, steps };
+}
+
+/**
+ * Checks model-provided lines of steps, pseudocode lines, and flowchart
+ * nodes against the function source. Valid ranges are clamped to the
+ * function and remember the text of their first line, so they can be found
+ * again after lines shift; anything else becomes 0 (not tied to lines).
+ */
+export function normalizeStepLines<T extends Partial<Pick<FunctionExplanation, "steps" | "pseudocode" | "flowchart">>>(
+  explanation: T,
+  source: string
+): T {
+  const lines = source.split(/\r?\n/);
+  return {
+    ...explanation,
+    ...(explanation.steps ? { steps: normalizeItems(explanation.steps, lines) } : {}),
+    ...(explanation.pseudocode ? { pseudocode: normalizeItems(explanation.pseudocode, lines) } : {}),
+    ...(explanation.flowchart
+      ? { flowchart: { ...explanation.flowchart, nodes: normalizeItems(explanation.flowchart.nodes, lines) } }
+      : {})
+  };
 }
 
 export interface StepRange {
@@ -41,7 +54,7 @@ export interface StepRange {
  * range when none is found.
  */
 export function stepRanges(
-  steps: readonly ExplanationStep[],
+  steps: readonly LineLinked[],
   currentSource: string,
   functionStartLine: number
 ): Array<StepRange | undefined> {

@@ -222,6 +222,20 @@ export async function run(): Promise<void> {
   assert.ok(stepSelection.end.line > stepSelection.start.line);
   console.log("Downside Up integration tests: steps follow the cursor and select their lines.");
 
+  await api.addFormat("checkout", "flowchart");
+  const withFlowchart = api.explanationOf("checkout");
+  assert.ok(withFlowchart?.flowchart?.nodes.length, "A flowchart can be added to a saved explanation.");
+  assert.equal(withFlowchart?.pseudocode, undefined, "Only the requested view is added.");
+  goEditor.selection = new vscode.Selection(checkoutBody, checkoutBody);
+  await waitFor(
+    async () => api.stepHighlight()?.nodes.length ? true : undefined,
+    "flowchart nodes under the cursor to be highlighted"
+  );
+  const nodeIndex = withFlowchart!.flowchart!.nodes.findIndex((node) => node.endLine > node.startLine);
+  await api.revealStep("checkout", nodeIndex, "node");
+  assert.ok(vscode.window.activeTextEditor!.selection.end.line > vscode.window.activeTextEditor!.selection.start.line, "Clicking a node selects its lines.");
+  console.log("Downside Up integration tests: a flowchart is added on request and follows the cursor.");
+
   const downsideUpSettings = vscode.workspace.getConfiguration("downsideUp");
   await downsideUpSettings.update("prefetch.window", 1, vscode.ConfigurationTarget.Global);
   await downsideUpSettings.update("prefetch.dependencies", 0, vscode.ConfigurationTarget.Global);

@@ -121,13 +121,15 @@ const fakeDocument = {
 function createService(
   store: MemoryRepositoryCacheStore | FileRepositoryCacheStore,
   provider: MockProvider,
-  authorized = true
+  authorized = true,
+  formats: Array<"pseudocode" | "flowchart"> = []
 ): ExplanationService {
   return new ExplanationService({
     store,
     describeProvider: () => ({ kind: "mock", modelId: provider.modelId }),
     createProvider: async () => provider,
-    authorizeExternalData: async () => authorized
+    authorizeExternalData: async () => authorized,
+    explanationFormats: () => formats
   });
 }
 
@@ -394,6 +396,30 @@ describe("ExplanationService", () => {
     await expect(service.explain(root, target(), fakeDocument)).rejects.toThrow(/not valid JSON/i);
     provider.failure = "refusal";
     await expect(service.explain(root, target(), fakeDocument)).rejects.toThrow(/refused/i);
+  });
+
+  it("includes enabled views and adds a missing view to a saved explanation", async () => {
+    const provider = new MockProvider();
+    const store = new MemoryRepositoryCacheStore();
+    const withPseudocode = createService(store, provider, true, ["pseudocode"]);
+    const first = await withPseudocode.explain(root, target(), fakeDocument);
+    expect(first.explanation.pseudocode?.length).toBeGreaterThan(0);
+    expect(first.explanation.flowchart).toBeUndefined();
+    expect(first.explanation.pseudocode![1]).toMatchObject({ startLine: 1, anchor: harness.source.trim() });
+
+    const calls = provider.requests;
+    const added = await withPseudocode.addExplanationFormat(root, target(), fakeDocument, "flowchart");
+    expect(added.explanation.flowchart?.nodes.length).toBe(5);
+    expect(added.explanation.pseudocode).toEqual(first.explanation.pseudocode);
+    expect(provider.requests).toBe(calls + 1);
+    expect((await withPseudocode.findCachedExplanation(root, target(), fakeDocument))?.explanation.flowchart).toBeDefined();
+
+    await withPseudocode.addExplanationFormat(root, target(), fakeDocument, "flowchart");
+    expect(provider.requests).toBe(calls + 1);
+
+    harness.functionHash = "changed";
+    await expect(withPseudocode.addExplanationFormat(root, target(), fakeDocument, "pseudocode"))
+      .rejects.toThrow("no longer current");
   });
 
   it("summarizes a file once, reuses it while current, and marks it outdated after edits", async () => {

@@ -1,6 +1,6 @@
 import * as vscode from "vscode";
 import { randomBytes } from "node:crypto";
-import type { FunctionExplanation, RepositoryOverview } from "../core/types";
+import type { ExplanationFormat, FunctionExplanation, RepositoryOverview } from "../core/types";
 import type { SourceReference } from "../context/related";
 import type { FileOverview } from "../context/fileOverview";
 import { lineForOffset, offsetForLine } from "./scrollSync";
@@ -19,8 +19,26 @@ export interface ExplanationView {
   readonly explanation?: FunctionExplanation;
   readonly references: readonly SourceReference[];
   readonly limitations: readonly string[];
-  /** For each step, whether it maps to source lines and can be highlighted or clicked. */
-  readonly linkedSteps?: readonly boolean[];
+  /** Whether each step, pseudocode line, and flowchart node maps to source lines and can be highlighted or clicked. */
+  readonly linked?: LinkedItems;
+  /** An extra view being generated for this explanation. */
+  readonly loadingFormat?: ExplanationFormat;
+  readonly formatError?: string;
+}
+
+export interface LinkedItems {
+  readonly steps: readonly boolean[];
+  readonly pseudocode: readonly boolean[];
+  readonly nodes: readonly boolean[];
+}
+
+export type LinkedKind = "step" | "pseudocode" | "node";
+
+/** Which views of "What happens" are shown as tabs, and which one opens first. */
+export interface FormatSettings {
+  readonly pseudocode: boolean;
+  readonly flowchart: boolean;
+  readonly initial: "steps" | ExplanationFormat;
 }
 
 export interface PanelNotice {
@@ -38,6 +56,7 @@ export interface PanelState {
   readonly summary?: { readonly text: string; readonly current: boolean };
   /** Whether the "More detail" part of explanations starts open. */
   readonly showDetails: boolean;
+  readonly formats: FormatSettings;
   readonly notice?: PanelNotice;
   readonly busy: boolean;
   readonly hasRepository: boolean;
@@ -54,7 +73,8 @@ export type PanelAction =
   | { readonly type: "chooseModel" }
   | { readonly type: "navigate"; readonly referenceId: string }
   | { readonly type: "revealLine"; readonly line: number }
-  | { readonly type: "revealStep"; readonly entryId: string; readonly step: number };
+  | { readonly type: "revealItem"; readonly entryId: string; readonly kind: LinkedKind; readonly index: number }
+  | { readonly type: "addFormat"; readonly entryId: string; readonly format: ExplanationFormat };
 
 export const panelHtml = (nonce: string): string => `<!doctype html>
 <html lang="en">
@@ -149,7 +169,34 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
     .step { border-radius: 4px; padding: 1px 4px; margin-left: -4px; }
     .step.linked { cursor: pointer; }
     .step.linked:hover { background: var(--vscode-list-hoverBackground, rgba(128, 128, 128, .12)); }
-    .step.active { background: var(--vscode-editor-selectionHighlightBackground, rgba(128, 128, 128, .22)); }
+    .step.active, .pseudo-line.active { background: var(--vscode-editor-selectionHighlightBackground, rgba(128, 128, 128, .22)); }
+    .flow-head { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; margin: 16px 0 6px; }
+    .flow-head h5 { margin: 0; }
+    .tabs { display: flex; gap: 2px; font-size: .85em; }
+    .tab { background: none; border: 0; border-bottom: 2px solid transparent; padding: 2px 8px; font: inherit; color: var(--vscode-descriptionForeground); cursor: pointer; }
+    .tab[aria-selected="true"] { color: var(--vscode-editor-foreground); border-bottom-color: var(--vscode-textLink-foreground); }
+    .pseudo { font-family: var(--vscode-editor-font-family, monospace); font-size: .92em; margin: 4px 0 12px; }
+    .pseudo-line { padding: 1px 6px; border-radius: 4px; white-space: pre-wrap; }
+    .pseudo-line.linked { cursor: pointer; }
+    .pseudo-line.linked:hover { background: var(--vscode-list-hoverBackground, rgba(128, 128, 128, .12)); }
+    .flow-scroll { overflow-x: auto; margin: 6px 0 12px; }
+    .flow { position: relative; display: inline-grid; grid-auto-columns: max-content; column-gap: 32px; row-gap: 34px; align-items: center; padding: 4px 64px 8px 4px; }
+    .flow-node {
+      position: relative; z-index: 1; justify-self: center; max-width: 220px; padding: 6px 12px; text-align: center; font-size: .9em; line-height: 1.35;
+      border: 1px solid var(--vscode-panel-border, var(--separator)); border-radius: 4px;
+      background: var(--vscode-editorWidget-background, var(--vscode-editor-background));
+    }
+    .flow-node.kind-start, .flow-node.kind-end { border-radius: 999px; }
+    .flow-node.kind-end { border-style: dashed; }
+    .flow-node.kind-decision { border: 2px solid var(--vscode-charts-yellow, #c9a000); }
+    .flow-node.kind-start, .flow-node.kind-end { color: var(--vscode-descriptionForeground, inherit); }
+    .flow-node.linked { cursor: pointer; }
+    .flow-node.linked:hover { border-color: var(--vscode-focusBorder); }
+    .flow-node.active { outline: 2px solid var(--vscode-textLink-foreground, #3794ff); outline-offset: 2px; }
+    .flow-edges { position: absolute; left: 0; top: 0; pointer-events: none; overflow: visible; z-index: 0; }
+    .flow-edge { fill: none; stroke: var(--vscode-descriptionForeground, #888); stroke-width: 1.3; }
+    .flow-arrow { fill: var(--vscode-descriptionForeground, #888); }
+    .flow-label { font-size: 11px; fill: var(--vscode-descriptionForeground, #888); paint-order: stroke; stroke: var(--vscode-editor-background, #fff); stroke-width: 4px; }
     .ai-body .lead { font-size: 1.05em; }
     .ai-meta { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: center; font-size: .8em; color: var(--vscode-descriptionForeground); margin-bottom: 8px; }
     .loading { display: flex; align-items: center; gap: 10px; margin: 4px 0 12px; color: var(--vscode-descriptionForeground); }
@@ -256,6 +303,259 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
       return meta;
     }
 
+    /** Tab chosen per explanation; otherwise the setting decides. */
+    const tabChoices = new Map();
+    const SVG = "http://www.w3.org/2000/svg";
+
+    /** Makes an item clickable to select its source lines, and marks it for highlighting. */
+    function linkItem(item, view, kind, index, attribute) {
+      item.dataset[attribute] = String(index);
+      const linked = view.linked && view.linked[kind === "step" ? "steps" : kind === "pseudocode" ? "pseudocode" : "nodes"];
+      if (!linked || !linked[index]) return;
+      item.classList.add("linked");
+      item.tabIndex = 0;
+      item.title = "Select these lines in the editor";
+      const reveal = (target) => {
+        if (target && target.closest && target.closest("a")) return;
+        post({ type: "revealItem", entryId: view.entryId, kind, index });
+      };
+      item.addEventListener("click", (clicked) => reveal(clicked.target));
+      item.addEventListener("keydown", (pressed) => {
+        const name = pressed["key"];
+        if (name === "Enter" || name === " ") { pressed.preventDefault(); reveal(undefined); }
+      });
+    }
+
+    function renderSteps(explanation, view) {
+      const list = el("ol");
+      explanation.steps.forEach((step, index) => {
+        const item = el("li", "step");
+        linkItem(item, view, "step", index, "step");
+        item.append(el("strong", "", step.title.replace(/[.:]?$/, ".")));
+        inline(item, " " + step.detail);
+        list.append(item);
+      });
+      return list;
+    }
+
+    function renderPseudocode(lines, view) {
+      const block = el("div", "pseudo");
+      lines.forEach((line, index) => {
+        const row = el("div", "pseudo-line");
+        row.style.paddingLeft = (6 + Math.min(4, line.depth) * 20) + "px";
+        linkItem(row, view, "pseudocode", index, "pseudo");
+        inline(row, line.text);
+        block.append(row);
+      });
+      return block;
+    }
+
+    /**
+     * Places flowchart nodes in rows: each node's row is its longest distance
+     * from the start along forward edges, so the main path runs downward. An
+     * early exit (an end reached only from a node that also continues) sits on
+     * its source's row, to the right. Edges that loop back are drawn on the right.
+     */
+    function layoutFlow(chart) {
+      const order = new Map(chart.nodes.map((node, index) => [node.id, index]));
+      const outgoing = new Map(chart.nodes.map((node) => [node.id, []]));
+      for (const edge of chart.edges) outgoing.get(edge.from).push(edge);
+      const visit = new Map();
+      const back = new Set();
+      const dfs = (id) => {
+        visit.set(id, 1);
+        for (const edge of outgoing.get(id)) {
+          const seen = visit.get(edge.to);
+          if (seen === 1) back.add(edge);
+          else if (!seen) dfs(edge.to);
+        }
+        visit.set(id, 2);
+      };
+      const start = chart.nodes.find((node) => node.kind === "start") || chart.nodes[0];
+      dfs(start.id);
+      for (const node of chart.nodes) if (!visit.get(node.id)) dfs(node.id);
+      const forward = chart.edges.filter((edge) => !back.has(edge) && edge.from !== edge.to);
+      const kinds = new Map(chart.nodes.map((node) => [node.id, node.kind]));
+      const sideExit = new Map();
+      for (const node of chart.nodes) {
+        if (node.kind !== "end") continue;
+        const incoming = forward.filter((edge) => edge.to === node.id);
+        if (incoming.length !== 1) continue;
+        const source = incoming[0].from;
+        if (forward.some((edge) => edge.from === source && edge.to !== node.id && kinds.get(edge.to) !== "end")) sideExit.set(node.id, source);
+      }
+      const indegree = new Map(chart.nodes.map((node) => [node.id, 0]));
+      for (const edge of forward) indegree.set(edge.to, indegree.get(edge.to) + 1);
+      const rank = new Map(chart.nodes.map((node) => [node.id, 0]));
+      const queue = chart.nodes.filter((node) => indegree.get(node.id) === 0).map((node) => node.id);
+      while (queue.length) {
+        const id = queue.shift();
+        for (const edge of forward.filter((candidate) => candidate.from === id)) {
+          rank.set(edge.to, Math.max(rank.get(edge.to), rank.get(id) + 1));
+          indegree.set(edge.to, indegree.get(edge.to) - 1);
+          if (indegree.get(edge.to) === 0) queue.push(edge.to);
+        }
+      }
+      for (const [exit, source] of sideExit) rank.set(exit, rank.get(source));
+      const rows = [];
+      for (const node of chart.nodes) {
+        const row = rank.get(node.id);
+        (rows[row] = rows[row] || []).push(node);
+      }
+      const ending = (node) => (node.kind === "end" ? 1 : 0);
+      return {
+        rows: rows.filter(Boolean).map((row) => row.sort((left, right) => ending(left) - ending(right) || order.get(left.id) - order.get(right.id))),
+        back
+      };
+    }
+
+    function renderFlowchart(chart, view) {
+      const scroll = el("div", "flow-scroll");
+      const flow = el("div", "flow");
+      flow.setAttribute("role", "group");
+      flow.setAttribute("aria-label", "Flowchart");
+      scroll.append(flow);
+      const { rows, back } = layoutFlow(chart);
+      const boxes = new Map();
+      // Grid cells keep the main path in the first column, with exits to its right.
+      rows.forEach((row, rowIndex) => {
+        row.forEach((node, columnIndex) => {
+          const box = el("div", "flow-node kind-" + node.kind, node.label);
+          box.style.gridRow = String(rowIndex + 1);
+          box.style.gridColumn = String(columnIndex + 1);
+          linkItem(box, view, "node", chart.nodes.indexOf(node), "node");
+          boxes.set(node.id, box);
+          flow.append(box);
+        });
+      });
+      const draw = () => {
+        flow.querySelector(".flow-edges")?.remove();
+        const base = flow.getBoundingClientRect();
+        if (!base.width) return;
+        const svg = document.createElementNS(SVG, "svg");
+        svg.setAttribute("class", "flow-edges");
+        svg.setAttribute("width", String(flow.scrollWidth));
+        svg.setAttribute("height", String(flow.scrollHeight));
+        const defs = document.createElementNS(SVG, "defs");
+        const marker = document.createElementNS(SVG, "marker");
+        const markerId = "arrow-" + view.entryId;
+        marker.setAttribute("id", markerId);
+        marker.setAttribute("viewBox", "0 0 8 8");
+        marker.setAttribute("refX", "7");
+        marker.setAttribute("refY", "4");
+        marker.setAttribute("markerWidth", "7");
+        marker.setAttribute("markerHeight", "7");
+        marker.setAttribute("orient", "auto-start-reverse");
+        const tip = document.createElementNS(SVG, "path");
+        tip.setAttribute("d", "M0,0 L8,4 L0,8 z");
+        tip.setAttribute("class", "flow-arrow");
+        marker.append(tip);
+        defs.append(marker);
+        svg.append(defs);
+        const rect = (id) => {
+          const r = boxes.get(id).getBoundingClientRect();
+          return { left: r.left - base.left, right: r.right - base.left, top: r.top - base.top, bottom: r.bottom - base.top, x: (r.left + r.right) / 2 - base.left, y: (r.top + r.bottom) / 2 - base.top };
+        };
+        const right = Math.max(...[...boxes.keys()].map((id) => rect(id).right));
+        let lane = 0;
+        for (const edge of chart.edges) {
+          const from = rect(edge.from);
+          const to = rect(edge.to);
+          const path = document.createElementNS(SVG, "path");
+          let d;
+          if (!back.has(edge) && Math.abs(to.y - from.y) < 4 && to.left > from.right) {
+            d = "M" + from.right + "," + from.y + " H" + to.left;
+          } else if (!back.has(edge) && to.top > from.bottom && to.left > from.right) {
+            // A branch to the side leaves from the right and bends down into the target.
+            d = "M" + from.right + "," + from.y + " C" + to.x + "," + from.y + " " + to.x + "," + from.y + " " + to.x + "," + to.top;
+          } else if (!back.has(edge) && to.top > from.bottom) {
+            const middle = (from.bottom + to.top) / 2;
+            d = "M" + from.x + "," + from.bottom + " C" + from.x + "," + middle + " " + to.x + "," + middle + " " + to.x + "," + to.top;
+          } else {
+            const x = right + 16 + 10 * lane++;
+            d = "M" + from.right + "," + from.y + " H" + x + " V" + to.y + " H" + to.right;
+          }
+          path.setAttribute("d", d);
+          path.setAttribute("class", "flow-edge");
+          path.setAttribute("marker-end", "url(#" + markerId + ")");
+          svg.append(path);
+          if (edge.label) {
+            const label = document.createElementNS(SVG, "text");
+            label.setAttribute("class", "flow-label");
+            label.textContent = edge.label;
+            svg.append(label);
+            requestAnimationFrame(() => {
+              const near = path.getPointAtLength(Math.min(22, path.getTotalLength() / 2));
+              label.setAttribute("x", String(near.x + 5));
+              label.setAttribute("y", String(near.y - 5));
+            });
+          }
+        }
+        flow.prepend(svg);
+      };
+      requestAnimationFrame(draw);
+      if (typeof ResizeObserver === "function") new ResizeObserver(() => requestAnimationFrame(draw)).observe(flow);
+      return scroll;
+    }
+
+    function missingFormat(view, format) {
+      const box = el("div");
+      if (view.loadingFormat === format) {
+        const loading = el("div", "loading");
+        loading.setAttribute("role", "status");
+        loading.append(el("span", "spinner"), el("span", "", "Generating the " + format + "…"));
+        box.append(loading);
+        return box;
+      }
+      if (view.formatError) box.append(el("p", "error", view.formatError));
+      const note = el("p", "muted");
+      note.append(document.createTextNode("Not generated for this explanation yet. "));
+      if (view.status === "current") {
+        note.append(action("Generate", () => post({ type: "addFormat", entryId: view.entryId, format })));
+      }
+      box.append(note);
+      return box;
+    }
+
+    /** "What happens" as numbered steps, pseudocode, or a flowchart, chosen with tabs. */
+    function renderFlowViews(body, explanation, view) {
+      const formats = (state && state.formats) || { pseudocode: false, flowchart: false, initial: "steps" };
+      const tabs = [["steps", "Steps"]];
+      if (formats.pseudocode || explanation.pseudocode) tabs.push(["pseudocode", "Pseudocode"]);
+      if (formats.flowchart || explanation.flowchart) tabs.push(["flowchart", "Flowchart"]);
+      const available = tabs.map(([id]) => id);
+      const chosen = tabChoices.get(view.entryId);
+      const selected = available.includes(chosen) ? chosen : available.includes(formats.initial) ? formats.initial : "steps";
+      if (selected === "steps" && !(explanation.steps && explanation.steps.length) && tabs.length === 1) return;
+      const head = el("div", "flow-head");
+      head.append(el("h5", "", "What happens"));
+      if (tabs.length > 1) {
+        const bar = el("div", "tabs");
+        bar.setAttribute("role", "tablist");
+        for (const [id, label] of tabs) {
+          const tab = el("button", "tab", label);
+          tab.type = "button";
+          tab.setAttribute("role", "tab");
+          tab.setAttribute("aria-selected", String(id === selected));
+          tab.addEventListener("click", (event) => {
+            event.stopPropagation();
+            tabChoices.set(view.entryId, id);
+            render(state);
+          });
+          bar.append(tab);
+        }
+        head.append(bar);
+      }
+      body.append(head);
+      if (selected === "pseudocode") {
+        body.append(explanation.pseudocode ? renderPseudocode(explanation.pseudocode, view) : missingFormat(view, "pseudocode"));
+      } else if (selected === "flowchart") {
+        body.append(explanation.flowchart ? renderFlowchart(explanation.flowchart, view) : missingFormat(view, "flowchart"));
+      } else {
+        body.append(renderSteps(explanation, view));
+      }
+    }
+
     function renderExplanation(body, explanation, view) {
       if (explanation.purpose) body.append(inline(el("p", "lead"), explanation.purpose));
       if (explanation.inputs && explanation.inputs.length) {
@@ -272,31 +572,7 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
         body.append(el("h5", "", "Inputs"), list);
       }
       if (explanation.result) body.append(el("h5", "", "Result"), inline(el("p"), explanation.result));
-      if (explanation.steps && explanation.steps.length) {
-        const list = el("ol");
-        explanation.steps.forEach((step, index) => {
-          const linked = Boolean(view.linkedSteps && view.linkedSteps[index]);
-          const item = el("li", "step" + (linked ? " linked" : ""));
-          item.dataset.step = String(index);
-          if (linked) {
-            item.tabIndex = 0;
-            item.title = "Select these lines in the editor";
-            const reveal = (target) => {
-              if (target && target.closest && target.closest("a")) return;
-              post({ type: "revealStep", entryId: view.entryId, step: index });
-            };
-            item.addEventListener("click", (clicked) => reveal(clicked.target));
-            item.addEventListener("keydown", (pressed) => {
-              const name = pressed["key"];
-              if (name === "Enter" || name === " ") { pressed.preventDefault(); reveal(undefined); }
-            });
-          }
-          item.append(el("strong", "", step.title.replace(/[.:]?$/, ".")));
-          inline(item, " " + step.detail);
-          list.append(item);
-        });
-        body.append(el("h5", "", "What happens"), list);
-      }
+      renderFlowViews(body, explanation, view);
       for (const note of explanation.notes || []) {
         if (note.heading && note.text) body.append(el("h5", "", note.heading), inline(el("p"), note.text));
       }
@@ -460,7 +736,9 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
       highlight(currentEntry);
       highlightSteps(activeSteps);
       if (focusedEntry && focusedEntry.id) {
-        const target = document.querySelector("#" + CSS.escape(focusedEntry.id) + " ." + (focusedClass.split(" ")[0] || "ai-toggle"));
+        const focusedKind = focusedClass.split(" ")[0] || "ai-toggle";
+        const selector = focusedKind === "tab" ? '.tab[aria-selected="true"]' : "." + focusedKind;
+        const target = document.querySelector("#" + CSS.escape(focusedEntry.id) + " " + selector);
         if (target) target.focus({ preventScroll: true });
       }
       const fileKey = file ? file.path : "";
@@ -503,13 +781,18 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
         post({ type: "revealLine", line: Math.max(0, Math.floor(sourceLine)) });
       });
     }, { passive: true });
-    let activeSteps = { entryId: "", steps: [] };
+    let activeSteps = { entryId: "", steps: [], pseudocode: [], nodes: [] };
     function highlightSteps(next) {
       activeSteps = next;
-      for (const node of document.querySelectorAll(".step.active")) node.classList.remove("active");
+      for (const node of document.querySelectorAll(".step.active, .pseudo-line.active, .flow-node.active")) node.classList.remove("active");
       const body = next.entryId ? byId(next.entryId + "-ai") : null;
       if (!body) return;
-      for (const index of next.steps) body.querySelector('[data-step="' + index + '"]')?.classList.add("active");
+      const mark = (attribute, indices) => {
+        for (const index of indices) body.querySelector("[data-" + attribute + '="' + index + '"]')?.classList.add("active");
+      };
+      mark("step", next.steps);
+      mark("pseudo", next.pseudocode);
+      mark("node", next.nodes);
     }
     function highlight(entryId) {
       currentEntry = entryId;
@@ -524,9 +807,12 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
       else if (message.type === "scroll" && typeof message.line === "number") scrollToLine(message.line);
       else if (message.type === "cursor") highlight(typeof message.entryId === "string" ? message.entryId : undefined);
       else if (message.type === "steps") {
+        const indices = (value) => (Array.isArray(value) ? value.filter((index) => Number.isInteger(index)) : []);
         highlightSteps({
           entryId: typeof message.entryId === "string" ? message.entryId : "",
-          steps: Array.isArray(message.steps) ? message.steps.filter((step) => Number.isInteger(step)) : []
+          steps: indices(message.steps),
+          pseudocode: indices(message.pseudocode),
+          nodes: indices(message.nodes)
         });
       }
     });
@@ -551,7 +837,8 @@ export class ExplanationPanel {
   private state: PanelState | undefined;
   private scrollLine: number | undefined;
   private cursorEntry: string | undefined;
-  private activeSteps: { entryId: string; steps: number[] } = { entryId: "", steps: [] };
+  private activeSteps: { entryId: string; steps: number[]; pseudocode: number[]; nodes: number[] } =
+    { entryId: "", steps: [], pseudocode: [], nodes: [] };
   private readonly disposables: vscode.Disposable[] = [];
   private readonly referenceHandlers = new Map<string, () => Promise<void>>();
   private readonly fileReferenceHandlers = new Map<string, () => Promise<void>>();
@@ -592,12 +879,20 @@ export class ExplanationPanel {
         } else if (type === "navigate") {
           const referenceId = stringField("referenceId");
           if (referenceId) onAction({ type, referenceId });
-        } else if (type === "revealStep") {
+        } else if (type === "revealItem") {
           const entryId = stringField("entryId");
-          const step = fields.step;
-          if (entryId && typeof step === "number" && Number.isInteger(step) && step >= 0 && step < 50) {
-            onAction({ type, entryId, step });
+          const kind = fields.kind;
+          const index = fields.index;
+          if (
+            entryId && (kind === "step" || kind === "pseudocode" || kind === "node") &&
+            typeof index === "number" && Number.isInteger(index) && index >= 0 && index < 50
+          ) {
+            onAction({ type, entryId, kind, index });
           }
+        } else if (type === "addFormat") {
+          const entryId = stringField("entryId");
+          const format = fields.format;
+          if (entryId && (format === "pseudocode" || format === "flowchart")) onAction({ type, entryId, format });
         } else if (type === "revealLine") {
           const line = fields.line;
           if (typeof line === "number" && Number.isInteger(line) && line >= 0) onAction({ type, line });
@@ -636,10 +931,15 @@ export class ExplanationPanel {
     void this.panel.webview.postMessage({ type: "cursor", entryId });
   }
 
-  /** Highlights the explanation steps that cover the editor's cursor or selection. */
-  highlightSteps(entryId: string | undefined, steps: readonly number[]): void {
-    const next = { entryId: entryId ?? "", steps: entryId ? [...steps] : [] };
-    if (next.entryId === this.activeSteps.entryId && next.steps.join() === this.activeSteps.steps.join()) return;
+  /** Highlights the steps, pseudocode lines, and flowchart nodes that cover the editor's cursor or selection. */
+  highlightSteps(
+    entryId: string | undefined,
+    items: { readonly steps: readonly number[]; readonly pseudocode: readonly number[]; readonly nodes: readonly number[] }
+  ): void {
+    const next = entryId
+      ? { entryId, steps: [...items.steps], pseudocode: [...items.pseudocode], nodes: [...items.nodes] }
+      : { entryId: "", steps: [], pseudocode: [], nodes: [] };
+    if (JSON.stringify(next) === JSON.stringify(this.activeSteps)) return;
     this.activeSteps = next;
     void this.panel.webview.postMessage({ type: "steps", ...next });
   }

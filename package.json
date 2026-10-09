@@ -88,6 +88,22 @@
           "default": "gpt-4.1-mini",
           "description": "OpenAI model used with the Responses API. Changing the model requires renewed repository consent."
         },
+        "downsideUp.explanations.formats": {
+          "type": "object",
+          "markdownDescription": "Extra ways to show **What happens** in AI explanations, as tabs next to the numbered steps. Enabled views are generated together with new explanations, which makes each request somewhat larger; for saved explanations, open the tab and choose **Generate**.",
+          "properties": {
+            "pseudocode": { "type": "boolean", "description": "Plain-language pseudocode, line by line." },
+            "flowchart": { "type": "boolean", "description": "A flowchart of the function's main path, decisions, and exits." }
+          },
+          "additionalProperties": false,
+          "default": { "pseudocode": false, "flowchart": false }
+        },
+        "downsideUp.explanations.initialFormat": {
+          "type": "string",
+          "enum": ["steps", "pseudocode", "flowchart"],
+          "default": "steps",
+          "markdownDescription": "Which view of **What happens** an explanation opens with, when it is enabled in `#downsideUp.explanations.formats#`."
+        },
         "downsideUp.maxConcurrentRequests": {
           "type": "integer",
           "default": 3,

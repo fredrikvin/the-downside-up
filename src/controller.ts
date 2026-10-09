@@ -4,6 +4,7 @@ import { inputsMatch, explanationCacheKey } from "./cache/freshness";
 import type { RepositoryCacheStore } from "./cache/store";
 import { cacheKey, fingerprint } from "./core/fingerprint";
 import type {
+  ExplanationFormat,
   ExplanationRecord,
   FileSummaryRecord,
   FunctionExplanation,
@@ -25,6 +26,7 @@ import {
   EXPLANATION_PROMPT_VERSION,
   explanationPrompt,
   fileSummaryPrompt,
+  formatPrompt,
   overviewPrompt,
   PROMPT_VERSION,
   reviewPrompt
@@ -32,6 +34,7 @@ import {
 import type {
   ExplanationPromptInput,
   FileSummaryPromptInput,
+  FormatPromptInput,
   GenerationProvider,
   OverviewReviewPromptInput,
   RepositoryPromptInput
@@ -76,6 +79,8 @@ export interface ExplanationServiceOptions {
     estimatedBytes: number,
     signal?: AbortSignal
   ) => Promise<boolean>;
+  /** Extra views to include when generating explanations; none when omitted. */
+  readonly explanationFormats?: () => readonly ExplanationFormat[];
 }
 
 const MAX_PRIMING_BYTES = 96 * 1024;
@@ -450,6 +455,7 @@ export class ExplanationService {
       signature: target.signature,
       source: target.source,
       overview: overviewRecord.value,
+      formats: this.options.explanationFormats?.() ?? [],
       relatedContext: context.text,
       limitations: [...new Set([...inventory.limitations, ...context.limitations])]
     };
@@ -600,6 +606,70 @@ export class ExplanationService {
       overview: overviewRecord
     }));
     return { overview: value, usage: result.usage };
+  }
+
+  /**
+   * Adds one extra view to a current saved explanation, for explanations
+   * saved before that view was enabled. The function and its context must be
+   * unchanged before and after the request; otherwise nothing is saved.
+   */
+  async addExplanationFormat(
+    root: string,
+    target: FunctionTarget,
+    document: vscode.TextDocument,
+    format: ExplanationFormat,
+    signal?: AbortSignal
+  ): Promise<ExplanationResult> {
+    const startingFence = this.fence(root);
+    const descriptor = this.options.describeProvider();
+    const exclusion = await sharingExclusion(root, target.uri.fsPath);
+    if (exclusion) throw new Error(`This file is excluded from AI explanations because ${exclusion}.`);
+    const saved = await this.findCachedExplanation(root, target, document);
+    if (!saved) throw new Error("The saved explanation is no longer current; regenerate it first.");
+    if (saved.explanation[format]) return saved;
+    const input: FormatPromptInput = {
+      repositoryName: basename(root),
+      languageId: target.languageId,
+      functionName: target.qualifiedName,
+      signature: target.signature,
+      source: target.source,
+      format,
+      stepTitles: saved.explanation.steps.map((step) => step.title)
+    };
+    const [system, user] = formatPrompt(input);
+    const requestBytes = Buffer.byteLength(system + user, "utf8");
+    if (requestBytes > MAX_EXPLANATION_BYTES) {
+      throw new Error("The function is too large for this view; no code was sent.");
+    }
+    assertNotCancelled(signal);
+    if (descriptor.kind !== "mock" && !(await this.options.authorizeExternalData(root, descriptor, requestBytes, signal))) {
+      throw new DOMException("External code sharing was not authorized.", "AbortError");
+    }
+    const generated = await (await this.options.createProvider(descriptor)).explainFormat(input, signal);
+    assertNotCancelled(signal);
+    const added = normalizeStepLines(generated.value, target.source);
+    const latest = await this.findCachedExplanation(root, target, document);
+    if (!latest || this.fence(root) !== startingFence || !inputsMatch(saved.context.inputs, latest.context.inputs)) {
+      throw new Error("The function changed while the view was generating. It was not saved; try again.");
+    }
+    const cache = await this.options.store.read(root);
+    const overview = cache.overview;
+    if (!overview) throw new Error("Repository context is no longer available.");
+    const key = explanationCacheKey(
+      target.symbolId,
+      descriptor.kind,
+      descriptor.modelId,
+      overview.contentVersion,
+      fingerprint(EXPLANATION_SETTINGS),
+      EXPLANATION_PROMPT_VERSION
+    );
+    const explanation: FunctionExplanation = { ...latest.explanation, ...added };
+    await this.options.store.update(root, (current) => {
+      const record = current.explanations[key];
+      if (!record || this.fence(root) !== startingFence) return current;
+      return { ...current, explanations: { ...current.explanations, [key]: { ...record, explanation } } };
+    });
+    return { ...latest, explanation, usage: generated.usage, cached: false };
   }
 
   /** Cache-only lookup of the AI summary of a file; `current` is false when the file changed since. */

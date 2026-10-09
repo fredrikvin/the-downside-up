@@ -40,15 +40,48 @@ export interface ExplanationInput {
   readonly description: string;
 }
 
-export interface ExplanationStep {
+/** Source lines an explanation item covers, checked by the extension before they are used. */
+export interface LineLinked {
+  /** 1-based lines of the function source; 0 when not tied to lines. */
+  readonly startLine: number;
+  readonly endLine: number;
+  /** Trimmed text of the first line, recorded by the extension to find the item again after lines shift. */
+  readonly anchor?: string;
+}
+
+export interface PseudocodeLine extends LineLinked {
+  readonly text: string;
+  /** Indentation level, 0-4. */
+  readonly depth: number;
+}
+
+export type FlowNodeKind = "start" | "action" | "decision" | "end";
+
+export interface FlowNode extends LineLinked {
+  readonly id: string;
+  readonly kind: FlowNodeKind;
+  readonly label: string;
+}
+
+export interface FlowEdge {
+  readonly from: string;
+  readonly to: string;
+  /** Such as "yes", "no", or "error"; empty for plain sequence. */
+  readonly label: string;
+}
+
+export interface Flowchart {
+  readonly nodes: readonly FlowNode[];
+  readonly edges: readonly FlowEdge[];
+}
+
+/** Optional views of a function's flow besides the numbered steps. */
+export type ExplanationFormat = "pseudocode" | "flowchart";
+
+export interface ExplanationStep extends LineLinked {
   /** Short plain-language step title, such as "Request the wearer". */
   readonly title: string;
   readonly detail: string;
-  /** 1-based lines of the function source the step covers; 0 when not tied to lines. */
-  readonly startLine: number;
-  readonly endLine: number;
-  /** Trimmed text of the first line, recorded by the extension to find the step again after lines shift. */
-  readonly anchor?: string;
 }
 
 export interface ExplanationNote {
@@ -77,6 +110,9 @@ export interface FunctionExplanation {
   readonly edgeCases: string;
   readonly languageNotes: string;
   readonly limitations: string[];
+  /** Present when generated; added later on request for saved explanations. */
+  readonly pseudocode?: readonly PseudocodeLine[];
+  readonly flowchart?: Flowchart;
 }
 
 export interface FileSummary {
