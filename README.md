@@ -40,8 +40,9 @@ Preview to the Side** (or use the preview button in the editor title bar).
   chevron collapses it again. An explanation gives the function a short
   title (such as "Fetch a wearer"), says what it is for, and lists its inputs,
   its result, the main steps in order, and extras such as cleanup only when
-  relevant. The steps under the editor's cursor or selection are highlighted,
-  and clicking a step selects its lines in the editor. **Explanations:
+  relevant. The innermost steps at the editor's cursor (or all steps a
+  multi-line selection touches) are highlighted, and clicking a step
+  highlights its lines in the editor. **Explanations:
   Formats** (`downsideUp.explanations.formats`) adds **Pseudocode** and
   **Flowchart** tabs next to the steps, with the same highlighting and
   click-to-select; **Explanations: Initial Format** picks the tab that opens

@@ -22,7 +22,7 @@ import { formatUsage } from "./generation/provider";
 import { nextPrefetch, prefetchFocusLine } from "./presentation/prefetch";
 import { RequestScheduler, singleFlight } from "./presentation/requestScheduler";
 import { outlineInclude, visibleOutline } from "./presentation/outlineFilter";
-import { stepRanges, stepsAt, type StepRange } from "./presentation/stepLines";
+import { innermostAt, pseudocodeLayout, stepRanges, stepsAt, type StepRange } from "./presentation/stepLines";
 import { findGoFunction, initializeGoParser, isGoDocument } from "./languages/go";
 import { findRustFunction, initializeRustParser } from "./languages/rust";
 import { findFunctionWithEditorTools } from "./languages/vscodeSymbols";
@@ -389,6 +389,35 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
 
   const NO_ITEMS = { steps: [], pseudocode: [], nodes: [] };
 
+  /**
+   * Lines of a clicked step, pseudocode line, or node, shown with a line
+   * highlight rather than a selection (VS Code would also highlight every
+   * other line with the same text), until the reader moves the cursor.
+   */
+  const revealDecoration = vscode.window.createTextEditorDecorationType({
+    isWholeLine: true,
+    backgroundColor: new vscode.ThemeColor("editor.rangeHighlightBackground"),
+    overviewRulerColor: new vscode.ThemeColor("editor.rangeHighlightBackground"),
+    overviewRulerLane: vscode.OverviewRulerLane.Full
+  });
+  context.subscriptions.push(revealDecoration);
+  let revealed: {
+    uri: string;
+    caret: vscode.Position;
+    entryId: string;
+    kind: LinkedKind;
+    index: number;
+    start: number;
+    end: number;
+    editor?: vscode.TextEditor;
+  } | undefined;
+
+  const clearReveal = (): void => {
+    if (!revealed) return;
+    revealed.editor?.setDecorations(revealDecoration, []);
+    revealed = undefined;
+  };
+
   /** The last highlight, for the extension-host tests. */
   let lastStepHighlight: { functionName: string; steps: number[]; pseudocode: number[]; nodes: number[] } | undefined;
 
@@ -414,8 +443,18 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       panel.highlightSteps(undefined, NO_ITEMS);
       return;
     }
-    const at = (list: Array<StepRange | undefined>) => stepsAt(list, current.start.line, current.end.line);
-    const items = { steps: at(ranges.steps), pseudocode: at(ranges.pseudocode), nodes: at(ranges.nodes) };
+    let items: { steps: number[]; pseudocode: number[]; nodes: number[] };
+    if (revealed && revealed.entryId === match.entry.id && current.isEmpty && current.active.isEqual(revealed.caret)) {
+      // The reader clicked this item, so exactly it stays highlighted.
+      items = { steps: [], pseudocode: [], nodes: [] };
+      items[revealed.kind === "step" ? "steps" : revealed.kind === "pseudocode" ? "pseudocode" : "nodes"].push(revealed.index);
+    } else {
+      // A cursor picks the innermost items on its line; a selection of several lines picks all it touches.
+      const at = (list: Array<StepRange | undefined>) => current.start.line === current.end.line
+        ? innermostAt(list, current.active.line)
+        : stepsAt(list, current.start.line, current.end.line);
+      items = { steps: at(ranges.steps), pseudocode: at(ranges.pseudocode), nodes: at(ranges.nodes) };
+    }
     lastStepHighlight = { functionName: match.state.view.functionName, ...items };
     panel.highlightSteps(match.entry.id, items);
   };
@@ -428,9 +467,21 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     if (!state || !range) return;
     const document = state.value.document;
     const end = Math.min(range.end, document.lineCount - 1);
-    const selection = new vscode.Selection(range.start, 0, end, document.lineAt(end).text.length);
-    const editor = await vscode.window.showTextDocument(document, { viewColumn: columnFor(document.uri), selection, preserveFocus: false });
-    editor.revealRange(selection, vscode.TextEditorRevealType.InCenterIfOutsideViewport);
+    const caret = new vscode.Position(range.start, 0);
+    clearReveal();
+    const current: NonNullable<typeof revealed> = { uri: document.uri.toString(), caret, entryId, kind, index, start: range.start, end };
+    revealed = current;
+    const editor = await vscode.window.showTextDocument(document, {
+      viewColumn: columnFor(document.uri),
+      selection: new vscode.Selection(caret, caret),
+      preserveFocus: false
+    });
+    if (revealed !== current) return;
+    const lines = new vscode.Range(range.start, 0, end, 0);
+    current.editor = editor;
+    editor.setDecorations(revealDecoration, [lines]);
+    editor.revealRange(lines, vscode.TextEditorRevealType.InCenterIfOutsideViewport);
+    syncStepHighlight();
   };
 
   const formatSettings = (): FormatSettings => {
@@ -487,6 +538,15 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
         expanded: state.expanded,
         ...(ranges
           ? { linked: { steps: ranges.steps.map(Boolean), pseudocode: ranges.pseudocode.map(Boolean), nodes: ranges.nodes.map(Boolean) } }
+          : {}),
+        ...(ranges && state.view.explanation?.pseudocode
+          ? {
+              pseudocodeLayout: pseudocodeLayout(
+                ranges.pseudocode,
+                state.view.explanation.pseudocode.map((line) => line.depth),
+                (line) => line >= 0 && line < state.value.document.lineCount ? state.value.document.lineAt(line).text : ""
+              )
+            }
           : {}),
         ...(state.loadingFormat ? { loadingFormat: state.loadingFormat } : {}),
         ...(state.formatError ? { formatError: state.formatError } : {})
@@ -1325,6 +1385,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       (action) => void handlePanelAction(action),
       () => {
         if (panel !== created) return;
+        clearReveal();
         stopPrefetch();
         for (const state of [...functions.values()]) forget(state);
         savedLookupEpoch++;
@@ -1585,6 +1646,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
 
   const onDocumentChange = vscode.workspace.onDidChangeTextDocument((event) => {
     if (event.contentChanges.length === 0 || event.document.uri.scheme !== "file") return;
+    if (revealed?.uri === event.document.uri.toString()) clearReveal();
     const current = preview;
     if (current && sameUri(event.document.uri, current.document.uri)) {
       // A cache lookup that started before this edit would describe the old source.
@@ -1634,6 +1696,10 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
 
   const onTextSelectionChange = vscode.window.onDidChangeTextEditorSelection((event) => {
     lastTextEditor = event.textEditor;
+    const moved = event.selections[0];
+    if (revealed && (event.textEditor.document.uri.toString() !== revealed.uri || !moved?.isEmpty || !moved.active.isEqual(revealed.caret))) {
+      clearReveal();
+    }
     if (!panel?.panel.visible || !preview || !sameUri(event.textEditor.document.uri, preview.document.uri)) return;
     const selection = event.selections[0];
     if (!selection) return;
@@ -1733,6 +1799,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       expanded: state.expanded
     })),
     stepHighlight: () => lastStepHighlight,
+    revealedLines: () => revealed ? { start: revealed.start, end: revealed.end } : undefined,
     revealStep: async (functionName: string, step: number, kind: LinkedKind = "step") => {
       const found = previewStates().find(({ state }) => state.view.functionName === functionName);
       if (found) await revealItem(found.entry.id, kind, step);
@@ -1762,6 +1829,7 @@ export interface DownsideUpTestApi {
   shownOutline(): Array<{ kindLabel: string; name: string }>;
   stepHighlight(): { functionName: string; steps: number[]; pseudocode: number[]; nodes: number[] } | undefined;
   revealStep(functionName: string, index: number, kind?: LinkedKind): Promise<void>;
+  revealedLines(): { start: number; end: number } | undefined;
   addFormat(functionName: string, format: ExplanationFormat): Promise<void>;
   explanationOf(functionName: string): FunctionExplanation | undefined;
   fileSummary(): { text: string; current: boolean } | undefined;

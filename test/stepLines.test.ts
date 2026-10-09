@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { FunctionExplanation } from "../src/core/types";
-import { normalizeStepLines, numberLines, stepRanges, stepsAt } from "../src/presentation/stepLines";
+import { innermostAt, normalizeStepLines, numberLines, pseudocodeLayout, stepRanges, stepsAt } from "../src/presentation/stepLines";
 
 const source = [
   "func checkout(catalog *Catalog, title string) (Book, error) {",
@@ -53,5 +53,46 @@ describe("step lines", () => {
     expect(stepsAt(ranges, 22, 22)).toEqual([0]);
     expect(stepsAt(ranges, 24, 25)).toEqual([0, 2]);
     expect(stepsAt(ranges, 30, 30)).toEqual([]);
+  });
+});
+
+describe("cursor matching and pseudocode layout", () => {
+  it("prefers the innermost items for a cursor", () => {
+    const ranges = [{ start: 10, end: 20 }, { start: 14, end: 14 }, undefined, { start: 14, end: 14 }, { start: 12, end: 16 }];
+    expect(innermostAt(ranges, 14)).toEqual([1, 3]);
+    expect(innermostAt(ranges, 18)).toEqual([0]);
+    expect(innermostAt(ranges, 30)).toEqual([]);
+  });
+
+  it("follows the code's indentation and blank lines", () => {
+    const code = [
+      "func getCamera() {",
+      "\tresponse, err := get()",
+      "\tif err != nil {",
+      "\t\tlog(err)",
+      "\t\treturn nil, ErrInternal",
+      "\t}",
+      "",
+      "\tdefer close(response)",
+      "",
+      "\treturn convert(response), nil",
+      "}"
+    ];
+    const ranges = [
+      { start: 1, end: 1 }, { start: 2, end: 2 }, { start: 3, end: 3 }, { start: 4, end: 4 },
+      undefined, { start: 7, end: 7 }, { start: 9, end: 9 }
+    ];
+    const layout = pseudocodeLayout(ranges, [0, 0, 1, 1, 2, 0, 0], (line) => code[line] ?? "");
+    expect(layout).toEqual([
+      { level: 0, gap: false },
+      { level: 0, gap: false },
+      { level: 1, gap: false },
+      { level: 1, gap: false },
+      { level: 2, gap: false },
+      { level: 0, gap: true },
+      { level: 0, gap: true }
+    ]);
+    const spaces = pseudocodeLayout([{ start: 0, end: 0 }, { start: 1, end: 1 }], [0, 0], (line) => ["    a", "        b"][line]!);
+    expect(spaces.map((entry) => entry.level)).toEqual([0, 1]);
   });
 });

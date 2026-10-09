@@ -84,3 +84,76 @@ export function stepsAt(ranges: ReadonlyArray<StepRange | undefined>, start: num
   });
   return hits;
 }
+
+/**
+ * For a cursor on one line: the items containing that line with the smallest
+ * span, so a nested item wins over the broader ones around it.
+ */
+export function innermostAt(ranges: ReadonlyArray<StepRange | undefined>, line: number): number[] {
+  let best = Number.POSITIVE_INFINITY;
+  let hits: number[] = [];
+  ranges.forEach((range, index) => {
+    if (!range || range.start > line || range.end < line) return;
+    const span = range.end - range.start;
+    if (span < best) {
+      best = span;
+      hits = [index];
+    } else if (span === best) {
+      hits.push(index);
+    }
+  });
+  return hits;
+}
+
+export interface PseudocodeLayout {
+  /** Indentation level to show. */
+  readonly level: number;
+  /** Whether a blank line comes before it, as in the code. */
+  readonly gap: boolean;
+}
+
+function indentWidth(text: string): number {
+  let width = 0;
+  for (const character of text) {
+    if (character === "\t") width += 4 - (width % 4);
+    else if (character === " ") width++;
+    else break;
+  }
+  return width;
+}
+
+/**
+ * Lays pseudocode out like the code it describes. A linked line takes the
+ * indentation of its first source line (ranked among the indentations used,
+ * so tabs and spaces both work), and gets a gap where the code has a blank
+ * line since the previous linked line. Unlinked lines keep the model's depth
+ * relative to the line before them.
+ */
+export function pseudocodeLayout(
+  ranges: ReadonlyArray<StepRange | undefined>,
+  modelDepths: readonly number[],
+  lineText: (line: number) => string
+): PseudocodeLayout[] {
+  const widths = ranges.map((range) => (range ? indentWidth(lineText(range.start)) : undefined));
+  const levels = [...new Set(widths.filter((width): width is number => width !== undefined))].sort((left, right) => left - right);
+  let previousEnd: number | undefined;
+  let previousLevel: number | undefined;
+  let previousDepth = 0;
+  return ranges.map((range, index) => {
+    const depth = Math.min(4, Math.max(0, modelDepths[index] ?? 0));
+    let layout: PseudocodeLayout;
+    if (!range) {
+      layout = { level: previousLevel === undefined ? depth : Math.max(0, previousLevel + depth - previousDepth), gap: false };
+    } else {
+      let gap = false;
+      if (previousEnd !== undefined) {
+        for (let line = previousEnd + 1; line < range.start && !gap; line++) gap = lineText(line).trim() === "";
+      }
+      previousEnd = Math.max(previousEnd ?? range.end, range.end);
+      layout = { level: levels.indexOf(widths[index]!), gap };
+    }
+    previousLevel = layout.level;
+    previousDepth = depth;
+    return { level: Math.min(6, layout.level), gap: layout.gap };
+  });
+}

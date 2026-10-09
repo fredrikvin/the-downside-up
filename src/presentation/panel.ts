@@ -21,6 +21,8 @@ export interface ExplanationView {
   readonly limitations: readonly string[];
   /** Whether each step, pseudocode line, and flowchart node maps to source lines and can be highlighted or clicked. */
   readonly linked?: LinkedItems;
+  /** Indentation and blank lines for pseudocode, taken from the code it describes. */
+  readonly pseudocodeLayout?: ReadonlyArray<{ readonly level: number; readonly gap: boolean }>;
   /** An extra view being generated for this explanation. */
   readonly loadingFormat?: ExplanationFormat;
   readonly formatError?: string;
@@ -175,8 +177,9 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
     .tabs { display: flex; gap: 2px; font-size: .85em; }
     .tab { background: none; border: 0; border-bottom: 2px solid transparent; padding: 2px 8px; font: inherit; color: var(--vscode-descriptionForeground); cursor: pointer; }
     .tab[aria-selected="true"] { color: var(--vscode-editor-foreground); border-bottom-color: var(--vscode-textLink-foreground); }
-    .pseudo { font-family: var(--vscode-editor-font-family, monospace); font-size: .92em; margin: 4px 0 12px; }
-    .pseudo-line { padding: 1px 6px; border-radius: 4px; white-space: pre-wrap; }
+    .pseudo { font-family: var(--vscode-editor-font-family, monospace); font-size: .92em; line-height: 1.55; margin: 4px 0 12px; }
+    .pseudo-line { padding: 2px 6px; border-radius: 4px; white-space: pre-wrap; }
+    .pseudo-line.gap { margin-top: 1.1em; }
     .pseudo-line.linked { cursor: pointer; }
     .pseudo-line.linked:hover { background: var(--vscode-list-hoverBackground, rgba(128, 128, 128, .12)); }
     .flow-scroll { overflow-x: auto; margin: 6px 0 12px; }
@@ -340,9 +343,14 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
 
     function renderPseudocode(lines, view) {
       const block = el("div", "pseudo");
+      const layout = view.pseudocodeLayout || [];
       lines.forEach((line, index) => {
-        const row = el("div", "pseudo-line");
-        row.style.paddingLeft = (6 + Math.min(4, line.depth) * 20) + "px";
+        const placed = layout[index];
+        const row = el("div", "pseudo-line" + (placed && placed.gap ? " gap" : ""));
+        const level = placed ? placed.level : Math.min(4, line.depth);
+        // A hanging indent keeps a wrapped line visibly one line.
+        row.style.paddingLeft = (26 + level * 24) + "px";
+        row.style.textIndent = "-20px";
         linkItem(row, view, "pseudocode", index, "pseudo");
         inline(row, line.text);
         block.append(row);

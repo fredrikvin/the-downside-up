@@ -218,8 +218,11 @@ export async function run(): Promise<void> {
   await waitFor(async () => api.stepHighlight() === undefined ? true : undefined, "the step highlight to clear outside the function");
   await api.revealStep("checkout", 0);
   const stepSelection = vscode.window.activeTextEditor!.selection;
-  assert.equal(stepSelection.start.line, goDocument.positionAt(goDocument.getText().indexOf("func checkout")).line, "Clicking a step selects its lines.");
-  assert.ok(stepSelection.end.line > stepSelection.start.line);
+  const checkoutStart = goDocument.positionAt(goDocument.getText().indexOf("func checkout")).line;
+  assert.ok(stepSelection.isEmpty, "Clicking a step does not select text, so VS Code does not mark matching lines elsewhere.");
+  assert.equal(stepSelection.start.line, checkoutStart, "Clicking a step moves the cursor to its first line.");
+  const stepLines = api.revealedLines();
+  assert.ok(stepLines && stepLines.start === checkoutStart && stepLines.end > stepLines.start, "The step's lines are highlighted.");
   console.log("Downside Up integration tests: steps follow the cursor and select their lines.");
 
   await api.addFormat("checkout", "flowchart");
@@ -233,7 +236,14 @@ export async function run(): Promise<void> {
   );
   const nodeIndex = withFlowchart!.flowchart!.nodes.findIndex((node) => node.endLine > node.startLine);
   await api.revealStep("checkout", nodeIndex, "node");
-  assert.ok(vscode.window.activeTextEditor!.selection.end.line > vscode.window.activeTextEditor!.selection.start.line, "Clicking a node selects its lines.");
+  assert.ok(api.revealedLines(), "Clicking a node highlights its lines.");
+  await waitFor(
+    async () => JSON.stringify(api.stepHighlight()?.nodes) === JSON.stringify([nodeIndex]) ? true : undefined,
+    "exactly the clicked node to stay highlighted"
+  );
+  const moved = vscode.window.activeTextEditor!;
+  moved.selection = new vscode.Selection(checkoutBody, checkoutBody);
+  await waitFor(async () => api.revealedLines() === undefined ? true : undefined, "the line highlight to clear when the cursor moves");
   console.log("Downside Up integration tests: a flowchart is added on request and follows the cursor.");
 
   const downsideUpSettings = vscode.workspace.getConfiguration("downsideUp");

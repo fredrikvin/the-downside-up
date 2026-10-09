@@ -43,11 +43,18 @@ The function source is sent with numbered lines, and each step names the
 lines it covers (or none). The extension keeps only ranges inside the
 function and records the text of each step's first line. While an
 explanation is current and open, the steps that cover the editor's cursor or
-selection are highlighted (local only), and clicking a step selects its
+selection are highlighted (local only), and clicking a step highlights its
 lines. Lines are resolved against the function as it is now: if a step's
 first line moved, for example after a comment was added, the nearest line
 with the same text is used; if that text no longer exists, the step is not
-linked. Model-provided lines are never used without this check.
+linked. Model-provided lines are never used without this check. A cursor
+highlights only the innermost items on its line (a multi-line selection
+highlights every item it touches). Clicking an item moves the cursor to its
+first line and marks its lines with a line highlight rather than a selection,
+because VS Code would also mark every other line with the same text; the
+clicked item stays highlighted until the cursor moves. Pseudocode is laid out
+from the code it describes: each linked line takes the indentation of its
+source line, and a blank line appears where the code has one.
 
 `downsideUp.explanations.formats` adds two optional views of "What happens",
 shown as tabs beside the steps (`downsideUp.explanations.initialFormat` picks

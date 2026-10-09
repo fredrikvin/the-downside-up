@@ -11,7 +11,7 @@ import type {
 /** Version of the repository overview prompt; changing it rebuilds overviews. */
 export const PROMPT_VERSION = "downside-up-2";
 /** Version of the function explanation and file summary prompts; changing it outdates saved explanations. */
-export const EXPLANATION_PROMPT_VERSION = "downside-up-plain-5";
+export const EXPLANATION_PROMPT_VERSION = "downside-up-plain-6";
 
 const system = [
   "You explain source code to an experienced programmer learning the source language.",
@@ -60,7 +60,7 @@ const plainSystem = [
 ].join(" ");
 
 const FORMAT_INSTRUCTIONS: Record<ExplanationFormat, string> = {
-  pseudocode: "pseudocode: the function as 3-25 lines of plain-language pseudocode that someone who does not program could follow, in the same order as the code, such as \"if the request fails: log the error and return an internal error\". Each line has depth (indentation level 0-4 for nested conditions and loops) and startLine and endLine from the numbered source, or 0 for both when not tied to lines. Use words, not syntax from the source language.",
+  pseudocode: "pseudocode: the function as plain-language pseudocode that someone who does not program could follow, laid out like the code: one line per statement or small group of related statements, in the same order, at most 30 lines. Put a condition or loop on its own line ending with a colon, such as \"if the request failed:\", and its body on the following lines one level deeper; never fold the body into the condition line. Each line has depth (0-4, its nesting level) and startLine and endLine from the numbered source covering only the code that line describes, or 0 for both when not tied to lines. Use words, not syntax from the source language.",
   flowchart: "flowchart: the control flow as at most 20 nodes and 30 edges. Each node has a short unique id, a kind (start, action, decision, or end), a label of a few plain words (a decision is a short yes/no question, such as \"Did the request fail?\"), and startLine and endLine from the numbered source, or 0 for both. Use exactly one start node, make every return or early exit an end node, and merge minor details so the main path is easy to follow. Each edge has from and to node ids and a label such as \"yes\", \"no\", or \"error\", or an empty label for plain sequence."
 };
 
