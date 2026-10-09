@@ -5,9 +5,16 @@ import { cacheKey, fingerprint } from "../core/fingerprint";
 import type { ContextInput, FunctionTarget, TrackedInput } from "../core/types";
 import type { RepositoryInventory } from "./inventory";
 import { isEligibleRelativePath } from "./inventory";
-import { findRustDeclarations, listRustFunctions } from "../languages/rust";
-import { findGoDependencies } from "./goDependencies";
-import { findRustDependencies } from "./rustDependencies";
+import { languageFor } from "../languages/registry";
+import {
+  isCallable,
+  lineScanPreamble,
+  UNRESOLVED_DEPENDENCIES,
+  type Dependency,
+  type DependencyItem,
+  type DependencyRequest,
+  type DependencyResult
+} from "../languages/support";
 
 export interface SourceReference {
   readonly id: string;
@@ -40,24 +47,6 @@ function pathFromUri(root: string, uri: vscode.Uri): string | undefined {
 
 function referenceId(path: string, line: number): string {
   return `r-${cacheKey([path, String(line)]).slice(0, 16)}`;
-}
-
-function namedIdentifiers(text: string): Set<string> {
-  return new Set(text.match(/\b[A-Za-z_][A-Za-z0-9_]*\b/g) ?? []);
-}
-
-function relevantPreamble(text: string, ranges: readonly vscode.Range[]): string {
-  return text
-    .split(/\r?\n/)
-    .map((line, index) => ({ line, index }))
-    .filter(({ line, index }) => {
-      if (/^\s*(?:use\b|mod\b|import\b|export\b|const\b|#include\b)/.test(line)) return true;
-      return ranges.some((range) => index < range.start.line || index > range.end.line) &&
-        /^\s*\/\//.test(line);
-    })
-    .slice(0, 120)
-    .map(({ line }) => line)
-    .join("\n");
 }
 
 async function loadAllowedSource(
@@ -97,35 +86,20 @@ type AddInput = (
   tracking?: Pick<TrackedInput, "depth" | "scope">
 ) => void;
 
-interface DependencyItem {
-  readonly kind: string;
-  readonly name: string;
-  readonly line: number;
-  readonly qualifiedName: string;
-  readonly source: string;
-  readonly signature: string;
-  readonly fingerprint: string;
-  readonly signatureFingerprint: string;
-}
-
-interface DependencyRequest {
-  readonly path: string;
-  readonly text: string;
-  readonly line: number;
-  readonly name: string;
-  readonly readablePaths: ReadonlySet<string>;
-  readonly unreadPaths: ReadonlySet<string>;
-  readonly load: (path: string) => Promise<string | undefined>;
-}
+/** Time allowed for editor lookups of everything a function uses, at both depths. */
+const DEPENDENCY_TIME_BUDGET_MS = 4_000;
 
 function dependencyRequest(
   target: FunctionTarget,
   targetPath: string,
   document: vscode.TextDocument,
-  inventory: RepositoryInventory
+  inventory: RepositoryInventory,
+  extra: Pick<DependencyRequest, "onlyName" | "deadline"> = {}
 ): DependencyRequest {
   const readablePaths = new Set(inventory.files.map((file) => file.relativePath));
   return {
+    ...extra,
+    root: inventory.root,
     path: targetPath,
     text: document.getText(),
     line: target.range.start.line,
@@ -136,20 +110,17 @@ function dependencyRequest(
   };
 }
 
+type Resolver = (request: DependencyRequest) => Promise<DependencyResult>;
+
+const dependencyKey = (path: string, qualifiedName: string) => `${path}\0${qualifiedName}`;
+
+const labelOf = (item: DependencyItem) => item.label ?? `${item.kind} ${item.qualifiedName}`;
+
 /**
  * Adds items the function uses directly (depth 1). An item is sent and
  * tracked whole when it fits the budget, by signature when only that fits,
  * and otherwise omitted with a limitation, so tracking matches what was sent.
  */
-interface Dependency {
-  readonly path: string;
-  readonly item: DependencyItem;
-}
-
-type Resolver = (request: DependencyRequest) => Promise<{ readonly dependencies: readonly Dependency[] }>;
-
-const dependencyKey = (path: string, qualifiedName: string) => `${path}\0${qualifiedName}`;
-
 function addDependencies(
   dependencies: readonly Dependency[],
   addInput: AddInput,
@@ -158,7 +129,7 @@ function addDependencies(
   const sentWhole: Dependency[] = [];
   let budget = MAX_DEPENDENCY_BYTES;
   for (const { path, item } of dependencies) {
-    const label = `${item.kind} ${item.qualifiedName}`;
+    const label = labelOf(item);
     const fullBytes = Buffer.byteLength(item.source, "utf8");
     if (fullBytes <= MAX_DEPENDENCY_ITEM_BYTES && fullBytes <= budget) {
       addInput(path, label, item.source, item.fingerprint, { depth: 1, scope: "body" });
@@ -197,13 +168,12 @@ async function addDepthTwoSignatures(
   let budget = MAX_DEPTH2_BYTES;
   let count = 0;
   let dropped = false;
-  const callable = (item: DependencyItem) => item.kind === "function" || item.kind === "method";
-  for (const { path, item } of sources.filter(({ item }) => callable(item)).slice(0, MAX_DEPTH2_SOURCES)) {
+  for (const { path, item } of sources.filter(({ item }) => isCallable(item)).slice(0, MAX_DEPTH2_SOURCES)) {
     const text = path === base.path ? base.text : await base.load(path);
     if (text === undefined) continue;
     const found = await resolve({ ...base, path, text, line: item.line, name: item.name }).catch(() => undefined);
     for (const next of found?.dependencies ?? []) {
-      if (!callable(next.item)) continue;
+      if (!isCallable(next.item)) continue;
       const key = dependencyKey(next.path, next.item.qualifiedName);
       if (known.has(key)) continue;
       known.add(key);
@@ -228,8 +198,6 @@ async function addDepthTwoSignatures(
   }
 }
 
-const UNRESOLVED_DEPENDENCIES = "Items this function uses could not be resolved; changes to them are not tracked.";
-
 export interface CalledFunction {
   /** Repository-relative path of the file that defines it. */
   readonly path: string;
@@ -240,32 +208,24 @@ export interface CalledFunction {
 }
 
 /**
- * Functions and methods a Rust or Go function calls directly, in order of
- * first use, including ones in the same file. Local analysis only.
+ * Functions and methods a function calls directly, in order of first use,
+ * including ones in the same file. Uses the bundled analysis for its
+ * language, or the editor's go-to-definition for other languages. With
+ * `onlyName`, other calls may be left out. Local analysis only.
  */
 export async function findCalledFunctions(
   target: FunctionTarget,
   document: vscode.TextDocument,
-  inventory: RepositoryInventory
+  inventory: RepositoryInventory,
+  onlyName?: string
 ): Promise<CalledFunction[]> {
   const targetPath = pathFromUri(inventory.root, target.uri);
-  if (!targetPath || (target.languageId !== "rust" && target.languageId !== "go")) return [];
-  const request = dependencyRequest(target, targetPath, document, inventory);
-  const found = target.languageId === "rust" ? await findRustDependencies(request) : await findGoDependencies(request);
-  const called: CalledFunction[] = found.dependencies
-    .filter(({ item }) => item.kind === "function" || item.kind === "method")
+  if (!targetPath) return [];
+  const found = await languageFor({ languageId: target.languageId, path: targetPath })
+    .findDependencies(dependencyRequest(target, targetPath, document, inventory, onlyName === undefined ? {} : { onlyName }));
+  return [...found.dependencies, ...(found.local ?? [])]
+    .filter(({ item }) => isCallable(item))
     .map(({ path, item }) => ({ path, name: item.name, qualifiedName: item.qualifiedName, line: item.line }));
-  if (target.languageId === "rust") {
-    for (const related of await listRustFunctions(document).catch(() => [])) {
-      if (
-        related.qualifiedName !== target.qualifiedName &&
-        new RegExp(`\\b${related.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*\\(`).test(target.source)
-      ) {
-        called.push({ path: targetPath, name: related.name, qualifiedName: related.qualifiedName, line: related.startLine });
-      }
-    }
-  }
-  return called;
 }
 
 export async function gatherFunctionContext(
@@ -306,82 +266,33 @@ export async function gatherFunctionContext(
     { depth: 0 }
   );
 
-  const functions =
-    target.languageId === "rust"
-      ? await listRustFunctions(document).catch(() => [])
-      : [];
-  const sourceRanges = functions.map((entry) =>
-    new vscode.Range(entry.startLine, 0, entry.endLine + 1, 0)
-  );
-  const goFound = target.languageId === "go"
-    ? await findGoDependencies(dependencyRequest(target, targetPath, document, inventory))
-      .catch(() => ({ dependencies: [], preamble: "", limitations: [UNRESOLVED_DEPENDENCIES] }))
-    : undefined;
-  // Go import blocks span several lines, so they come from the parser rather than the line scan.
-  const preamble = goFound ? goFound.preamble : relevantPreamble(document.getText(), sourceRanges);
+  const language = languageFor({ languageId: target.languageId, path: targetPath });
+  const request = dependencyRequest(target, targetPath, document, inventory, {
+    deadline: Date.now() + DEPENDENCY_TIME_BUDGET_MS
+  });
+  const found: DependencyResult = await language.findDependencies(request)
+    .catch(() => ({ dependencies: [], limitations: [UNRESOLVED_DEPENDENCIES] }));
+  const preamble = found.preamble ??
+    (language.preamble ? await language.preamble(request.text).catch(() => "") : lineScanPreamble(request.text));
   if (preamble) addInput(targetPath, "module imports and declarations", preamble);
-  if (goFound) {
-    limitations.push(...goFound.limitations);
-    const sentWhole = addDependencies(goFound.dependencies, addInput, limitations);
-    const known = new Set([
-      dependencyKey(targetPath, target.qualifiedName),
-      ...goFound.dependencies.map(({ path, item }) => dependencyKey(path, item.qualifiedName))
-    ]);
-    await addDepthTwoSignatures(
-      sentWhole,
-      dependencyRequest(target, targetPath, document, inventory),
-      findGoDependencies,
-      known,
-      addInput,
-      limitations
-    );
+  const local = found.local ?? [];
+  for (const { path, item } of local) {
+    addInput(path, labelOf(item), item.source, item.fingerprint, { depth: 1 });
   }
-
-  const textToScan = `${target.signature}\n${target.source}`;
-  const names = namedIdentifiers(textToScan);
-  if (target.languageId === "rust") {
-    const sameFileCalls: Dependency[] = [];
-    for (const related of functions) {
-      if (
-        related.qualifiedName !== target.qualifiedName &&
-        related.name !== target.name &&
-        new RegExp(`\\b${related.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*\\(`)
-          .test(target.source)
-      ) {
-        addInput(targetPath, `called function ${related.qualifiedName}`, related.source, related.fingerprint, { depth: 1 });
-        sameFileCalls.push({
-          path: targetPath,
-          item: { ...related, kind: "function", line: related.startLine, signatureFingerprint: "" }
-        });
-      }
-    }
-    const declarations = await findRustDeclarations(document, names).catch(() => []);
-    for (const declaration of declarations) {
-      addInput(
-        targetPath,
-        `${declaration.kind} ${declaration.name}`,
-        declaration.source,
-        declaration.fingerprint,
-        { depth: 1 }
-      );
-    }
-    const rustFound = await findRustDependencies(dependencyRequest(target, targetPath, document, inventory))
-      .catch(() => ({ dependencies: [], limitations: [UNRESOLVED_DEPENDENCIES] }));
-    limitations.push(...rustFound.limitations);
-    const sentWhole = addDependencies(rustFound.dependencies, addInput, limitations);
-    const known = new Set([
-      dependencyKey(targetPath, target.qualifiedName),
-      ...[...sameFileCalls, ...rustFound.dependencies].map(({ path, item }) => dependencyKey(path, item.qualifiedName))
-    ]);
-    await addDepthTwoSignatures(
-      [...sameFileCalls, ...sentWhole],
-      dependencyRequest(target, targetPath, document, inventory),
-      findRustDependencies,
-      known,
-      addInput,
-      limitations
-    );
-  }
+  limitations.push(...found.limitations);
+  const sentWhole = addDependencies(found.dependencies, addInput, limitations);
+  const known = new Set([
+    dependencyKey(targetPath, target.qualifiedName),
+    ...[...local, ...found.dependencies].map(({ path, item }) => dependencyKey(path, item.qualifiedName))
+  ]);
+  await addDepthTwoSignatures(
+    [...local, ...sentWhole],
+    request,
+    (next) => language.findDependencies(next),
+    known,
+    addInput,
+    limitations
+  );
 
   let languageLocations: vscode.Location[] = [];
   try {

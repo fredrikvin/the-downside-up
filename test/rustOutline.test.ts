@@ -2,8 +2,8 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
 import type { Description } from "../src/context/outlineText";
-import { initializeRustParserAt } from "../src/languages/rust";
-import { describeRustSource } from "../src/languages/rustOutline";
+import { initializeRustParserAt } from "../src/languages/rust/syntax";
+import { describeRustSource } from "../src/languages/rust/outline";
 
 const flat = (description: Description): string =>
   description.map((segment) => (segment.code ? `\`${segment.text}\`` : segment.text)).join("");

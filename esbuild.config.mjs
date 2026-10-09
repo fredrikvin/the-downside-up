@@ -3,8 +3,8 @@ import { build } from "esbuild";
 import { createRequire } from "node:module";
 import { resolve } from "node:path";
 const require = createRequire(import.meta.url);
-const rustGrammar = require.resolve("tree-sitter-wasms/out/tree-sitter-rust.wasm");
-const goGrammar = require.resolve("tree-sitter-wasms/out/tree-sitter-go.wasm");
+// Tree-sitter grammars of the bundled languages (src/languages/registry.ts).
+const grammars = ["rust", "go"];
 const treeSitterRuntime = require.resolve("web-tree-sitter/tree-sitter.wasm");
 
 const outdir = resolve("dist");
@@ -12,8 +12,10 @@ const outdir = resolve("dist");
 async function bundle() {
   await mkdir(outdir, { recursive: true });
   await Promise.all([
-    copyFile(rustGrammar, resolve(outdir, "tree-sitter-rust.wasm")),
-    copyFile(goGrammar, resolve(outdir, "tree-sitter-go.wasm")),
+    ...grammars.map((name) => copyFile(
+      require.resolve(`tree-sitter-wasms/out/tree-sitter-${name}.wasm`),
+      resolve(outdir, `tree-sitter-${name}.wasm`)
+    )),
     copyFile(treeSitterRuntime, resolve(outdir, "tree-sitter.wasm"))
   ]);
   await build({

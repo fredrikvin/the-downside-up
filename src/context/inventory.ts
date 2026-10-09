@@ -6,6 +6,7 @@ import * as vscode from "vscode";
 import ignore from "ignore";
 import { minimatch } from "minimatch";
 import { fingerprint } from "../core/fingerprint";
+import { bundledLanguageIdForPath } from "../languages/registry";
 
 const MAX_FILES = 2_000;
 const MAX_FILE_BYTES = 256 * 1024;
@@ -34,6 +35,10 @@ const TEXT_EXTENSIONS = new Set([
   ".txt", ".toml", ".json", ".yaml", ".yml", ".xml", ".html",
   ".css", ".scss", ".sql", ".sh", ".gitignore", ".properties"
 ]);
+/** Source and text files the inventory reads, including every bundled language's files. */
+const isTextFile = (path: string): boolean =>
+  TEXT_EXTENSIONS.has(extname(path).toLowerCase()) || bundledLanguageIdForPath(path) !== undefined;
+
 const PRIORITY = [
   /^README(?:\.[^/]*)?$/i,
   /(?:^|\/)(?:Cargo\.toml|package\.json|pyproject\.toml|go\.mod|pom\.xml|build\.gradle)$/i,
@@ -139,9 +144,8 @@ function isSecretOrGenerated(relativePath: string): boolean {
 }
 
 function eligiblePath(relativePath: string): boolean {
-  const extension = extname(relativePath).toLowerCase();
   const file = basename(relativePath);
-  return TEXT_EXTENSIONS.has(extension) ||
+  return isTextFile(relativePath) ||
     file === "Cargo.toml" ||
     file === "Cargo.lock" ||
     file === "go.mod" ||
@@ -193,9 +197,10 @@ async function isIgnored(root: string, relativePath: string): Promise<boolean> {
 }
 
 function vscodeLanguage(path: string): string | null {
+  const bundled = bundledLanguageIdForPath(path);
+  if (bundled) return bundled;
   const extension = extname(path).toLowerCase();
   const map: Record<string, string> = {
-    ".rs": "rust",
     ".js": "javascript",
     ".jsx": "javascriptreact",
     ".mjs": "javascript",
@@ -203,7 +208,6 @@ function vscodeLanguage(path: string): string | null {
     ".ts": "typescript",
     ".tsx": "typescriptreact",
     ".py": "python",
-    ".go": "go",
     ".java": "java",
     ".cs": "csharp"
   };
@@ -235,7 +239,7 @@ function selectPrimeFiles(files: readonly InventoryFile[]): InventoryFile[] {
     a.relativePath.localeCompare(b.relativePath)
   )) {
     if (
-      !TEXT_EXTENSIONS.has(extname(file.relativePath).toLowerCase()) &&
+      !isTextFile(file.relativePath) &&
       !/^(?:Cargo\.toml|Cargo\.lock|go\.mod|go\.work|package\.json|package-lock\.json)$/.test(basename(file.relativePath))
     ) continue;
     if (size + Buffer.byteLength(file.content) > MAX_PRIME_BYTES) continue;

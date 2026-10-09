@@ -1,4 +1,4 @@
-import { extname, isAbsolute, relative, resolve, sep } from "node:path";
+import { isAbsolute, relative, resolve, sep } from "node:path";
 import * as vscode from "vscode";
 import { FileRepositoryCacheStore } from "./cache/store";
 import {
@@ -23,9 +23,8 @@ import { nextPrefetch, prefetchFocusLine } from "./presentation/prefetch";
 import { RequestScheduler, singleFlight } from "./presentation/requestScheduler";
 import { outlineInclude, visibleOutline } from "./presentation/outlineFilter";
 import { innermostAt, pseudocodeLayout, stepRanges, stepsAt, type StepRange } from "./presentation/stepLines";
-import { findGoFunction, initializeGoParser, isGoDocument } from "./languages/go";
-import { findRustFunction, initializeRustParser } from "./languages/rust";
-import { findFunctionWithEditorTools } from "./languages/vscodeSymbols";
+import { findFunctionWithEditorTools } from "./languages/editor/symbols";
+import { bundledLanguageFor, initializeLanguage } from "./languages/registry";
 import {
   ExplanationPanel,
   type ExplanationView,
@@ -1115,9 +1114,10 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
   };
 
   /**
-   * Shows the saved explanation of a hovered call to a Rust or Go function.
-   * It reads only the local cache and never generates; generated text is
-   * escaped so it renders as plain text.
+   * Shows the saved explanation of a hovered call to a function, found the
+   * same way as explanation context (bundled analysis or the editor's
+   * go-to-definition). It reads only the local cache and never generates;
+   * generated text is escaped so it renders as plain text.
    */
   const hoverProvider: vscode.HoverProvider = {
     provideHover: async (document, position, token) => {
@@ -1126,13 +1126,19 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       const wordRange = document.getWordRangeAtPosition(position, /[A-Za-z_][A-Za-z0-9_]*/);
       if (!wordRange) return undefined;
       const word = document.getText(wordRange);
+      // Editor-tooling languages only resolve call sites; skip other words before any lookup.
+      const after = document.lineAt(wordRange.end.line).text.slice(wordRange.end.character);
+      if (
+        !bundledLanguageFor({ languageId: document.languageId, path: document.uri.path }) &&
+        !/^\s*(?:<[^<>()]*>\s*)?\(/.test(after)
+      ) return undefined;
       const root = await resolveRoot(document).catch(() => undefined);
       if (!root || token.isCancellationRequested) return undefined;
       const enclosing = await findFunctionTarget(document, position).catch(() => undefined);
       // Only calls inside a function body; hovering a function's own name is left to other hovers.
       if (!enclosing || enclosing.selection.contains(position) || token.isCancellationRequested) return undefined;
       const called = await recentInventory(root)
-        .then((inventory) => findCalledFunctions(enclosing, document, inventory))
+        .then((inventory) => findCalledFunctions(enclosing, document, inventory, word))
         .then((all) => all.find((entry) => entry.name === word))
         .catch(() => undefined);
       if (!called || token.isCancellationRequested) return undefined;
@@ -1545,13 +1551,11 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     document: vscode.TextDocument,
     position: vscode.Position
   ): Promise<FunctionTarget | undefined> => {
+    const language = bundledLanguageFor({ languageId: document.languageId, path: document.uri.path });
     let target: FunctionTarget | undefined;
-    if (document.languageId === "rust" || extname(document.uri.fsPath).toLowerCase() === ".rs") {
-      await initializeRustParser(context);
-      target = await findRustFunction(document, position);
-    } else if (isGoDocument(document)) {
-      await initializeGoParser(context);
-      target = await findGoFunction(document, position);
+    if (language) {
+      await initializeLanguage(language, context.extensionPath);
+      target = await language.findFunction(document, position);
     }
     return target ?? findFunctionWithEditorTools(document, position);
   };
@@ -1788,14 +1792,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     onVisibleRangesChange,
     onTextSelectionChange,
     onConfigChange,
-    vscode.languages.registerHoverProvider(
-      [
-        { scheme: "file", language: "rust" },
-        { scheme: "file", language: "go" },
-        { scheme: "file", pattern: "**/*.{rs,go}" }
-      ],
-      hoverProvider
-    ),
+    vscode.languages.registerHoverProvider({ scheme: "file" }, hoverProvider),
     new vscode.Disposable(() => {
       cancelExplanations();
       if (selectionTimer) clearTimeout(selectionTimer);

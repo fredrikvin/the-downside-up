@@ -87,6 +87,9 @@ export const workspace = {
       }
     };
   },
+  openTextDocument: async (uri: { fsPath: string }): Promise<unknown> => {
+    throw new Error(`No test document for ${uri.fsPath}`);
+  },
   __setConfiguration(key: string, value: unknown) {
     vscodeConfiguration.set(key, value);
   },

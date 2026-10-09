@@ -1,11 +1,12 @@
 import { resolve } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import * as vscode from "./vscode";
-import { findFunctionWithEditorTools } from "../src/languages/vscodeSymbols";
+import { findFunctionWithEditorTools } from "../src/languages/editor/symbols";
 import {
   fingerprintRustSyntax,
   initializeRustParserAt
-} from "../src/languages/rust";
+} from "../src/languages/rust/syntax";
+import { bundledLanguageFor, bundledLanguageIdForPath, languageFor } from "../src/languages/registry";
 
 describe("language analysis", () => {
   it("discovers Rust syntax and fingerprints token structure without losing literal contents", async () => {
@@ -60,6 +61,32 @@ describe("language analysis", () => {
     expect(result?.structuralFingerprint).toBeDefined();
   });
 
+  it("reads symbols shaped like VS Code's command results and skips anonymous callbacks", async () => {
+    // `vscode.executeDocumentSymbolProvider` returns SymbolInformation objects that also carry
+    // DocumentSymbol fields, so they are not `instanceof DocumentSymbol`.
+    const merged = (name: string, kind: number, range: vscode.Range, selectionRange: vscode.Range, children: unknown[] = []) =>
+      ({ name, kind, detail: "", containerName: "", location: { uri: vscode.Uri.file("/repo/a.js"), range }, range, selectionRange, children });
+    const callback = merged("find() callback", vscode.SymbolKind.Function, new vscode.Range(1, 20, 1, 50), new vscode.Range(1, 20, 1, 50));
+    const outer = merged("checkout", vscode.SymbolKind.Function, new vscode.Range(0, 0, 3, 1), new vscode.Range(0, 16, 0, 24), [callback]);
+    const method = merged("add", vscode.SymbolKind.Method, new vscode.Range(5, 2, 7, 3), new vscode.Range(5, 2, 5, 5));
+    const owner = merged("Catalog", vscode.SymbolKind.Class, new vscode.Range(4, 0, 8, 1), new vscode.Range(4, 6, 4, 13), [method]);
+    vi.spyOn(vscode.commands, "executeCommand").mockResolvedValue([outer, owner]);
+    const document = {
+      uri: vscode.Uri.file("/repo/a.js"),
+      languageId: "javascript",
+      getText: () => "function text"
+    } as unknown as import("vscode").TextDocument;
+    const at = (line: number, character: number) => findFunctionWithEditorTools(
+      document,
+      new vscode.Position(line, character) as unknown as import("vscode").Position
+    );
+
+    const inCallback = await at(1, 30);
+    expect(inCallback?.qualifiedName).toBe("checkout");
+    expect(inCallback?.selection).toEqual(new vscode.Range(0, 16, 0, 24));
+    expect((await at(6, 4))?.qualifiedName).toBe("Catalog.add");
+  });
+
   it("returns no function when the installed editor has no symbol provider", async () => {
     vi.spyOn(vscode.commands, "executeCommand").mockResolvedValue(undefined);
     const document = {
@@ -72,5 +99,14 @@ describe("language analysis", () => {
       new vscode.Position(0, 3) as unknown as import("vscode").Position
     ))
       .resolves.toBeUndefined();
+  });
+
+  it("finds bundled languages by language ID or extension and falls back to editor tooling", () => {
+    expect(bundledLanguageFor({ languageId: "rust" })?.name).toBe("Rust");
+    expect(bundledLanguageFor({ languageId: "plaintext", path: "/repo/cmd/main.GO" })?.name).toBe("Go");
+    expect(bundledLanguageFor({ languageId: "typescript", path: "/repo/src/app.ts" })).toBeUndefined();
+    expect(languageFor({ languageId: "typescript", path: "/repo/src/app.ts" }).name).toBe("Editor tooling");
+    expect(bundledLanguageIdForPath("src/lib.rs")).toBe("rust");
+    expect(bundledLanguageIdForPath("src/app.py")).toBeUndefined();
   });
 });

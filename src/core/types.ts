@@ -11,7 +11,8 @@ export interface FunctionTarget {
   readonly source: string;
   readonly symbolId: string;
   readonly structuralFingerprint: string;
-  readonly analysis: "rust-tree-sitter" | "go-tree-sitter" | "vscode-symbols";
+  /** How the function was found, such as `rust-tree-sitter` or `vscode-symbols`. */
+  readonly analysis: string;
 }
 
 export interface ContextInput {

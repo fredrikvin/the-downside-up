@@ -1,7 +1,7 @@
 import * as vscode from "vscode";
+import { isAnonymousFunction, isDocumentSymbol } from "../languages/editor/symbols";
 import type { RepositoryInventory } from "./inventory";
-import { listGoFunctions } from "../languages/go";
-import { listRustFunctions } from "../languages/rust";
+import { bundledLanguageFor } from "../languages/registry";
 
 const MAX_SYMBOL_FILES = 20;
 const MAX_SYMBOLS = 120;
@@ -14,6 +14,7 @@ function flattenSymbols(
 ): string[] {
   const result: string[] = [];
   for (const symbol of symbols) {
+    if (isAnonymousFunction(symbol)) continue;
     const qualified = parent ? `${parent}.${symbol.name}` : symbol.name;
     const isFunction = [
       vscode.SymbolKind.Function,
@@ -21,10 +22,10 @@ function flattenSymbols(
       vscode.SymbolKind.Constructor
     ].includes(symbol.kind);
     if (isFunction) {
-      const detail = symbol instanceof vscode.DocumentSymbol ? symbol.detail : "";
+      const detail = isDocumentSymbol(symbol) ? symbol.detail : "";
       result.push(`  ${qualified}${detail ? ` ${detail}` : ""}`);
     }
-    if (symbol instanceof vscode.DocumentSymbol) {
+    if (isDocumentSymbol(symbol)) {
       result.push(...flattenSymbols(symbol.children, qualified));
     }
     if (result.length >= MAX_SYMBOLS) break;
@@ -59,26 +60,15 @@ export async function addLocalSymbolOutline(
 
   for (const file of sourceFiles) {
     if (!file || outline.length >= MAX_SYMBOLS || Date.now() - start > 2_500) break;
-    if (file.languageId === "rust") {
+    const language = bundledLanguageFor({ languageId: file.languageId ?? undefined, path: file.relativePath });
+    if (language?.listFunctions) {
       try {
-        const document = await vscode.workspace.openTextDocument(vscode.Uri.file(file.absolutePath));
-        const functions = await listRustFunctions(document);
+        const functions = await language.listFunctions(file.content);
         outline.push(...functions.slice(0, 20).map(
           (entry) => `  ${file.relativePath}: ${entry.qualifiedName} ${entry.signature}`
         ));
       } catch {
-        limitations.push(`Rust symbols were unavailable for ${file.relativePath}.`);
-      }
-      continue;
-    }
-    if (file.languageId === "go") {
-      try {
-        const functions = await listGoFunctions({ getText: () => file.content });
-        outline.push(...functions.slice(0, 20).map(
-          (entry) => `  ${file.relativePath}: ${entry.qualifiedName} ${entry.signature}`
-        ));
-      } catch {
-        limitations.push(`Go symbols were unavailable for ${file.relativePath}.`);
+        limitations.push(`${language.name} symbols were unavailable for ${file.relativePath}.`);
       }
       continue;
     }

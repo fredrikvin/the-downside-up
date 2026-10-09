@@ -6,8 +6,8 @@ import { inputsMatch } from "../src/cache/freshness";
 import { gatherInventory } from "../src/context/inventory";
 import { findCalledFunctions, gatherFunctionContext } from "../src/context/related";
 import type { FunctionTarget } from "../src/core/types";
-import { initializeGoParserAt, listGoFunctions } from "../src/languages/go";
-import { initializeRustParserAt, listRustFunctions } from "../src/languages/rust";
+import { initializeGoParserAt, listGoFunctions } from "../src/languages/go/syntax";
+import { initializeRustParserAt, listRustFunctions } from "../src/languages/rust/syntax";
 import { Position, Range, Uri, workspace } from "./vscode";
 
 let root: string;

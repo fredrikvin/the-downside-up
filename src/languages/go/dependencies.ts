@@ -1,8 +1,8 @@
 import { posix } from "node:path";
 import type { Node as SyntaxNode } from "web-tree-sitter";
-import { fingerprint } from "../core/fingerprint";
-import { goBaseTypeName, goFunctionNodes, goReceiverType, goSignature, withGoSyntaxTree } from "../languages/go";
-import { allChildren, namedChildren, structuralTokens } from "../languages/treeSitter";
+import { fingerprint } from "../../core/fingerprint";
+import { goBaseTypeName, goFunctionNodes, goReceiverType, goSignature, withGoSyntaxTree } from "./syntax";
+import { allChildren, namedChildren, structuralTokens } from "../treeSitter";
 
 /**
  * Depth-1 dependencies for a Go function, found with Tree-sitter and the Go

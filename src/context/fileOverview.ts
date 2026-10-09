@@ -1,10 +1,9 @@
 import { basename } from "node:path";
 import * as vscode from "vscode";
+import { isAnonymousFunction, isDocumentSymbol } from "../languages/editor/symbols";
 import { scanImports } from "./imports";
 import { capitalize, clauses, describe, type Description } from "./outlineText";
-import { isGoDocument } from "../languages/go";
-import { describeGoSource } from "../languages/goOutline";
-import { describeRustSource } from "../languages/rustOutline";
+import { bundledLanguageFor } from "../languages/registry";
 import {
   boundedDocumentation,
   commentDraft,
@@ -114,16 +113,17 @@ function flatten(
 ): FlatSymbol[] {
   for (const symbol of symbols) {
     if (result.length >= MAX_ENTRIES) break;
-    const isDocumentSymbol = symbol instanceof vscode.DocumentSymbol;
+    if (isAnonymousFunction(symbol)) continue;
+    const documentSymbol = isDocumentSymbol(symbol) ? symbol : undefined;
     result.push({
       symbol,
       depth,
       ...(parent ? { parent } : {}),
-      range: isDocumentSymbol ? symbol.range : symbol.location.range,
-      selection: isDocumentSymbol ? symbol.selectionRange : symbol.location.range
+      range: documentSymbol ? documentSymbol.range : (symbol as vscode.SymbolInformation).location.range,
+      selection: documentSymbol ? documentSymbol.selectionRange : (symbol as vscode.SymbolInformation).location.range
     });
-    if (isDocumentSymbol && symbol.kind !== vscode.SymbolKind.Enum) {
-      flatten(symbol.children, depth + 1, symbol, result);
+    if (documentSymbol && symbol.kind !== vscode.SymbolKind.Enum) {
+      flatten(documentSymbol.children, depth + 1, documentSymbol, result);
     }
   }
   return result;
@@ -261,7 +261,7 @@ function describeFunctionSymbol(
       /^\s*(?::|->)\s*([^{=\n]+?)\s*(?:\{|=>|:\s*$|$)/m.exec(after)?.[1] ??
       (languageId === "go" ? /^\s*([^{\n]+?)\s*\{/.exec(after)?.[1] : undefined);
     if (returned?.trim()) parts.push(describe().text("returns ").code(returned.trim()).build());
-  } else if (symbol instanceof vscode.DocumentSymbol && symbol.detail) {
+  } else if (isDocumentSymbol(symbol) && symbol.detail) {
     parts.push(describe().text("has signature ").code(symbol.detail).build());
   }
   return describe().append(subject.build()).text(parts.length ? " " : "").append(clauses(parts)).text(".").build();
@@ -310,7 +310,7 @@ function describeTypeSymbol(entry: FlatSymbol, lines: readonly string[]): Descri
   if (implementsMatch?.trim()) {
     builder.text(" and implements ").list(splitParameters(implementsMatch), (target, item) => target.code(item));
   }
-  if (symbol instanceof vscode.DocumentSymbol && symbol.kind === vscode.SymbolKind.Enum) {
+  if (isDocumentSymbol(symbol) && symbol.kind === vscode.SymbolKind.Enum) {
     const members = symbol.children.filter((child) => child.kind === vscode.SymbolKind.EnumMember);
     if (members.length) builder.text(" with members ").list(members, (target, member) => target.code(member.name));
   }
@@ -464,8 +464,9 @@ function finalize(drafts: readonly OutlineEntryDraft[], path: string): OutlineEn
 
 /**
  * Builds a local, document-ordered description of the file. No provider
- * request is made; Rust and Go use bundled parsers and other languages use VS
- * Code document symbols plus line-based import and comment detection.
+ * request is made; languages with bundled analysis use their parsers and
+ * other languages use VS Code document symbols plus line-based import and
+ * comment detection.
  */
 export async function buildFileOverview(
   document: vscode.TextDocument,
@@ -487,18 +488,16 @@ export async function buildFileOverview(
     };
   }
   let result: { purpose?: string; drafts: OutlineEntryDraft[]; limitations: string[] };
-  if (document.languageId === "rust") {
+  const language = bundledLanguageFor({ languageId: document.languageId, path: document.uri.path });
+  if (language?.describeSource) {
     try {
-      result = { ...(await describeRustSource(source)), limitations: [] };
-    } catch {
-      result = { drafts: [], limitations: ["The bundled Rust parser was unavailable, so this file is not described."] };
-    }
-  } else if (isGoDocument(document)) {
-    try {
-      result = { ...(await describeGoSource(source)), limitations: [] };
+      result = { ...(await language.describeSource(source)), limitations: [] };
     } catch {
       const fallback = await describeWithEditorSymbols(document, lines);
-      result = { ...fallback, limitations: ["The bundled Go parser was unavailable, so editor symbols were used.", ...fallback.limitations] };
+      result = {
+        ...fallback,
+        limitations: [`The bundled ${language.name} parser was unavailable, so editor symbols were used.`, ...fallback.limitations]
+      };
     }
   } else {
     result = await describeWithEditorSymbols(document, lines);

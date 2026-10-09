@@ -1,8 +1,8 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
-import { findGoDependencies, type GoDependencyRequest } from "../src/context/goDependencies";
-import { initializeGoParserAt, listGoFunctions } from "../src/languages/go";
+import { findGoDependencies, type GoDependencyRequest } from "../src/languages/go/dependencies";
+import { initializeGoParserAt, listGoFunctions } from "../src/languages/go/syntax";
 
 const fixtureRoot = resolve("fixtures/go-app");
 const fixtureFiles = [

@@ -26,6 +26,36 @@ export async function createTreeSitterParser(
   return parser;
 }
 
+export interface TreeSitterGrammar {
+  /** Loads the grammar from `<extensionPath>/dist`; later calls reuse the first load. */
+  initialize(extensionPath: string): Promise<void>;
+  /** Parses with the grammar and releases the tree after `use` returns. */
+  withSyntaxTree<T>(source: string, use: (root: SyntaxNode) => T): Promise<T | undefined>;
+}
+
+/**
+ * A bundled grammar (copied to `dist/` by `esbuild.config.mjs`), loaded on
+ * first use. Without an explicit `initialize`, it loads from the bundle's
+ * own directory, which is right for the packaged extension.
+ */
+export function treeSitterGrammar(grammarFile: string, languageName: string): TreeSitterGrammar {
+  let parserPromise: Promise<Parser> | undefined;
+  const parser = (extensionPath = resolve(__dirname, "..")) =>
+    (parserPromise ??= createTreeSitterParser(extensionPath, grammarFile, languageName));
+  return {
+    initialize: (extensionPath) => parser(extensionPath).then(() => undefined),
+    async withSyntaxTree(source, use) {
+      const tree = (await parser()).parse(source);
+      if (!tree) return undefined;
+      try {
+        return use(tree.rootNode);
+      } finally {
+        tree.delete();
+      }
+    }
+  };
+}
+
 export function namedChildren(node: SyntaxNode): SyntaxNode[] {
   return node.namedChildren.filter((entry): entry is SyntaxNode => entry !== null);
 }

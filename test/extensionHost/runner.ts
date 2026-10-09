@@ -1,11 +1,13 @@
 import * as assert from "node:assert/strict";
 import { resolve } from "node:path";
 import * as vscode from "vscode";
-import { findFunctionWithEditorTools } from "../../src/languages/vscodeSymbols";
+import { findFunctionWithEditorTools } from "../../src/languages/editor/symbols";
 import { buildFileOverview } from "../../src/context/fileOverview";
+import { findRepositoryRoot, gatherInventory } from "../../src/context/inventory";
+import { findCalledFunctions } from "../../src/context/related";
 import type { DownsideUpTestApi } from "../../src/extension";
-import { findGoFunction, initializeGoParserAt } from "../../src/languages/go";
-import { findRustFunction, initializeRustParserAt } from "../../src/languages/rust";
+import { findGoFunction, initializeGoParserAt } from "../../src/languages/go/syntax";
+import { findRustFunction, initializeRustParserAt } from "../../src/languages/rust/syntax";
 
 async function waitFor<T>(
   operation: () => Promise<T | undefined>,
@@ -150,6 +152,16 @@ export async function run(): Promise<void> {
 
   const api = extension.exports as DownsideUpTestApi | undefined;
   assert.ok(api, "Read-only test hooks are available in extension test mode.");
+  const hoverText = async (document: vscode.TextDocument, needle: string, offset: number): Promise<string> => {
+    const hovers = await vscode.commands.executeCommand<vscode.Hover[]>(
+      "vscode.executeHoverProvider",
+      document.uri,
+      document.positionAt(document.getText().indexOf(needle) + offset)
+    ) ?? [];
+    return hovers.flatMap((hover) => hover.contents)
+      .map((content) => typeof content === "string" ? content : content.value)
+      .join("\n");
+  };
   await vscode.window.tabGroups.close(finalPanel);
   await waitFor(
     async () => vscode.window.tabGroups.all.flatMap((group) => group.tabs)
@@ -178,6 +190,37 @@ export async function run(): Promise<void> {
     "the AI file summary made after explaining a function in the file"
   );
   console.log("Downside Up integration tests: saved explanations listed after reopening the preview.");
+
+  const jsRepository = await findRepositoryRoot(jsRoot);
+  const jsCalled = await waitFor(async () => {
+    const called = await findCalledFunctions(jsTarget, jsDocument, await gatherInventory(jsRepository));
+    return called.some((entry) => entry.qualifiedName === "persist") ? called : undefined;
+  }, "the JavaScript call to persist resolved by go-to-definition");
+  assert.deepEqual(
+    jsCalled.map((entry) => `${entry.path.split("/").slice(-2).join("/")} ${entry.qualifiedName}`),
+    ["src/storage.js persist"],
+    "Calls into the standard library are not followed."
+  );
+  assert.doesNotMatch(
+    await hoverText(jsDocument, "persist(book)", 2),
+    /Downside Up/,
+    "Hovering a JavaScript call without a saved explanation shows nothing."
+  );
+  const storageDocument = await vscode.workspace.openTextDocument(vscode.Uri.file(resolve(jsRoot, "src/storage.js")));
+  const storageEditor = await vscode.window.showTextDocument(storageDocument, vscode.ViewColumn.One);
+  const persistCursor = storageDocument.positionAt(storageDocument.getText().indexOf("persist") + 2);
+  storageEditor.selection = new vscode.Selection(persistCursor, persistCursor);
+  await vscode.commands.executeCommand("downsideUp.explainFunction");
+  await waitFor(
+    async () => api.allExplanations().some((view) => view.functionName === "persist" && view.status === "current") ? true : undefined,
+    "the explanation of the called JavaScript function"
+  );
+  assert.match(
+    await hoverText(jsDocument, "persist(book)", 2),
+    /Downside Up[\s\S]*persist/,
+    "Hovering a JavaScript call shows its saved explanation."
+  );
+  console.log("Downside Up integration tests: JavaScript calls resolved through editor tooling.");
 
   const goDocument = await vscode.workspace.openTextDocument(vscode.Uri.file(resolve(goRoot, "main.go")));
   await waitFor(
@@ -268,16 +311,6 @@ export async function run(): Promise<void> {
   );
   console.log("Downside Up integration tests: prefetching followed the reader.");
 
-  const hoverText = async (document: vscode.TextDocument, needle: string, offset: number): Promise<string> => {
-    const hovers = await vscode.commands.executeCommand<vscode.Hover[]>(
-      "vscode.executeHoverProvider",
-      document.uri,
-      document.positionAt(document.getText().indexOf(needle) + offset)
-    ) ?? [];
-    return hovers.flatMap((hover) => hover.contents)
-      .map((content) => typeof content === "string" ? content : content.value)
-      .join("\n");
-  };
   const savedHover = await hoverText(goDocument, "catalog.FindAvailable(", "catalog.".length + 2);
   assert.match(savedHover, /Downside Up/, "Hovering a call shows its saved explanation.");
   assert.match(savedHover, /Catalog\.FindAvailable/);

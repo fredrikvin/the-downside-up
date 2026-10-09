@@ -1,8 +1,8 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
-import { findRustDependencies, type RustDependencyRequest } from "../src/context/rustDependencies";
-import { initializeRustParserAt } from "../src/languages/rust";
+import { findRustDependencies, type RustDependencyRequest } from "../src/languages/rust/dependencies";
+import { initializeRustParserAt } from "../src/languages/rust/syntax";
 
 const fixtureRoot = resolve("fixtures/rust-app");
 const fixtureFiles = ["Cargo.toml", "src/main.rs", "src/inventory.rs", "src/storage.rs"];

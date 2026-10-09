@@ -1,12 +1,32 @@
 import * as vscode from "vscode";
-import { cacheKey, fingerprint } from "../core/fingerprint";
-import type { FunctionTarget } from "../core/types";
+import { cacheKey, fingerprint } from "../../core/fingerprint";
+import type { FunctionTarget } from "../../core/types";
+
+/**
+ * Whether a symbol has document-symbol ranges and children. Symbols returned
+ * by `vscode.executeDocumentSymbolProvider` are `SymbolInformation` objects
+ * that also carry these fields, so `instanceof DocumentSymbol` is false.
+ */
+export function isDocumentSymbol(
+  symbol: vscode.DocumentSymbol | vscode.SymbolInformation
+): symbol is vscode.DocumentSymbol {
+  return "selectionRange" in symbol && "children" in symbol && Array.isArray(symbol.children);
+}
 
 const functionKinds = new Set([
   vscode.SymbolKind.Function,
   vscode.SymbolKind.Method,
   vscode.SymbolKind.Constructor
 ]);
+
+/**
+ * An unnamed function the symbol provider names by its position, such as
+ * TypeScript's `find() callback` or `<function>`. These are part of the
+ * function around them rather than functions of their own.
+ */
+export function isAnonymousFunction(symbol: vscode.DocumentSymbol | vscode.SymbolInformation): boolean {
+  return functionKinds.has(symbol.kind) && (symbol.name.trim() === "" || /[\s()<>]/.test(symbol.name));
+}
 
 function flattenSymbols(
   symbols: readonly (vscode.DocumentSymbol | vscode.SymbolInformation)[],
@@ -17,9 +37,10 @@ function flattenSymbols(
     qualified: string;
   }> = [];
   for (const symbol of symbols) {
+    if (isAnonymousFunction(symbol)) continue;
     const qualified = [...ancestors, symbol.name].join(".");
     flattened.push({ symbol, qualified });
-    if (symbol instanceof vscode.DocumentSymbol) {
+    if (isDocumentSymbol(symbol)) {
       flattened.push(...flattenSymbols(symbol.children, [...ancestors, symbol.name]));
     }
   }
@@ -40,11 +61,11 @@ export async function findFunctionWithEditorTools(
       symbol,
       qualified,
       range:
-        symbol instanceof vscode.DocumentSymbol
+        isDocumentSymbol(symbol)
           ? symbol.range
           : symbol.location.range,
       selection:
-        symbol instanceof vscode.DocumentSymbol
+        isDocumentSymbol(symbol)
           ? symbol.selectionRange
           : symbol.location.range
     }))
@@ -53,7 +74,7 @@ export async function findFunctionWithEditorTools(
   const selected = candidates[0];
   if (!selected) return undefined;
   const source = document.getText(selected.range);
-  const detail = selected.symbol instanceof vscode.DocumentSymbol
+  const detail = isDocumentSymbol(selected.symbol)
     ? selected.symbol.detail
     : "";
   const signature = detail || source.split(/\r?\n/, 1)[0]?.trim() || selected.symbol.name;

@@ -59,11 +59,15 @@ Preview to the Side** (or use the preview button in the editor title bar).
   you collapse them. Several can be open at once, and up to three
   generations run at the same time (see **Max Concurrent Requests** below).
   Each explanation links to the related code the extension found.
-  For Rust and Go, the explanation also uses the types, functions, and methods
-  the function uses, including from other files and packages, plus the
-  signatures of the functions those call, and is marked outdated when any of
-  them change. Rust and Go files are described, and their
-  functions found, with bundled parsers, so no language server is needed.
+  The explanation also uses the functions the function calls, including from
+  other files, plus the signatures of the functions those call, and is marked
+  outdated when any of them change. For Rust and Go, it also uses the types,
+  constants, and methods the function uses, and their files are described,
+  and their functions and calls found, with bundled parsers, so no language
+  server is needed. Other languages use the editor's own tooling: functions
+  come from its document symbols and calls are found with go-to-definition,
+  so this works where a language extension provides them (JavaScript and
+  TypeScript do out of the box).
   Current saved explanations appear whenever the preview shows their file,
   including after reopening the preview or restarting VS Code; this is a
   local cache check only. The file summary is generated with the first new
@@ -147,7 +151,7 @@ request slots your own requests leave free and always leaves one for them;
 provider's rate limits sooner; it does not change how many requests are made. **Prefetch: Window**
 (`downsideUp.prefetch.window`, default 10) limits it to that many functions
 nearest your position and follows you through the file; `0` prefetches every
-function. For Rust and Go, **Prefetch: Dependencies**
+function. **Prefetch: Dependencies**
 (`downsideUp.prefetch.dependencies`, default 3, `0` for none) also prefetches
 up to that many functions in other files that the function you are reading
 calls, right after the function itself, so they are ready if you follow a
@@ -158,8 +162,10 @@ counts toward your provider's usage limits or billing.
 
 ### Saved explanations on hover
 
-Hovering a call to a Rust or Go function shows the purpose from its saved AI
-explanation, if one is current. This only reads the local cache and never
+Hovering a call to a function shows the purpose from its saved AI
+explanation, if one is current. Calls are found the same way as for
+explanations, so in languages other than Rust and Go this needs a language
+extension with go-to-definition. This only reads the local cache and never
 generates; turn it off with **Downside Up › Hover: Saved Explanations**
 (`downsideUp.hover.savedExplanations`). It works once the extension is active,
 for example after opening the preview.
@@ -172,3 +178,12 @@ VS Code host, `cargo test --manifest-path fixtures/rust-app/Cargo.toml` checks
 the Rust fixture, and `go test ./...` in `fixtures/go-app` checks the Go
 fixture. `npm run package` builds a VSIX including the required
 production Tree-sitter runtime.
+
+Language support is modular. Each language with bundled analysis has a
+folder under `src/languages/` that exports one `LanguageSupport`
+(`src/languages/support.ts`): how to find a function at a position, list
+functions, describe the file, and find what a function uses. To add one, add
+the folder, list it in `src/languages/registry.ts`, and, for a Tree-sitter
+grammar, add the grammar's name to `esbuild.config.mjs`. Languages without
+one use `src/languages/editor/` (VS Code document symbols and
+go-to-definition).

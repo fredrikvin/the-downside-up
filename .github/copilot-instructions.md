@@ -34,8 +34,12 @@ behavior.
   whenever formats change; do not avoid, batch, or migrate such changes to
   preserve caches, and do not flag the one-time regeneration as a cost.
 - Rust and Go function discovery use bundled Tree-sitter WASM; other languages
-  use VS Code document-symbol providers where available. Do not assume
-  `rust-analyzer`, `gopls`, or another language server is installed.
+  use VS Code document-symbol providers and go-to-definition where available.
+  Do not assume `rust-analyzer`, `gopls`, or another language server is
+  installed.
+- Keep language-specific behavior inside `src/languages/<language>/`, exposed
+  through one `LanguageSupport` listed in `src/languages/registry.ts`; do not
+  add language checks elsewhere.
 - Follow `package.json` scripts and the declared VS Code engine. Run
   `npm test`, `npm run test:extension`, and `npm run package` when changes
   affect their corresponding layers. Keep production dependencies in the

@@ -123,9 +123,10 @@ is off screen) and spreads outward, re-evaluating the order after every
 request, so the reader's position acts like a priority. `downsideUp.prefetch.window`
 (default 10, `0` for every function) limits it to that many functions nearest
 the reader; moving through the file moves the window and fetches newly
-nearby functions. For Rust and Go, `downsideUp.prefetch.dependencies`
+nearby functions. `downsideUp.prefetch.dependencies`
 (default 3, `0` for none) adds the functions and methods in other files that
-the function nearest the reader calls: among its first that many calls in
+the function nearest the reader calls (found as for explanation context,
+below): among its first that many calls in
 order of use, the ones without an explanation are fetched right after that
 function and before the rest of the window. Calls that already have an
 explanation count toward the number, so at most that many are considered per
@@ -145,9 +146,11 @@ and model by an explicit explanation; it never asks for approval itself and
 shows a notice when it is waiting for one. Prefetching uses the provider's
 usage limits or billing for every function it explains.
 
-Hovering a call to a Rust or Go function inside another function shows the
+Hovering a call to a function inside another function shows the
 purpose from that function's current saved explanation, found with the same
-local dependency resolution as explanation context. The hover reads only the
+local dependency resolution as explanation context. In languages without
+bundled analysis only words followed by `(` are considered, and only the
+hovered name is looked up. The hover reads only the
 local cache (after the usual freshness check), never generates, renders
 generated text as plain text, and can be turned off with
 `downsideUp.hover.savedExplanations`. Like the rest of the extension it is
@@ -156,8 +159,27 @@ available once a Downside Up command has activated it.
 The core is language-neutral. Rust and Go function discovery and source
 fingerprinting use bundled Tree-sitter WASM grammars, so neither needs a
 language server; Go methods are identified by receiver type (for example
-`Catalog.Add`). Other languages use VS Code document-symbol providers; the
-fixtures exercise Rust, Go, and JavaScript. Arbitrary blocks,
+`Catalog.Add`). Other languages use VS Code document-symbol providers,
+including nested symbols such as class methods; unnamed functions that
+providers name by position (such as TypeScript's `find() callback`) are
+treated as part of the function around them. The fixtures exercise Rust, Go,
+and JavaScript.
+
+Language support is modular. Each language with bundled analysis is a folder
+under `src/languages/` (parser, local file description, and dependency
+resolution) that exports one `LanguageSupport` object
+(`src/languages/support.ts`): its language IDs and file extensions, how to
+find the function at a position, list functions, describe the file, build the
+file's import preamble, and find the items a function uses. The registry
+(`src/languages/registry.ts`) lists them and is the only place the rest of the
+extension asks about languages: function discovery, the preview's local
+description, the repository symbol outline, the inventory's language IDs,
+explanation context, tracking, hovers, and prefetching. Adding a language
+means adding its folder, one registry entry, and, for a Tree-sitter grammar,
+its name in `esbuild.config.mjs` so the grammar is bundled. Languages
+without one use `src/languages/editor/`, which implements the same interface
+with VS Code document symbols and go-to-definition.
+Arbitrary blocks,
 automated edits, a full repository browser, vector stores, cloud state,
 collaboration, and marketplace publishing are out of scope.
 
@@ -168,7 +190,18 @@ project manifests, README and architecture-style documents, selected source
 files, and a small symbol outline. Rust and Go symbols use Tree-sitter; other
 symbols use VS Code providers where available. Function context adds related types,
 imports, directly related helpers, and references where tooling can resolve
-them. For Rust, it also adds the items the function uses directly from other
+them. For languages without bundled analysis, it adds the functions the
+function calls (depth 1) and, at depth 2, the signatures of the functions
+those call, under the same budgets as Rust and Go below: call sites (a name
+followed by `(`, outside comments and quoted strings, skipping keywords and
+declarations) are resolved with VS Code's go-to-definition, at most 24
+distinct names, 1.5 seconds per lookup, and 4 seconds for the whole function
+including depth 2, and each definition is mapped to its enclosing function
+with document symbols. Definitions outside the repository (such as the
+standard library or `node_modules`), in files the inventory may not read
+(ignored, excluded, or secret-like), or inside the function itself are
+skipped; a timeout, files outside the read budget, or a language without a
+definition provider are stated as limitations. For Rust, it also adds the items the function uses directly from other
 files of the crate (depth 1): types, functions, constants, and methods of used
 types, found by following `use` declarations and paths (`crate::`, `self::`,
 `super::`, child modules, `mod.rs`, glob imports, and the package's own name
@@ -318,9 +351,10 @@ generation.
 Each explanation records what it was built from, so tracking matches what the
 model saw. Every tracked input notes its depth (0 for the function itself, 1
 for items it uses directly, 2 for functions those call) and whether it covers
-the whole item or only its signature. A Rust or Go function's explanation
+the whole item or only its signature. A function's explanation
 becomes outdated when its own source, its file's imports, or any directly used
-item changes, including items in other files, or when the signature of a
+item changes (for languages without bundled analysis, the functions it calls),
+including items in other files, or when the signature of a
 depth-2 function changes. Rewriting a depth-2 function's body, changes beyond
 depth 2, or changes to other items in the same files do not by themselves make
 it outdated; a change to a file
@@ -333,7 +367,10 @@ and implicit repetition depend on it. Saved explanations of Rust functions that
 use items from other files, and of all Go functions, are shown as outdated once
 after upgrading, because they were made without that context. `go.mod` is now
 part of the repository inventory, so a Go repository's overview is reviewed
-once as well.
+once as well. Saved explanations of functions in other languages that call
+functions in the repository are likewise shown as outdated once, because the
+called functions are now part of their context; functions whose editor symbol
+details were previously unread may also need one new explanation.
 
 Invalidation never regenerates automatically. Use **Downside Up: Explain
 Function** or the preview's **Regenerate** link to regenerate. **Refresh Repository
@@ -377,7 +414,12 @@ the overview changes, overview content-version preservation,
 branch changes, in-flight edits, cancellation, clear-cache fencing, provider
 failures, VS Code language-model prompt/validation/error/cancellation handling,
 ignored files, per-file sharing exclusion reasons and refusal before any
-provider request, unsaved buffers, and parser fingerprints. Extension
+provider request, unsaved buffers, parser fingerprints, the language registry,
+symbols shaped like VS Code's command results (nested methods, anonymous
+callbacks), and call resolution through editor tooling (call sites outside
+comments and strings, other-file and same-file callees, skipped ignored files
+and external definitions, hovered-name-only lookups, depth-2 signatures and
+their freshness, missing definition providers, and the lookup deadline). Extension
 host tests exercise Rust, Go, and JavaScript discovery (Go without a language
 server), distinct identities for
 same-named Rust methods in different `impl` blocks, document-ordered outlines,
@@ -387,7 +429,8 @@ preview, steps that follow the cursor and select their lines when clicked, a flo
 added on request whose nodes follow the cursor and select their lines, prefetching that starts at the cursor, stays within its window, and
 follows the cursor, prefetching of a called function in another package,
 saved-explanation hovers that appear only when an explanation is saved and
-never generate, refusal to explain a function in a `.copilotignore`d file, and
+never generate, JavaScript calls resolved through the built-in TypeScript
+go-to-definition (standard-library calls not followed) and their hovers, refusal to explain a function in a `.copilotignore`d file, and
 unsupported plaintext discovery. Each run uses a fresh temporary
 VS Code profile so earlier runs' windows are not restored.
 Concise-outline tests cover which items each `preview.include` option adds and the
@@ -433,8 +476,16 @@ webview's content-security policy.
   file's own module (not `go.work` workspaces, `replace` targets, or
   `vendor/`), and package files outside the inventory's read budget are
   skipped with a stated limitation.
-- Callers, and items used by functions in languages other than Rust and Go,
-  are tracked only when VS Code tooling reports them.
+- Callers are tracked only when VS Code tooling reports them. In languages
+  other than Rust and Go, only called functions are tracked (not the types,
+  constants, or variables a function uses), and only when the installed
+  language extension provides go-to-definition. Call sites are found
+  textually (a name followed by `(`), so calls through references (passing a
+  function as a value), decorators, operators, or interpolation inside quoted
+  strings (such as Python f-strings) are missed, and a slow language server can
+  leave calls out (stated as a limitation), which can show an explanation as
+  outdated until the server answers again. Each name is resolved at its first
+  call site only.
 - Other language support depends on installed VS Code document-symbol
   providers. There is no whole-program analyzer or guaranteed call graph;
   unresolved references and unavailable tooling are surfaced as limitations.

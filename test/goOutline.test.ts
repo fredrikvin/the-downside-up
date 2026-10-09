@@ -3,8 +3,8 @@ import { resolve } from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
 import { buildFileOverview } from "../src/context/fileOverview";
 import type { Description } from "../src/context/outlineText";
-import { initializeGoParserAt } from "../src/languages/go";
-import { describeGoSource } from "../src/languages/goOutline";
+import { initializeGoParserAt } from "../src/languages/go/syntax";
+import { describeGoSource } from "../src/languages/go/outline";
 import { Uri } from "./vscode";
 
 const flat = (description: Description): string =>

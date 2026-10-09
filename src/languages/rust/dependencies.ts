@@ -1,7 +1,7 @@
 import { posix } from "node:path";
 import type { Node as SyntaxNode } from "web-tree-sitter";
-import { fingerprint } from "../core/fingerprint";
-import { rustSignature, rustStructuralTokens, withRustSyntaxTree } from "../languages/rust";
+import { fingerprint } from "../../core/fingerprint";
+import { rustSignature, rustStructuralTokens, withRustSyntaxTree } from "./syntax";
 
 /**
  * Depth-1 cross-file dependencies for a Rust function, found with Tree-sitter

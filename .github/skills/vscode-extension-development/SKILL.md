@@ -40,8 +40,11 @@ contract and project-specific constraints.
   whenever formats change; do not avoid, batch, or migrate such changes to
   preserve caches, and do not flag the one-time regeneration as a cost.
 - Rust and Go discovery use bundled Tree-sitter WASM; other languages use VS
-  Code document-symbol providers where available. Do not assume rust-analyzer,
-  gopls, or another language server is installed.
+  Code document-symbol providers and go-to-definition where available. Do not
+  assume rust-analyzer, gopls, or another language server is installed.
+- Add or change language behavior in `src/languages/<language>/` behind its
+  `LanguageSupport` (`src/languages/support.ts`) and registry entry; a new
+  Tree-sitter grammar also needs its name in `esbuild.config.mjs`.
 - Surface actionable errors without leaking secrets or sensitive workspace
   contents. Respect workspace trust and never execute workspace data.
 - Update README and `docs/prototype.md` when setup, privacy, cache behavior,

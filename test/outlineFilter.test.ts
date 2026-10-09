@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
 import { buildFileOverview } from "../src/context/fileOverview";
-import { initializeGoParserAt } from "../src/languages/go";
+import { initializeGoParserAt } from "../src/languages/go/syntax";
 import { CONCISE_OUTLINE, outlineInclude, visibleOutline } from "../src/presentation/outlineFilter";
 import { Uri } from "./vscode";
 

@@ -1,44 +1,23 @@
 import { createRequire } from "node:module";
-import { resolve } from "node:path";
-import type { Parser, Node as SyntaxNode } from "web-tree-sitter";
-import type { ExtensionContext, Position, TextDocument } from "vscode";
-import { cacheKey, fingerprint } from "../core/fingerprint";
-import type { FunctionTarget } from "../core/types";
-import { createTreeSitterParser, namedChildren, pointToPosition, structuralTokens } from "./treeSitter";
+import type { Node as SyntaxNode } from "web-tree-sitter";
+import type { Position, TextDocument } from "vscode";
+import { cacheKey, fingerprint } from "../../core/fingerprint";
+import type { FunctionTarget } from "../../core/types";
+import { namedChildren, pointToPosition, structuralTokens, treeSitterGrammar } from "../treeSitter";
 
 const require = createRequire(__filename);
-let parserPromise: Promise<Parser> | undefined;
-
-function parser(): Promise<Parser> {
-  parserPromise ??= createTreeSitterParser(resolve(__dirname, ".."), "tree-sitter-go.wasm", "Go");
-  return parserPromise;
-}
+const grammar = treeSitterGrammar("tree-sitter-go.wasm", "Go");
 
 export function initializeGoParserAt(extensionPath: string): Promise<void> {
-  parserPromise ??= createTreeSitterParser(extensionPath, "tree-sitter-go.wasm", "Go");
-  return parserPromise.then(() => undefined);
-}
-
-export function initializeGoParser(context: ExtensionContext): Promise<void> {
-  return initializeGoParserAt(context.extensionPath);
-}
-
-export function isGoDocument(document: Pick<TextDocument, "languageId" | "uri">): boolean {
-  return document.languageId === "go" || document.uri.path.toLowerCase().endsWith(".go");
+  return grammar.initialize(extensionPath);
 }
 
 /** Parses Go source with the bundled grammar and releases the tree after `use` returns. */
-export async function withGoSyntaxTree<T>(
+export function withGoSyntaxTree<T>(
   source: string,
   use: (root: SyntaxNode) => T
 ): Promise<T | undefined> {
-  const tree = (await parser()).parse(source);
-  if (!tree) return undefined;
-  try {
-    return use(tree.rootNode);
-  } finally {
-    tree.delete();
-  }
+  return grammar.withSyntaxTree(source, use);
 }
 
 /** Declaration text before the body, such as `func (c *Catalog) Add(b Book) error`. */

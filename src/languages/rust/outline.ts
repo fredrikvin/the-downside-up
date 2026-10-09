@@ -1,7 +1,7 @@
 import type { Node as SyntaxNode } from "web-tree-sitter";
-import { boundedDocumentation, commentDraft, type OutlineEntryDraft, type OutlineKind } from "../context/outlineModel";
-import { capitalize, clauses, describe, type Description } from "../context/outlineText";
-import { withRustSyntaxTree } from "./rust";
+import { boundedDocumentation, commentDraft, type OutlineEntryDraft, type OutlineKind } from "../../context/outlineModel";
+import { capitalize, clauses, describe, type Description } from "../../context/outlineText";
+import { withRustSyntaxTree } from "./syntax";
 
 const MAX_DRAFTS = 500;
 
