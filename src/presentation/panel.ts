@@ -180,7 +180,7 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
     .pseudo-line.linked { cursor: pointer; }
     .pseudo-line.linked:hover { background: var(--vscode-list-hoverBackground, rgba(128, 128, 128, .12)); }
     .flow-scroll { overflow-x: auto; margin: 6px 0 12px; }
-    .flow { position: relative; display: inline-grid; grid-auto-columns: max-content; column-gap: 32px; row-gap: 34px; align-items: center; padding: 4px 64px 8px 4px; }
+    .flow { position: relative; display: inline-grid; grid-auto-columns: max-content; column-gap: 32px; row-gap: 34px; align-items: center; padding: 4px 24px 8px 56px; }
     .flow-node {
       position: relative; z-index: 1; justify-self: center; max-width: 220px; padding: 6px 12px; text-align: center; font-size: .9em; line-height: 1.35;
       border: 1px solid var(--vscode-panel-border, var(--separator)); border-radius: 4px;
@@ -354,7 +354,7 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
      * Places flowchart nodes in rows: each node's row is its longest distance
      * from the start along forward edges, so the main path runs downward. An
      * early exit (an end reached only from a node that also continues) sits on
-     * its source's row, to the right. Edges that loop back are drawn on the right.
+     * its source's row, to the right. Edges that loop back are drawn on the left.
      */
     function layoutFlow(chart) {
       const order = new Map(chart.nodes.map((node, index) => [node.id, index]));
@@ -456,7 +456,8 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
           const r = boxes.get(id).getBoundingClientRect();
           return { left: r.left - base.left, right: r.right - base.left, top: r.top - base.top, bottom: r.bottom - base.top, x: (r.left + r.right) / 2 - base.left, y: (r.top + r.bottom) / 2 - base.top };
         };
-        const right = Math.max(...[...boxes.keys()].map((id) => rect(id).right));
+        // Loops go up the left of the main path; exits use the right, so they never cross.
+        const left = Math.min(...[...boxes.keys()].map((id) => rect(id).left));
         let lane = 0;
         for (const edge of chart.edges) {
           const from = rect(edge.from);
@@ -472,8 +473,8 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
             const middle = (from.bottom + to.top) / 2;
             d = "M" + from.x + "," + from.bottom + " C" + from.x + "," + middle + " " + to.x + "," + middle + " " + to.x + "," + to.top;
           } else {
-            const x = right + 16 + 10 * lane++;
-            d = "M" + from.right + "," + from.y + " H" + x + " V" + to.y + " H" + to.right;
+            const x = Math.max(4, left - 16 - 10 * lane++);
+            d = "M" + from.left + "," + from.y + " H" + x + " V" + to.y + " H" + to.left;
           }
           path.setAttribute("d", d);
           path.setAttribute("class", "flow-edge");

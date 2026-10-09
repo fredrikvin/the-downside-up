@@ -64,8 +64,8 @@ nodes and 40 edges, unique node IDs, edges only between known nodes); an
 invalid view is dropped without failing the explanation. The panel draws the
 flowchart itself from HTML boxes and SVG lines, with every label set as text:
 the main path runs downward in the first column, an early exit sits to the
-right of the node it leaves from, and edges that loop back are routed along the
-right side. No diagram library or HTML parsing is involved.
+right of the node it leaves from, and edges that loop back are routed up the
+left side, so loops and exits never cross. No diagram library or HTML parsing is involved.
 
 Every function has an **AI explanation** section. Opening it, or
 clicking the function name, is an explicit request: the extension first looks
