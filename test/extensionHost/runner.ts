@@ -4,7 +4,8 @@ import * as vscode from "vscode";
 import { findFunctionWithEditorTools } from "../../src/languages/editor/symbols";
 import { buildFileOverview } from "../../src/context/fileOverview";
 import { findRepositoryRoot, gatherInventory } from "../../src/context/inventory";
-import { findCalledFunctions } from "../../src/context/related";
+import { findCalledFunctions, gatherFunctionContext } from "../../src/context/related";
+import { javascriptSupport } from "../../src/languages/javascript";
 import type { DownsideUpTestApi } from "../../src/extension";
 import { findGoFunction, initializeGoParserAt } from "../../src/languages/go/syntax";
 import { findRustFunction, initializeRustParserAt } from "../../src/languages/rust/syntax";
@@ -43,6 +44,10 @@ async function waitForPanel(): Promise<vscode.Tab> {
   );
 }
 
+async function findFunctionTarget(document: vscode.TextDocument, position: vscode.Position) {
+  return javascriptSupport.findFunction(document, position);
+}
+
 export async function run(): Promise<void> {
   console.log("Downside Up integration tests: activating extension.");
   const extension = vscode.extensions.getExtension("the-downside-up.the-downside-up");
@@ -54,6 +59,7 @@ export async function run(): Promise<void> {
   const rustDocument = await vscode.workspace.openTextDocument(vscode.Uri.file(rustFile));
   const rustEditor = await vscode.window.showTextDocument(rustDocument, vscode.ViewColumn.One);
   await initializeRustParserAt(extension.extensionPath);
+  await javascriptSupport.initialize!(extension.extensionPath);
   const rustSource = rustDocument.getText();
   const rustOutline = await buildFileOverview(rustDocument, "src/main.rs");
   assert.ok(rustOutline.entries.some((entry) => entry.kindLabel === "Function" && entry.name === "checkout" && entry.explainable));
@@ -107,13 +113,15 @@ export async function run(): Promise<void> {
 
   const jsRoot = resolve(__dirname, "../../fixtures/js-app");
   const goRoot = resolve(__dirname, "../../fixtures/go-app");
-  // VS Code rejects a second folder change in this session, so both folders are added at once.
+  const reactRoot = resolve(__dirname, "../../fixtures/react-app");
+  // VS Code rejects a second folder change in this session, so all folders are added at once.
   assert.ok(vscode.workspace.updateWorkspaceFolders(
     1,
     0,
     { uri: vscode.Uri.file(jsRoot), name: "js-app" },
-    { uri: vscode.Uri.file(goRoot), name: "go-app" }
-  ), "The JavaScript and Go fixture folders are added.");
+    { uri: vscode.Uri.file(goRoot), name: "go-app" },
+    { uri: vscode.Uri.file(reactRoot), name: "react-app" }
+  ), "The JavaScript, Go, and React fixture folders are added.");
   const jsFile = resolve(jsRoot, "src/checkout.js");
   const jsDocument = await vscode.workspace.openTextDocument(vscode.Uri.file(jsFile));
   const jsEditor = await vscode.window.showTextDocument(jsDocument, vscode.ViewColumn.One);
@@ -220,7 +228,51 @@ export async function run(): Promise<void> {
     /Downside Up[\s\S]*persist/,
     "Hovering a JavaScript call shows its saved explanation."
   );
-  console.log("Downside Up integration tests: JavaScript calls resolved through editor tooling.");
+  console.log("Downside Up integration tests: JavaScript calls resolved through TypeScript go-to-definition.");
+
+  const cartViewDocument = await vscode.workspace.openTextDocument(vscode.Uri.file(resolve(reactRoot, "src/CartView.tsx")));
+  await vscode.window.showTextDocument(cartViewDocument, vscode.ViewColumn.One);
+  await vscode.commands.executeCommand("downsideUp.showFileOverview");
+  await waitFor(
+    async () => api.shownOutline().map((entry) => `${entry.kindLabel} ${entry.name}`).join(", ") === "Component CartView, Function handleCheckout"
+      ? true : undefined,
+    "the React component and its handler in the concise preview"
+  );
+  const cartViewCursor = cartViewDocument.positionAt(cartViewDocument.getText().indexOf("document.title"));
+  const cartView = await findFunctionTarget(cartViewDocument, cartViewCursor);
+  assert.equal(cartView?.qualifiedName, "CartView", "Code in an effect callback belongs to the component.");
+  assert.equal(cartView?.analysis, "javascript-tree-sitter");
+  const reactRepository = await findRepositoryRoot(reactRoot);
+  const reactCalled = await waitFor(async () => {
+    const called = await findCalledFunctions(cartView!, cartViewDocument, await gatherInventory(reactRepository));
+    return called.length >= 3 ? called : undefined;
+  }, "TypeScript go-to-definition for the component's hooks, children, and helpers");
+  assert.deepEqual(
+    reactCalled.map((entry) => `${entry.path.split("/").slice(-2).join("/")} ${entry.qualifiedName}`),
+    ["src/useCart.ts useCart", "src/CartItem.tsx CartItem", "src/format.ts formatPrice"],
+    "Hooks, rendered components, and helpers are found in order of first use."
+  );
+  const reactContext = await gatherFunctionContext(cartView!, cartViewDocument, await gatherInventory(reactRepository));
+  assert.ok(
+    reactContext.inputs.some((input) => input.path.endsWith("src/types.ts") && input.description === "interface CartViewProps" && input.depth === 1),
+    "The props interface is sent and tracked."
+  );
+  const cartItemDocument = await vscode.workspace.openTextDocument(vscode.Uri.file(resolve(reactRoot, "src/CartItem.tsx")));
+  const cartItemEditor = await vscode.window.showTextDocument(cartItemDocument, vscode.ViewColumn.One);
+  const cartItemCursor = cartItemDocument.positionAt(cartItemDocument.getText().indexOf("const CartItem") + 8);
+  cartItemEditor.selection = new vscode.Selection(cartItemCursor, cartItemCursor);
+  await vscode.commands.executeCommand("downsideUp.explainFunction");
+  await waitFor(
+    async () => api.allExplanations().some((view) => view.functionName === "CartItem" && view.status === "current") ? true : undefined,
+    "the explanation of the memo-wrapped arrow component"
+  );
+  await vscode.window.showTextDocument(cartViewDocument, vscode.ViewColumn.One);
+  assert.match(
+    await hoverText(cartViewDocument, "<CartItem", 3),
+    /Downside Up[\s\S]*CartItem/,
+    "Hovering a rendered component shows its saved explanation."
+  );
+  console.log("Downside Up integration tests: React components, hooks, and props types resolved.");
 
   const goDocument = await vscode.workspace.openTextDocument(vscode.Uri.file(resolve(goRoot, "main.go")));
   await waitFor(

@@ -33,7 +33,9 @@ behavior.
   overviews through new prompt or schema versions is acceptable. Bump versions
   whenever formats change; do not avoid, batch, or migrate such changes to
   preserve caches, and do not flag the one-time regeneration as a cost.
-- Rust and Go function discovery use bundled Tree-sitter WASM; other languages
+- Rust, Go, JavaScript, and TypeScript function discovery use bundled
+  Tree-sitter WASM (JavaScript and TypeScript resolve what a function uses
+  with VS Code's built-in TypeScript go-to-definition); other languages
   use VS Code document-symbol providers and go-to-definition where available.
   Do not assume `rust-analyzer`, `gopls`, or another language server is
   installed.

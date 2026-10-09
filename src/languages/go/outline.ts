@@ -34,10 +34,6 @@ function fields(node: SyntaxNode, name: string): SyntaxNode[] {
   return node.childrenForFieldName(name).filter((entry): entry is SyntaxNode => entry !== null);
 }
 
-function character(lines: readonly string[], row: number, byteColumn: number): number {
-  const line = lines[row] ?? "";
-  return Buffer.from(line, "utf8").subarray(0, byteColumn).toString("utf8").length;
-}
 
 function endRow(node: SyntaxNode): number {
   const { row, column } = node.endPosition;
@@ -242,8 +238,8 @@ class GoDescriber {
     const end = target.endPosition.row === row ? target.endPosition.column : Buffer.byteLength(this.context.lines[row] ?? "", "utf8");
     return {
       nameLine: row,
-      nameStart: character(this.context.lines, row, target.startPosition.column),
-      nameEnd: character(this.context.lines, row, end)
+      nameStart: target.startPosition.column,
+      nameEnd: end
     };
   }
 

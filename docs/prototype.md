@@ -15,7 +15,7 @@ import, module, function/method, type, constant/static, local variable
 binding, and standalone comment in plain language, in source order and
 without regrouping, with attached doc comments and attributes. These
 descriptions are deterministic and local (Tree-sitter for
-Rust and Go; VS Code document symbols plus line-based import and comment
+Rust, Go, JavaScript, and TypeScript; VS Code document symbols plus line-based import and comment
 detection for other languages) and are labelled as not AI-generated. Go
 descriptions also explain Go-specific meaning, such as exported names,
 pointer and value receivers, multiple and named results, `iota` groups,
@@ -159,11 +159,25 @@ available once a Downside Up command has activated it.
 The core is language-neutral. Rust and Go function discovery and source
 fingerprinting use bundled Tree-sitter WASM grammars, so neither needs a
 language server; Go methods are identified by receiver type (for example
-`Catalog.Add`). Other languages use VS Code document-symbol providers,
+`Catalog.Add`). JavaScript and TypeScript, including JSX and React, also use
+bundled Tree-sitter grammars (TypeScript for `.ts`, `.mts`, and `.cts`, since
+generic arrow functions such as `<T>(x: T) => x` read as JSX in TSX; TSX for
+`.tsx` and all JavaScript). Their functions are function declarations,
+functions and arrow functions assigned to variables, functions wrapped in
+calls known to return them (`memo`, `forwardRef`, `useCallback`, `observer`,
+`debounce`, `throttle`, `once`, `memoize`, and `with…` higher-order
+functions), class and object methods, and class fields holding functions,
+named by their enclosing classes, objects, and functions (for example
+`CartView.handleCheckout`); a default-exported unnamed function is `default`.
+Unnamed callbacks, such as an effect passed to `useEffect` or a callback
+passed to `items.map` or `useMemo`, are part of the function around them. A
+capitalized function that returns JSX, or is wrapped in `memo` or
+`forwardRef`, is a component; a function named `use…` is a hook. Other
+languages use VS Code document-symbol providers,
 including nested symbols such as class methods; unnamed functions that
 providers name by position (such as TypeScript's `find() callback`) are
 treated as part of the function around them. The fixtures exercise Rust, Go,
-and JavaScript.
+JavaScript, and React with TypeScript.
 
 Language support is modular. Each language with bundled analysis is a folder
 under `src/languages/` (parser, local file description, and dependency
@@ -187,10 +201,28 @@ collaboration, and marketplace publishing are out of scope.
 
 Before the first explanation, the extension gathers bounded local evidence:
 project manifests, README and architecture-style documents, selected source
-files, and a small symbol outline. Rust and Go symbols use Tree-sitter; other
+files, and a small symbol outline. Rust, Go, JavaScript, and TypeScript symbols use Tree-sitter; other
 symbols use VS Code providers where available. Function context adds related types,
 imports, directly related helpers, and references where tooling can resolve
-them. For languages without bundled analysis, it adds the functions the
+them. For JavaScript and TypeScript, it adds the file's import and
+re-export statements and, under the same budgets as Rust and Go below, the
+items the function uses (depth 1): the functions, hooks, and methods it
+calls, the components it renders (capitalized JSX tags, including
+`<Cart.Item>`), and the interfaces, type aliases, enums, and classes it names
+(such as its props type). Each name is resolved, at its first use, with VS
+Code's built-in TypeScript go-to-definition (at most 40 distinct names) and
+read with the bundled grammar at the definition; definitions that are not a
+function or type declaration (such as a variable or an object property) are
+skipped. At depth 2, the signatures of the functions those call are added.
+Right after VS Code starts, TypeScript first answers from a syntax-only
+server that resolves names only within a file, so an imported name leads to
+its `import` line. Before resolving, the extension asks for the definition of
+a name the file imports from a relative or aliased path (`./`, `../`, `/`,
+`@/`, `~/`) and waits, up to 15 seconds once per repository, until it leads
+elsewhere; otherwise a function explained during that time would be saved
+without what it uses and later shown as outdated. If TypeScript does not
+answer in time, what it resolved is used and the limitation is stated. For
+other languages without bundled analysis, it adds the functions the
 function calls (depth 1) and, at depth 2, the signatures of the functions
 those call, under the same budgets as Rust and Go below: call sites (a name
 followed by `(`, outside comments and quoted strings, skipping keywords and
@@ -367,7 +399,10 @@ and implicit repetition depend on it. Saved explanations of Rust functions that
 use items from other files, and of all Go functions, are shown as outdated once
 after upgrading, because they were made without that context. `go.mod` is now
 part of the repository inventory, so a Go repository's overview is reviewed
-once as well. Saved explanations of functions in other languages that call
+once as well. Saved JavaScript and TypeScript explanations are not found
+after upgrading to the bundled grammars, because function identities changed
+(and now include arrow functions); explain those functions again. Saved
+explanations of functions in other languages that call
 functions in the repository are likewise shown as outdated once, because the
 called functions are now part of their context; functions whose editor symbol
 details were previously unread may also need one new explanation.
@@ -419,8 +454,16 @@ symbols shaped like VS Code's command results (nested methods, anonymous
 callbacks), and call resolution through editor tooling (call sites outside
 comments and strings, other-file and same-file callees, skipped ignored files
 and external definitions, hovered-name-only lookups, depth-2 signatures and
-their freshness, missing definition providers, and the lookup deadline). Extension
-host tests exercise Rust, Go, and JavaScript discovery (Go without a language
+their freshness, missing definition providers, and the lookup deadline), and
+JavaScript and TypeScript analysis (named functions, components, hooks, and
+methods but not callbacks or values from `useMemo` or `items.find`, generic
+arrow functions in `.ts`, the function at a position, positions after
+non-ASCII text, component and hook labels, props, state, refs, remembered
+values, wrapper notes, plain JavaScript descriptions, hooks, rendered
+components, and helpers in order of first use, hovered-name-only lookups,
+waiting for TypeScript to load the project, and the props type and depth-2
+signatures with their freshness). Extension
+host tests exercise Rust, Go, JavaScript, and React discovery (Go without a language
 server), distinct identities for
 same-named Rust methods in different `impl` blocks, document-ordered outlines,
 explanation commands, preview creation, selection changes during an in-flight
@@ -430,7 +473,11 @@ added on request whose nodes follow the cursor and select their lines, prefetchi
 follows the cursor, prefetching of a called function in another package,
 saved-explanation hovers that appear only when an explanation is saved and
 never generate, JavaScript calls resolved through the built-in TypeScript
-go-to-definition (standard-library calls not followed) and their hovers, refusal to explain a function in a `.copilotignore`d file, and
+go-to-definition (standard-library calls not followed) and their hovers, a
+React component's concise preview (component and nested handler), its
+hook, rendered component, and helper resolved in order of first use through
+the real TypeScript server, its props interface tracked, a `memo`-wrapped
+arrow component explained and shown when hovering `<CartItem>`, refusal to explain a function in a `.copilotignore`d file, and
 unsupported plaintext discovery. Each run uses a fresh temporary
 VS Code profile so earlier runs' windows are not restored.
 Concise-outline tests cover which items each `preview.include` option adds and the
@@ -446,7 +493,10 @@ aliases, macros, locals, doc comments, attributes, and standalone comments),
 Go declarations (package, imports, functions and methods with receivers,
 structs with embedding, interfaces and constraints, defined types, aliases,
 grouped constants with `iota`, variables, locals, doc comments, directives,
-and standalone comments), symbol-based descriptions and import detection for other languages, scroll
+and standalone comments), JavaScript and TypeScript declarations (imports,
+re-exports, functions, components, hooks, methods, classes and class
+components, fields, interfaces, type aliases, enums, constants, locals, React
+state, refs, context and remembered values, JSDoc, and standalone comments), symbol-based descriptions and import detection for other languages, scroll
 anchor interpolation in both directions, prompts that ask for plain-prose
 references rather than identifiers, and the
 webview's content-security policy.
@@ -477,7 +527,7 @@ webview's content-security policy.
   `vendor/`), and package files outside the inventory's read budget are
   skipped with a stated limitation.
 - Callers are tracked only when VS Code tooling reports them. In languages
-  other than Rust and Go, only called functions are tracked (not the types,
+  other than Rust, Go, JavaScript, and TypeScript, only called functions are tracked (not the types,
   constants, or variables a function uses), and only when the installed
   language extension provides go-to-definition. Call sites are found
   textually (a name followed by `(`), so calls through references (passing a
@@ -486,6 +536,18 @@ webview's content-security policy.
   leave calls out (stated as a limitation), which can show an explanation as
   outdated until the server answers again. Each name is resolved at its first
   call site only.
+- JavaScript and TypeScript tracking depends on VS Code's built-in
+  TypeScript go-to-definition (or a replacement that provides it). Names are
+  resolved at their first use only, and at most 40 per function. Functions
+  passed as values (such as an `onRemove` prop or a handler given to
+  `onClick`) are not followed, a method reached through an object returned by
+  a hook resolves to the returned property rather than the function, and
+  wrappers other than the listed ones (and class components' lifecycle) are
+  not recognized as functions. Components are recognized by name and JSX;
+  `React.createElement` calls and render props are not treated as rendering a
+  component. Values a function uses (constants, context objects) are not
+  tracked. Tree-sitter does not type-check, so files with syntax errors may
+  lose functions.
 - Other language support depends on installed VS Code document-symbol
   providers. There is no whole-program analyzer or guaranteed call graph;
   unresolved references and unavailable tooling are surfaced as limitations.
@@ -505,7 +567,8 @@ webview's content-security policy.
   webview in a browser, but not inside VS Code with real themes; a manual
   accessibility inspection has not been completed.
 - Local descriptions are syntactic: they restate declarations, signatures,
-  imports, and comments, not behavior. Languages other than Rust and Go depend
+  imports, and comments, not behavior. Languages other than Rust, Go,
+  JavaScript, and TypeScript depend
   on the installed symbol provider's detail; import detection covers JavaScript/
   TypeScript, Python, Go, Java/Kotlin/Scala/Groovy, C#, C/C++, PHP, Ruby, and
   Swift.

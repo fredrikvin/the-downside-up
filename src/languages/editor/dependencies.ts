@@ -2,7 +2,7 @@ import { isAbsolute, relative, resolve, sep } from "node:path";
 import * as vscode from "vscode";
 import { fingerprint } from "../../core/fingerprint";
 import type { FunctionTarget } from "../../core/types";
-import type { Dependency, DependencyRequest, DependencyResult } from "../support";
+import type { Dependency, DependencyItem, DependencyRequest, DependencyResult } from "../support";
 import { findFunctionWithEditorTools } from "./symbols";
 
 const MAX_LOOKUPS = 24;
@@ -116,6 +116,94 @@ function definitionTarget(definition: Definition): { uri: vscode.Uri; position: 
     : { uri: definition.uri, position: definition.range.start };
 }
 
+export interface LookupSite {
+  readonly name: string;
+  /** Where the name is used, in the function's document. */
+  readonly position: vscode.Position;
+}
+
+export interface DefinitionTarget {
+  /** Repository-relative path of the file with the definition. */
+  readonly path: string;
+  readonly uri: vscode.Uri;
+  readonly position: vscode.Position;
+  /** The file's current text, preferring open buffers. */
+  readonly text: string;
+}
+
+export interface SiteResolution {
+  /** The function's document, used to ask for definitions. */
+  readonly document: vscode.TextDocument;
+  /** The function's range; definitions inside it are skipped. */
+  readonly range: vscode.Range;
+  readonly sites: readonly LookupSite[];
+  /** The item declared at a definition, or undefined to skip it. */
+  readonly itemAt: (definition: DefinitionTarget) => Promise<DependencyItem | undefined>;
+  readonly maxLookups?: number;
+}
+
+/**
+ * Resolves names a function uses with the editor's go-to-definition, at most
+ * `maxLookups` distinct names within the request's deadline. Definitions
+ * outside the repository, in files the inventory may not read, or inside the
+ * function itself are skipped.
+ */
+export async function resolveSites(request: DependencyRequest, resolution: SiteResolution): Promise<DependencyResult> {
+  const { document, range } = resolution;
+  const sites = resolution.sites
+    .filter((site) => request.onlyName === undefined || site.name === request.onlyName)
+    .slice(0, resolution.maxLookups ?? MAX_LOOKUPS);
+  const deadline = request.deadline ?? Date.now() + DEFAULT_TIME_BUDGET_MS;
+  const limitations = new Set<string>();
+  let answered = false;
+
+  const lookup = async (site: LookupSite): Promise<Definition | undefined> => {
+    const remaining = Math.min(LOOKUP_TIMEOUT_MS, deadline - Date.now());
+    if (remaining <= 0) {
+      limitations.add(LOOKUP_TIMED_OUT);
+      return undefined;
+    }
+    const result = await withTimeout(
+      vscode.commands.executeCommand<Definition[] | undefined>("vscode.executeDefinitionProvider", document.uri, site.position),
+      remaining
+    ).catch(() => undefined);
+    if (result === "timeout") {
+      limitations.add(LOOKUP_TIMED_OUT);
+      return undefined;
+    }
+    if (result?.length) answered = true;
+    return result?.[0];
+  };
+  const definitions: Array<Definition | undefined> = [];
+  for (let index = 0; index < sites.length; index += PARALLEL_LOOKUPS) {
+    definitions.push(...await Promise.all(sites.slice(index, index + PARALLEL_LOOKUPS).map(lookup)));
+  }
+
+  const dependencies: Dependency[] = [];
+  const known = new Set<string>();
+  for (const definition of definitions) {
+    if (!definition || dependencies.length >= (request.maxDependencies ?? MAX_LOOKUPS)) continue;
+    const { uri, position } = definitionTarget(definition);
+    const path = repositoryPath(request.root, uri);
+    if (!path) continue;
+    if (path === request.path && range.contains(position)) continue;
+    if (!request.readablePaths.has(path)) {
+      if (request.unreadPaths?.has(path)) limitations.add(UNREAD_CALLEES);
+      continue;
+    }
+    const text = path === request.path ? request.text : await request.load(path);
+    if (text === undefined) continue;
+    const item = await resolution.itemAt({ path, uri, position, text }).catch(() => undefined);
+    if (!item) continue;
+    const key = `${path}\0${item.qualifiedName}`;
+    if (known.has(key)) continue;
+    known.add(key);
+    dependencies.push({ path, item });
+  }
+  if (sites.length > 0 && !answered && !limitations.has(LOOKUP_TIMED_OUT)) limitations.add(NO_DEFINITIONS);
+  return { dependencies, limitations: [...limitations] };
+}
+
 async function findTarget(root: string, path: string, line: number, name: string): Promise<{
   document: vscode.TextDocument;
   target: FunctionTarget;
@@ -141,62 +229,17 @@ export async function findEditorDependencies(request: DependencyRequest): Promis
   const { document, target } = found;
   const start = document.offsetAt(target.range.start);
   const ownName = document.offsetAt(target.selection.start) - start;
-  const sites = findCallSites(target.source, document.languageId, new Set([ownName]))
-    .filter((site) => request.onlyName === undefined || site.name === request.onlyName)
-    .slice(0, MAX_LOOKUPS);
-  const deadline = request.deadline ?? Date.now() + DEFAULT_TIME_BUDGET_MS;
-  const limitations = new Set<string>();
-  let answered = false;
-
-  const lookup = async (site: CallSite): Promise<Definition | undefined> => {
-    const remaining = Math.min(LOOKUP_TIMEOUT_MS, deadline - Date.now());
-    if (remaining <= 0) {
-      limitations.add(LOOKUP_TIMED_OUT);
-      return undefined;
-    }
-    const result = await withTimeout(
-      vscode.commands.executeCommand<Definition[] | undefined>(
-        "vscode.executeDefinitionProvider",
-        document.uri,
-        document.positionAt(start + site.offset)
-      ),
-      remaining
-    ).catch(() => undefined);
-    if (result === "timeout") {
-      limitations.add(LOOKUP_TIMED_OUT);
-      return undefined;
-    }
-    if (result?.length) answered = true;
-    return result?.[0];
-  };
-  const definitions: Array<Definition | undefined> = [];
-  for (let index = 0; index < sites.length; index += PARALLEL_LOOKUPS) {
-    definitions.push(...await Promise.all(sites.slice(index, index + PARALLEL_LOOKUPS).map(lookup)));
-  }
-
-  const dependencies: Dependency[] = [];
-  const known = new Set<string>();
-  for (const definition of definitions) {
-    if (!definition || dependencies.length >= (request.maxDependencies ?? MAX_LOOKUPS)) continue;
-    const { uri, position } = definitionTarget(definition);
-    const path = repositoryPath(request.root, uri);
-    if (!path) continue;
-    if (path === request.path && target.range.contains(position)) continue;
-    if (!request.readablePaths.has(path)) {
-      if (request.unreadPaths?.has(path)) limitations.add(UNREAD_CALLEES);
-      continue;
-    }
-    if (await request.load(path) === undefined) continue;
-    const calleeDocument = path === request.path ? document : await vscode.workspace.openTextDocument(uri);
-    const callee = await findFunctionWithEditorTools(calleeDocument, position).catch(() => undefined);
-    // The definition must be the function's own name, not a value or type inside some function.
-    if (!callee || !callee.selection.contains(position)) continue;
-    const key = `${path}\0${callee.qualifiedName}`;
-    if (known.has(key)) continue;
-    known.add(key);
-    dependencies.push({
-      path,
-      item: {
+  return resolveSites(request, {
+    document,
+    range: target.range,
+    sites: findCallSites(target.source, document.languageId, new Set([ownName]))
+      .map((site) => ({ name: site.name, position: document.positionAt(start + site.offset) })),
+    async itemAt({ path, uri, position }) {
+      const calleeDocument = path === request.path ? document : await vscode.workspace.openTextDocument(uri);
+      const callee = await findFunctionWithEditorTools(calleeDocument, position);
+      // The definition must be the function's own name, not a value or type inside some function.
+      if (!callee || !callee.selection.contains(position)) return undefined;
+      return {
         kind: "function",
         name: callee.name,
         qualifiedName: callee.qualifiedName,
@@ -205,9 +248,7 @@ export async function findEditorDependencies(request: DependencyRequest): Promis
         signature: callee.signature,
         fingerprint: callee.structuralFingerprint,
         signatureFingerprint: fingerprint(callee.signature)
-      }
-    });
-  }
-  if (sites.length > 0 && !answered && !limitations.has(LOOKUP_TIMED_OUT)) limitations.add(NO_DEFINITIONS);
-  return { dependencies, limitations: [...limitations] };
+      };
+    }
+  });
 }

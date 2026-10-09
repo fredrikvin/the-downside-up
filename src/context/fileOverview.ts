@@ -258,7 +258,7 @@ function describeFunctionSymbol(
       : describe().text("takes no arguments").build());
     const after = declaration.slice(parameters.end + 1);
     const returned =
-      /^\s*(?::|->)\s*([^{=\n]+?)\s*(?:\{|=>|:\s*$|$)/m.exec(after)?.[1] ??
+      /^\s*(?::|->)[ \t]*([^{=\n]+?)\s*(?:\{|=>|:\s*$|$)/m.exec(after)?.[1] ??
       (languageId === "go" ? /^\s*([^{\n]+?)\s*\{/.exec(after)?.[1] : undefined);
     if (returned?.trim()) parts.push(describe().text("returns ").code(returned.trim()).build());
   } else if (isDocumentSymbol(symbol) && symbol.detail) {
@@ -491,7 +491,7 @@ export async function buildFileOverview(
   const language = bundledLanguageFor({ languageId: document.languageId, path: document.uri.path });
   if (language?.describeSource) {
     try {
-      result = { ...(await language.describeSource(source)), limitations: [] };
+      result = { ...(await language.describeSource(source, relativePath)), limitations: [] };
     } catch {
       const fallback = await describeWithEditorSymbols(document, lines);
       result = {

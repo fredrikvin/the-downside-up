@@ -23,6 +23,15 @@ beforeAll(async () => {
 });
 
 describe("Rust local descriptions", () => {
+  it("places names after non-ASCII text on the same line at their UTF-16 column", async () => {
+    const source = "const SIGN: &str = \"×€\"; fn total() {}\n";
+    const { entries } = await outline(source);
+    expect(entries.find((entry) => entry.name === "total")).toMatchObject({
+      nameStart: source.indexOf("total"),
+      nameEnd: source.indexOf("total") + "total".length
+    });
+  });
+
   it("describes the fixture's main.rs in source order", async () => {
     const { entries } = await outline(fixture("main.rs"));
     expect(entries.map((entry) => [entry.startLine, entry.depth, entry.kindLabel, flat(entry.description)])).toEqual([

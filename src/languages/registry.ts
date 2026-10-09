@@ -1,6 +1,7 @@
 import { extname } from "node:path";
 import { editorSupport } from "./editor";
 import { goSupport } from "./go";
+import { javascriptSupport } from "./javascript";
 import { rustSupport } from "./rust";
 import type { LanguageSupport } from "./support";
 
@@ -9,7 +10,7 @@ import type { LanguageSupport } from "./support";
  * a `LanguageSupport`, list it here, and, for a Tree-sitter grammar, add the
  * grammar to `esbuild.config.mjs`.
  */
-const BUNDLED: readonly LanguageSupport[] = [rustSupport, goSupport];
+const BUNDLED: readonly LanguageSupport[] = [rustSupport, goSupport, javascriptSupport];
 
 export interface LanguageFile {
   readonly languageId?: string;

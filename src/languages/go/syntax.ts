@@ -85,7 +85,7 @@ export async function findGoFunction(
   const vscode = require("vscode") as typeof import("vscode");
   return withGoSyntaxTree(source, (root) => {
     const rangeOf = (node: SyntaxNode) =>
-      new vscode.Range(pointToPosition(node.startPosition, source), pointToPosition(node.endPosition, source));
+      new vscode.Range(pointToPosition(node.startPosition), pointToPosition(node.endPosition));
     const found = goFunctionNodes(root).find((entry) => rangeOf(entry.node).contains(position));
     if (!found) return undefined;
     return {

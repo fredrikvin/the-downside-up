@@ -64,10 +64,18 @@ Preview to the Side** (or use the preview button in the editor title bar).
   outdated when any of them change. For Rust and Go, it also uses the types,
   constants, and methods the function uses, and their files are described,
   and their functions and calls found, with bundled parsers, so no language
-  server is needed. Other languages use the editor's own tooling: functions
-  come from its document symbols and calls are found with go-to-definition,
-  so this works where a language extension provides them (JavaScript and
-  TypeScript do out of the box).
+  server is needed. JavaScript and TypeScript (including JSX and React) are
+  described and their functions found with bundled parsers too: arrow
+  functions, components (also inside `memo` or `forwardRef`), hooks, and
+  class and object methods are all functions you can explain, and the
+  preview labels components and hooks and describes state in plain words.
+  What such a function uses (the functions and hooks it calls, the components
+  it renders, and the types it names, such as its props) is found with VS
+  Code's built-in TypeScript go-to-definition; right after VS Code starts,
+  this waits for TypeScript to load the project. Other languages use the
+  editor's own tooling: functions come from its document symbols and calls
+  are found with go-to-definition, so this works where a language extension
+  provides them.
   Current saved explanations appear whenever the preview shows their file,
   including after reopening the preview or restarting VS Code; this is a
   local cache check only. The file summary is generated with the first new
@@ -79,7 +87,7 @@ Preview to the Side** (or use the preview button in the editor title bar).
 **Downside Up: Explain Function** explains the function at the cursor from the
 command palette. The repository context used for explanations is shown at the
 end of the preview. The development fixtures are in `fixtures/rust-app`,
-`fixtures/go-app`, and `fixtures/js-app`.
+`fixtures/go-app`, `fixtures/js-app`, and `fixtures/react-app`.
 
 To install a locally packaged VSIX, run
 `code --install-extension the-downside-up-0.10.0.vsix`.
@@ -164,8 +172,9 @@ counts toward your provider's usage limits or billing.
 
 Hovering a call to a function shows the purpose from its saved AI
 explanation, if one is current. Calls are found the same way as for
-explanations, so in languages other than Rust and Go this needs a language
-extension with go-to-definition. This only reads the local cache and never
+explanations, so outside Rust and Go this needs
+go-to-definition (built in for JavaScript and TypeScript, where hovering a
+rendered component such as `<CartItem>` works too). This only reads the local cache and never
 generates; turn it off with **Downside Up › Hover: Saved Explanations**
 (`downsideUp.hover.savedExplanations`). It works once the extension is active,
 for example after opening the preview.
@@ -173,7 +182,7 @@ for example after opening the preview.
 ## Development
 
 `npm run typecheck` checks TypeScript, `npm test` runs deterministic unit tests,
-`npm run test:extension` exercises the Rust, Go, and JavaScript flows in a real
+`npm run test:extension` exercises the Rust, Go, JavaScript, and React flows in a real
 VS Code host, `cargo test --manifest-path fixtures/rust-app/Cargo.toml` checks
 the Rust fixture, and `go test ./...` in `fixtures/go-app` checks the Go
 fixture. `npm run package` builds a VSIX including the required

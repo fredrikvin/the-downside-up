@@ -17,7 +17,7 @@ import { commands, DocumentSymbol, Position, Range, SymbolKind, Uri, workspace }
 
 class FakeDocument {
   readonly uri: ReturnType<typeof Uri.file>;
-  readonly languageId = "javascript";
+  readonly languageId = "php";
   readonly version = 1;
 
   constructor(path: string, private readonly text: string) {
@@ -50,7 +50,7 @@ class FakeDocument {
   }
 }
 
-/** A tiny JavaScript symbol provider: each `function name(...) {...}` with its braces matched. */
+/** A tiny symbol provider for PHP-like code: each `function name(...) {...}` with its braces matched. */
 function symbolsOf(document: FakeDocument): DocumentSymbol[] {
   const text = document.getText();
   const symbols: DocumentSymbol[] = [];
@@ -87,9 +87,9 @@ beforeEach(async () => {
   root = await realpath(await mkdtemp(resolve(tmpdir(), "downside-up-editor-")));
   await mkdir(resolve(root, "src"));
   await writeFile(resolve(root, "package.json"), "{\"type\":\"module\"}\n");
-  await writeFile(resolve(root, ".gitignore"), "src/generated.js\n");
-  await writeFile(resolve(root, "src/checkout.js"), [
-    "import { persist } from \"./storage.js\";",
+  await writeFile(resolve(root, ".gitignore"), "src/generated.php\n");
+  await writeFile(resolve(root, "src/checkout.php"), [
+    "require_once \"storage.php\";",
     "",
     "export function checkout(catalog, title) {",
     "  // persist(draft) is only mentioned here",
@@ -106,7 +106,7 @@ beforeEach(async () => {
     "}",
     ""
   ].join("\n"));
-  await writeFile(resolve(root, "src/storage.js"), [
+  await writeFile(resolve(root, "src/storage.php"), [
     "export function persist(book) {",
     "  validate(book);",
     "  return book;",
@@ -117,7 +117,7 @@ beforeEach(async () => {
     "}",
     ""
   ].join("\n"));
-  await writeFile(resolve(root, "src/generated.js"), "export function generated(value) {\n  return value;\n}\n");
+  await writeFile(resolve(root, "src/generated.php"), "export function generated(value) {\n  return value;\n}\n");
   lookups = [];
   definitionsAvailable = true;
   neverAnswer = false;
@@ -137,7 +137,7 @@ beforeEach(async () => {
     if (name === "find") {
       return [{ uri: Uri.file("/elsewhere/lib.es5.d.ts"), range: new Range(1, 2, 1, 6) }];
     }
-    for (const file of ["src/checkout.js", "src/storage.js", "src/generated.js"]) {
+    for (const file of ["src/checkout.php", "src/storage.php", "src/generated.php"]) {
       const candidate = open(resolve(root, file));
       const symbol = symbolsOf(candidate).find((entry) => entry.name === name);
       if (symbol) {
@@ -155,7 +155,7 @@ afterEach(async () => {
 });
 
 async function checkoutTarget() {
-  const document = open(resolve(root, "src/checkout.js"));
+  const document = open(resolve(root, "src/checkout.php"));
   const target = await findFunctionWithEditorTools(
     document as unknown as import("vscode").TextDocument,
     new Position(2, 20) as unknown as import("vscode").Position
@@ -186,8 +186,8 @@ describe("called functions through editor tooling", () => {
     expect(target.analysis).toBe("vscode-symbols");
     const called = await findCalledFunctions(target, document, await gatherInventory(root));
     expect(called.map((entry) => `${entry.path}:${entry.line} ${entry.qualifiedName}`)).toEqual([
-      "src/checkout.js:12 findBook",
-      "src/storage.js:0 persist"
+      "src/checkout.php:12 findBook",
+      "src/storage.php:0 persist"
     ]);
     // Comments, strings, the function's own name, and keywords are never looked up.
     expect(lookups.sort()).toEqual(["findBook@5", "generated@6", "log@7", "persist@8"]);
@@ -207,14 +207,14 @@ describe("called functions through editor tooling", () => {
     };
     const original = await context();
     const tracked = original.inputs.map((input) => `${input.depth ?? "-"} ${input.scope ?? "body"} ${input.path}: ${input.description}`);
-    expect(tracked).toContain("1 body src/checkout.js: function findBook");
-    expect(tracked).toContain("1 body src/storage.js: function persist");
-    expect(tracked).toContain("2 signature src/storage.js: signature of function validate, used by persist");
+    expect(tracked).toContain("1 body src/checkout.php: function findBook");
+    expect(tracked).toContain("1 body src/storage.php: function persist");
+    expect(tracked).toContain("2 signature src/storage.php: signature of function validate, used by persist");
     expect(tracked.some((entry) => entry.includes("generated"))).toBe(false);
     expect(original.text).toContain("export function persist(book)");
     expect(original.text).not.toContain("export function generated");
 
-    const storage = resolve(root, "src/storage.js");
+    const storage = resolve(root, "src/storage.php");
     const edit = async (from: string, to: string) =>
       writeFile(storage, (await readFile(storage, "utf8")).replace(from, to));
     await edit("throw new TypeError", "throw new RangeError");
@@ -236,8 +236,8 @@ describe("called functions through editor tooling", () => {
     const inventory = await gatherInventory(root);
     const found = await findEditorDependencies({
       root,
-      path: "src/checkout.js",
-      text: await readFile(resolve(root, "src/checkout.js"), "utf8"),
+      path: "src/checkout.php",
+      text: await readFile(resolve(root, "src/checkout.php"), "utf8"),
       line: 2,
       name: "checkout",
       readablePaths: new Set(inventory.files.map((file) => file.relativePath)),

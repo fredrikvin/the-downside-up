@@ -73,13 +73,12 @@ export function structuralTokens(node: SyntaxNode): string {
   return allChildren(node).map((entry) => structuralTokens(entry)).join("");
 }
 
-/** Converts a Tree-sitter point (UTF-8 byte column) to a VS Code position (UTF-16 column). */
-export function pointToPosition(
-  point: { row: number; column: number },
-  source: string
-): Position {
+/**
+ * Converts a Tree-sitter point to a VS Code position. web-tree-sitter parses
+ * JavaScript strings as UTF-16, so its columns are UTF-16 code units, as in
+ * VS Code.
+ */
+export function pointToPosition(point: { row: number; column: number }): Position {
   const vscode = require("vscode") as typeof import("vscode");
-  const line = source.split(/\r?\n/)[point.row] ?? "";
-  const bytePrefix = Buffer.from(line, "utf8").subarray(0, point.column).toString("utf8");
-  return new vscode.Position(point.row, bytePrefix.length);
+  return new vscode.Position(point.row, point.column);
 }

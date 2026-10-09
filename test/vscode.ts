@@ -112,6 +112,12 @@ export const Uri = {
   }
 };
 
+export const extensions = {
+  getExtension(_id: string): { activate(): Promise<void> } | undefined {
+    return undefined;
+  }
+};
+
 export const commands = {
   execute: async (..._args: unknown[]): Promise<unknown> => [],
   async executeCommand(...args: unknown[]): Promise<unknown> {

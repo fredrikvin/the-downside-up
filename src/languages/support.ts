@@ -19,15 +19,15 @@ export interface LanguageSupport {
   initialize?(extensionPath: string): Promise<void>;
   /** The innermost function at `position`, or undefined to let editor symbols try. */
   findFunction(document: TextDocument, position: Position): Promise<FunctionTarget | undefined>;
-  /** Every function in the file, for the repository's symbol outline. */
-  listFunctions?(source: string): Promise<FunctionSlice[]>;
+  /** Every function in the file, for the repository's symbol outline; `path` is the file's path. */
+  listFunctions?(source: string, path: string): Promise<FunctionSlice[]>;
   /** The local file description shown in the preview; editor symbols are used without it. */
-  describeSource?(source: string): Promise<SourceDescription>;
+  describeSource?(source: string, path: string): Promise<SourceDescription>;
   /**
    * The file's imports and declarations sent with every function of it.
    * Without it, import-like lines are taken from the text.
    */
-  preamble?(source: string): Promise<string>;
+  preamble?(source: string, path: string): Promise<string>;
   /** Items the function uses directly, for explanation context, tracking, hovers, and prefetching. */
   findDependencies(request: DependencyRequest): Promise<DependencyResult>;
 }

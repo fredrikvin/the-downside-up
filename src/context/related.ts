@@ -273,7 +273,7 @@ export async function gatherFunctionContext(
   const found: DependencyResult = await language.findDependencies(request)
     .catch(() => ({ dependencies: [], limitations: [UNRESOLVED_DEPENDENCIES] }));
   const preamble = found.preamble ??
-    (language.preamble ? await language.preamble(request.text).catch(() => "") : lineScanPreamble(request.text));
+    (language.preamble ? await language.preamble(request.text, request.path).catch(() => "") : lineScanPreamble(request.text));
   if (preamble) addInput(targetPath, "module imports and declarations", preamble);
   const local = found.local ?? [];
   for (const { path, item } of local) {

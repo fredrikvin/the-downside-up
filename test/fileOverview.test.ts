@@ -35,60 +35,60 @@ function symbol(
   );
 }
 
-const javascript = [
-  "// Catalog operations for the checkout flow.",
+const python = [
+  "# Catalog operations for the checkout flow.",
   "",
-  "import { persist, load as loadAll } from \"./storage.js\";",
-  "import config from \"./config.js\";",
+  "from .storage import persist, load as load_all",
+  "import config",
   "",
-  "const LIMIT = 10;",
+  "LIMIT = 10",
   "",
-  "/** Finds an available book and persists it. */",
-  "export async function checkout(catalog, title) {",
-  "  const book = catalog.find((item) => item.title === title);",
-  "  return book;",
-  "}",
+  "# Finds an available book and persists it.",
+  "async def checkout(catalog, title):",
+  "    book = next(item for item in catalog if item.title == title)",
+  "    return book",
   "",
-  "// Helpers below are internal.",
   "",
-  "export class Shelf extends Base {",
-  "  add(book) {}",
-  "}"
+  "# Helpers below are internal.",
+  "",
+  "class Shelf(Base):",
+  "    def add(self, book):",
+  "        pass"
 ].join("\n");
 
 describe("local document-ordered file description", () => {
   it("describes imports, values, functions, classes, and comments where they appear", async () => {
-    const checkout = symbol("checkout", SymbolKind.Function, [8, 0], [11, 1], 22, [
-      symbol("book", SymbolKind.Variable, [9, 2], [9, 61], 8)
+    const checkout = symbol("checkout", SymbolKind.Function, [8, 0], [10, 15], 10, [
+      symbol("book", SymbolKind.Variable, [9, 4], [9, 64], 4)
     ]);
-    const shelf = symbol("Shelf", SymbolKind.Class, [15, 0], [17, 1], 13, [
-      symbol("add", SymbolKind.Method, [16, 2], [16, 14], 2)
+    const shelf = symbol("Shelf", SymbolKind.Class, [15, 0], [17, 12], 6, [
+      symbol("add", SymbolKind.Method, [16, 4], [17, 12], 8)
     ]);
     vi.spyOn(commands, "executeCommand").mockResolvedValue([
-      symbol("LIMIT", SymbolKind.Constant, [5, 0], [5, 16], 6),
+      symbol("LIMIT", SymbolKind.Constant, [5, 0], [5, 10], 0),
       checkout,
       shelf
     ]);
 
-    const overview = await buildFileOverview(documentFor("src/catalog.js", "javascript", javascript), "src/catalog.js");
+    const overview = await buildFileOverview(documentFor("app/catalog.py", "python", python), "app/catalog.py");
 
-    expect(overview.fileName).toBe("catalog.js");
+    expect(overview.fileName).toBe("catalog.py");
     expect(overview.lineCount).toBe(18);
     expect(overview.purpose).toBe("Catalog operations for the checkout flow.");
     expect(overview.entries.map((entry) => [entry.startLine, entry.kindLabel, flat(entry.description)])).toEqual([
-      [2, "Import", "Imports `persist` and `load` as `loadAll` from `./storage.js`."],
-      [3, "Import", "Imports the default export as `config` from `./config.js`."],
+      [2, "Import", "Imports `persist` and `load` as `load_all` from `.storage` (relative to this package)."],
+      [3, "Import", "Imports module `config`."],
       [5, "Constant", "Constant `LIMIT`, set to `10`."],
-      [7, "Function", "Exported async function `checkout` takes `catalog` and `title`."],
-      [9, "Variable", "Constant `book` local to `checkout`, set to `catalog.find((item) => item.title === title)`."],
+      [7, "Function", "Async function `checkout` takes `catalog` and `title`."],
+      [9, "Variable", "Variable `book` local to `checkout`, set to `next(item for item in catalog if item.title == title)`."],
       [13, "Comment", "Helpers below are internal."],
-      [15, "Class", "Exported class `Shelf` extends `Base`."],
+      [15, "Class", "Class `Shelf` extends `Base`."],
       [16, "Method", "Method `add` of `Shelf` takes `book`."]
     ]);
-    const checkoutEntry = overview.entries[3] as OutlineEntry;
+    const checkoutEntry = overview.entries.find((entry) => entry.name === "checkout") as OutlineEntry;
     expect(checkoutEntry.documentation).toBe("Finds an available book and persists it.");
     expect(checkoutEntry.explainable).toBe(true);
-    expect(checkoutEntry.reference).toMatchObject({ path: "src/catalog.js", line: 8, startCharacter: 22, endCharacter: 30 });
+    expect(checkoutEntry.reference).toMatchObject({ path: "app/catalog.py", line: 8, startCharacter: 10, endCharacter: 18 });
     expect(overview.entries.filter((entry) => entry.explainable).map((entry) => entry.name)).toEqual(["checkout", "add"]);
     expect(new Set(overview.entries.map((entry) => entry.id)).size).toBe(overview.entries.length);
     expect(overview.limitations).toEqual([]);

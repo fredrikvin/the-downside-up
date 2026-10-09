@@ -104,8 +104,9 @@ describe("language analysis", () => {
   it("finds bundled languages by language ID or extension and falls back to editor tooling", () => {
     expect(bundledLanguageFor({ languageId: "rust" })?.name).toBe("Rust");
     expect(bundledLanguageFor({ languageId: "plaintext", path: "/repo/cmd/main.GO" })?.name).toBe("Go");
-    expect(bundledLanguageFor({ languageId: "typescript", path: "/repo/src/app.ts" })).toBeUndefined();
-    expect(languageFor({ languageId: "typescript", path: "/repo/src/app.ts" }).name).toBe("Editor tooling");
+    expect(bundledLanguageFor({ languageId: "typescriptreact", path: "/repo/src/App.tsx" })?.name).toBe("JavaScript/TypeScript");
+    expect(bundledLanguageFor({ languageId: "python", path: "/repo/src/app.py" })).toBeUndefined();
+    expect(languageFor({ languageId: "python", path: "/repo/src/app.py" }).name).toBe("Editor tooling");
     expect(bundledLanguageIdForPath("src/lib.rs")).toBe("rust");
     expect(bundledLanguageIdForPath("src/app.py")).toBeUndefined();
   });

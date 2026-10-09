@@ -197,8 +197,6 @@ async function isIgnored(root: string, relativePath: string): Promise<boolean> {
 }
 
 function vscodeLanguage(path: string): string | null {
-  const bundled = bundledLanguageIdForPath(path);
-  if (bundled) return bundled;
   const extension = extname(path).toLowerCase();
   const map: Record<string, string> = {
     ".js": "javascript",
@@ -207,11 +205,13 @@ function vscodeLanguage(path: string): string | null {
     ".cjs": "javascript",
     ".ts": "typescript",
     ".tsx": "typescriptreact",
+    ".mts": "typescript",
+    ".cts": "typescript",
     ".py": "python",
     ".java": "java",
     ".cs": "csharp"
   };
-  return map[extension] ?? null;
+  return map[extension] ?? bundledLanguageIdForPath(path) ?? null;
 }
 
 async function readDocumentOrDisk(absolutePath: string): Promise<string> {

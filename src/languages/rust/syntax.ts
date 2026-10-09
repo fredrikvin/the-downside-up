@@ -85,7 +85,7 @@ export async function findRustFunction(
   const vscode = require("vscode") as typeof import("vscode");
   return withRustSyntaxTree(source, (root) => {
     const rangeOf = (node: SyntaxNode) =>
-      new vscode.Range(pointToPosition(node.startPosition, source), pointToPosition(node.endPosition, source));
+      new vscode.Range(pointToPosition(node.startPosition), pointToPosition(node.endPosition));
     const found = smallestContaining(findFunctions(root), position, (entry) => rangeOf(entry.node));
     if (!found) return undefined;
     const qualifiedName = [...found.containers, found.name.text].join("::");

@@ -63,7 +63,7 @@ export async function addLocalSymbolOutline(
     const language = bundledLanguageFor({ languageId: file.languageId ?? undefined, path: file.relativePath });
     if (language?.listFunctions) {
       try {
-        const functions = await language.listFunctions(file.content);
+        const functions = await language.listFunctions(file.content, file.relativePath);
         outline.push(...functions.slice(0, 20).map(
           (entry) => `  ${file.relativePath}: ${entry.qualifiedName} ${entry.signature}`
         ));
