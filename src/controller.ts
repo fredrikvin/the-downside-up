@@ -67,6 +67,8 @@ export interface ExplanationResult {
   readonly usage?: Usage;
   readonly cached: boolean;
   readonly stale: boolean;
+  /** The explanation was made with an earlier version of the repository overview. */
+  readonly earlierOverview?: boolean;
 }
 
 export interface ExplanationServiceOptions {
@@ -204,28 +206,25 @@ export class ExplanationService {
     const descriptor = this.options.describeProvider();
     const cache = await this.options.store.read(root);
     const overview = cache.overview;
-    const overviewConfig = `${descriptor.kind}:${descriptor.modelId}:${PROMPT_VERSION}`;
-    if (!overview || overview.config !== overviewConfig) return results;
+    if (!overview) return results;
     const settingsHash = fingerprint(EXPLANATION_SETTINGS);
     const candidates = targets.flatMap((target) => {
       const cached = cache.explanations[explanationCacheKey(
         target.symbolId,
         descriptor.kind,
         descriptor.modelId,
-        overview.contentVersion,
         settingsHash,
         EXPLANATION_PROMPT_VERSION
       )];
       return cached &&
         cached.promptVersion === EXPLANATION_PROMPT_VERSION &&
-        cached.explanationConfig === settingsHash &&
-        cached.overviewVersion === overview.contentVersion
+        cached.explanationConfig === settingsHash
         ? [{ target, cached }]
         : [];
     });
     if (candidates.length === 0) return results;
+    // Freshness depends only on the function and what it uses, not on whether the overview is due for review.
     const inventory = await gatherInventory(root, overview.checkedSnapshot);
-    if (needsOverviewReview(inventory, overview)) return results;
     for (const { target, cached } of candidates) {
       if (results.has(target.symbolId)) continue;
       const context = await gatherFunctionContext(target, document, inventory);
@@ -236,7 +235,8 @@ export class ExplanationService {
         context,
         provider: descriptor,
         cached: true,
-        stale: false
+        stale: false,
+        earlierOverview: cached.overviewVersion !== overview.contentVersion
       });
     }
     return results;
@@ -326,6 +326,20 @@ export class ExplanationService {
       return call(await this.options.createProvider(descriptor));
     };
 
+    const settingsHash = fingerprint(EXPLANATION_SETTINGS);
+    const key = explanationCacheKey(
+      target.symbolId,
+      descriptor.kind,
+      descriptor.modelId,
+      settingsHash,
+      EXPLANATION_PROMPT_VERSION
+    );
+    const isCurrent = (record: ExplanationRecord | undefined, inputs: FunctionContext["inputs"]) =>
+      Boolean(record &&
+        record.promptVersion === EXPLANATION_PROMPT_VERSION &&
+        record.explanationConfig === settingsHash &&
+        inputsMatch(record.inputs, inputs));
+
     // Building or reviewing the overview is exclusive per repository: a parallel
     // request waits here, then finds the overview current and reuses it.
     const { cache, inventory, context, overviewRecord } = await this.exclusive(root, async () => {
@@ -341,6 +355,10 @@ export class ExplanationService {
         throw new Error("Selected source context exceeds the prototype's request-size limit; no code was sent.");
       }
       assertNotCancelled(signal);
+      // A current saved explanation is returned without reviewing the overview first.
+      if (cache.overview && isCurrent(cache.explanations[key], context.inputs)) {
+        return { cache, inventory, context, overviewRecord: cache.overview };
+      }
 
       const shouldReview =
         !cache.overview ||
@@ -417,23 +435,8 @@ export class ExplanationService {
 
     if (!overviewRecord) throw new Error("Repository context could not be prepared.");
     if (this.fence(root) !== startingFence) throw new Error("The repository cache was cleared.");
-    const settingsHash = fingerprint(EXPLANATION_SETTINGS);
-    const key = explanationCacheKey(
-      target.symbolId,
-      descriptor.kind,
-      descriptor.modelId,
-      overviewRecord.contentVersion,
-      settingsHash,
-      EXPLANATION_PROMPT_VERSION
-    );
     const cached = cache.explanations[key];
-    if (
-      cached &&
-      cached.promptVersion === EXPLANATION_PROMPT_VERSION &&
-      cached.explanationConfig === settingsHash &&
-      cached.overviewVersion === overviewRecord.contentVersion &&
-      inputsMatch(cached.inputs, context.inputs)
-    ) {
+    if (cached && isCurrent(cached, context.inputs)) {
       progress("complete", "Cached explanation is current: recorded inputs match.");
       const usage = usageTotal(usages);
       return {
@@ -443,7 +446,8 @@ export class ExplanationService {
         provider: descriptor,
         ...(usage ? { usage } : {}),
         cached: true,
-        stale: false
+        stale: false,
+        earlierOverview: cached.overviewVersion !== overviewRecord.contentVersion
       };
     }
 
@@ -652,14 +656,10 @@ export class ExplanationService {
     if (!latest || this.fence(root) !== startingFence || !inputsMatch(saved.context.inputs, latest.context.inputs)) {
       throw new Error("The function changed while the view was generating. It was not saved; try again.");
     }
-    const cache = await this.options.store.read(root);
-    const overview = cache.overview;
-    if (!overview) throw new Error("Repository context is no longer available.");
     const key = explanationCacheKey(
       target.symbolId,
       descriptor.kind,
       descriptor.modelId,
-      overview.contentVersion,
       fingerprint(EXPLANATION_SETTINGS),
       EXPLANATION_PROMPT_VERSION
     );

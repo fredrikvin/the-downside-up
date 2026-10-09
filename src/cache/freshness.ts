@@ -1,19 +1,23 @@
 import { cacheKey } from "../core/fingerprint";
 import type { TrackedInput } from "../core/types";
 
+/**
+ * Identifies a saved explanation. The repository overview is deliberately not
+ * part of it: the overview is background context, so rewording it does not
+ * outdate explanations whose own code and dependencies are unchanged.
+ */
 export function explanationCacheKey(
   symbolId: string,
   provider: string,
   model: string,
-  overviewVersion: string,
   settingsHash: string,
   promptVersion: string
 ): string {
   return cacheKey([
+    "explanation-v2",
     symbolId,
     provider,
     model,
-    overviewVersion,
     settingsHash,
     promptVersion
   ]);

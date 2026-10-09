@@ -38,6 +38,8 @@ import { innermostRangeAt } from "./presentation/scrollSync";
 
 const API_KEY_SECRET = "theDownsideUp.openai.apiKey";
 const MOCK_LIMITATION = "Mock mode is deterministic placeholder output, not a real code explanation.";
+const EARLIER_OVERVIEW_NOTE =
+  "Made with an earlier version of the repository overview. It is still current for this function's code and what it uses; regenerate it to use the latest overview.";
 const OVERVIEW_RELEVANT_PATH =
   /(?:^|\/)(?:README(?:\.[^/]*)?|ARCHITECTURE(?:\.[^/]*)?|Cargo\.(?:toml|lock)|package(?:-lock)?\.json|(?:main|index|lib|mod)\.(?:rs|[cm]?js|jsx|mjs|cjs|ts|tsx))$/i;
 
@@ -616,6 +618,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       limitations: [...new Set([
         ...result.context.limitations,
         ...result.explanation.limitations,
+        ...(result.earlierOverview ? [EARLIER_OVERVIEW_NOTE] : []),
         ...(result.provider.kind === "mock" ? [MOCK_LIMITATION] : [])
       ])]
     };
@@ -1485,7 +1488,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       repositoryContext = { root, overview: result.overview };
       notice = {
         tone: "info",
-        text: `${changed ? "Repository context changed; explanations made with the old context are marked outdated." : "Repository context checked."} ${formatUsage(result.usage)}`
+        text: `${changed ? "Repository context changed. Saved explanations stay current; they note that an earlier overview was used." : "Repository context checked."} ${formatUsage(result.usage)}`
       };
       if (changed) scheduleRecheck();
     } catch (error) {

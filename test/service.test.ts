@@ -111,6 +111,17 @@ function target(): FunctionTarget {
   } as unknown as FunctionTarget;
 }
 
+function otherTarget(): FunctionTarget {
+  return {
+    ...target(),
+    name: "describeCatalog",
+    qualifiedName: "describeCatalog",
+    symbolId: "symbol-describe-catalog",
+    source: "export function describeCatalog(catalog) { return catalog.length; }",
+    structuralFingerprint: "describe-catalog-v1"
+  } as FunctionTarget;
+}
+
 const fakeDocument = {
   uri: documentUri,
   languageId: "javascript",
@@ -304,7 +315,11 @@ describe("ExplanationService", () => {
     expect(review).not.toHaveBeenCalled();
 
     harness.unrelatedHash = "unrelated-v2";
-    await service.explain(root, target(), fakeDocument);
+    const unchanged = await service.explain(root, target(), fakeDocument);
+    expect(unchanged.cached).toBe(true);
+    expect(review).not.toHaveBeenCalled();
+
+    await service.explain(root, otherTarget(), fakeDocument);
     expect(review).toHaveBeenCalledTimes(1);
     expect(review.mock.calls[0]![0].changedPaths).toEqual(["src/unrelated.js"]);
   });
@@ -316,10 +331,37 @@ describe("ExplanationService", () => {
     const calls = provider.requests;
 
     harness.gitHeadHash = "head-feature";
-    const result = await service.explain(root, target(), fakeDocument);
+    const unchanged = await service.explain(root, target(), fakeDocument);
+    expect(unchanged.cached).toBe(true);
+    expect(provider.requests).toBe(calls);
 
-    expect(result.cached).toBe(false);
+    const other = await service.explain(root, otherTarget(), fakeDocument);
+    expect(other.cached).toBe(false);
     expect(provider.requests).toBe(calls + 2);
+  });
+
+  it("keeps explanations current when only the repository overview changes", async () => {
+    const provider = new MockProvider();
+    const store = new MemoryRepositoryCacheStore();
+    const service = createService(store, provider);
+    await service.explain(root, target(), fakeDocument);
+    const before = (await store.read(root)).overview!.contentVersion;
+
+    harness.primedPaths = ["README.md"];
+    harness.gitHeadHash = "head-feature";
+    expect((await service.findCachedExplanation(root, target(), fakeDocument))?.earlierOverview).toBe(false);
+    await service.explain(root, otherTarget(), fakeDocument);
+    expect((await store.read(root)).overview!.contentVersion).not.toBe(before);
+
+    const calls = provider.requests;
+    const saved = await service.findCachedExplanation(root, target(), fakeDocument);
+    expect(saved?.cached).toBe(true);
+    expect(saved?.earlierOverview).toBe(true);
+    expect((await service.explain(root, target(), fakeDocument)).earlierOverview).toBe(true);
+    expect(provider.requests).toBe(calls);
+
+    harness.functionHash = "function-v2";
+    expect(await service.findCachedExplanation(root, target(), fakeDocument)).toBeUndefined();
   });
 
   it("advances checked snapshot without changing unchanged overview content version", async () => {

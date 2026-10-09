@@ -296,13 +296,18 @@ preserve meaningful tokens and literals; languages using VS Code symbols use
 conservative source matching and may invalidate on formatting changes.
 
 Unchanged explanations are reused across extension restarts without a provider
-call. The snapshot checked at priming is separate from the overview content
-version: an unchanged overview can be revalidated without invalidating dependent
-explanations. Changes to tracked function/context inputs, any file whose
-content was sent for priming, manifests, entry points, additions/deletions, or
-Git branch/revision trigger stale detection or bounded context review. A
-review that leaves the overview text unchanged keeps dependent explanations
-current. Unrelated edits do not by
+call. An explanation is outdated only when its own tracked inputs change (the
+function, its file's imports, and the items it uses), or the explanation
+prompt, settings, provider, or model change. The repository overview is
+background context and not part of that: changes to files sent for priming,
+manifests, entry points, additions/deletions, or the Git branch/revision make
+the overview due for a bounded review, which happens the next time an
+explanation is actually generated (or on **Refresh Repository Context**), but
+they do not outdate saved explanations. A saved explanation, even one opened
+explicitly, is returned without reviewing the overview first. When the
+overview has changed since an explanation was made, the explanation stays
+current and notes under **More detail** that an earlier overview was used;
+regenerating it uses the latest one. Unrelated edits do not by
 themselves discard a valid explanation. Unsaved buffers participate in
 freshness checks, and results are not saved as current if source changes during
 generation.
@@ -361,7 +366,8 @@ slot, a single overview build for parallel explanations, shared consent
 prompts, prefetch ordering and windows, called-function
 lists for hovers and prefetching, Rust and Go dependency resolution and their
 depth-1 freshness and signature-only budget, Go method naming, source and
-context invalidation, unrelated edits, overview content-version preservation,
+context invalidation, unrelated edits, explanations staying current when only
+the overview changes, overview content-version preservation,
 branch changes, in-flight edits, cancellation, clear-cache fencing, provider
 failures, VS Code language-model prompt/validation/error/cancellation handling,
 ignored files, per-file sharing exclusion reasons and refusal before any
