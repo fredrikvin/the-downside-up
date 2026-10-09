@@ -69,7 +69,9 @@ source line, and a blank line appears where the code has one.
 
 `downsideUp.explanations.formats` adds two optional views of "What happens",
 shown as tabs beside the steps (`downsideUp.explanations.initialFormat` picks
-the first tab): plain-language pseudocode lines with indentation, and a
+the first tab; choosing a tab switches every explanation, like language tabs in
+documentation, keeps the clicked tabs in place on screen, and lasts while the
+preview is open): plain-language pseudocode lines with indentation, and a
 flowchart of start, action, decision, and end nodes with labelled edges. Both
 carry source lines checked like steps, so they highlight at the cursor and
 select their lines when clicked. Enabled views are requested together with

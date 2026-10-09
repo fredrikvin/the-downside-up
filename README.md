@@ -50,7 +50,8 @@ Preview to the Side** (or use the preview button in the editor title bar).
   Formats** (`downsideUp.explanations.formats`) adds **Pseudocode** and
   **Flowchart** tabs next to the steps, with the same highlighting and
   click-to-select; **Explanations: Initial Format** picks the tab that opens
-  first. Enabled views are generated with new explanations; for saved ones,
+  first. Choosing a tab switches every explanation, like language tabs in
+  documentation, while keeping your place. Enabled views are generated with new explanations; for saved ones,
   open the tab and choose **Generate**. **More detail** adds where it fits, edge cases, language notes,
   and related code; **Explanations: Show Details**
   (`downsideUp.explanations.showDetails`) opens it by default. Current

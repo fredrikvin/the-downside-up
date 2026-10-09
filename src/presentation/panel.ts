@@ -332,7 +332,8 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
     }
 
     /** Tab chosen per explanation; otherwise the setting decides. */
-    const tabChoices = new Map();
+    /** The view picked with a tab; it applies to every explanation, like language tabs in documentation. */
+    let chosenTab = (vscode.getState() || {}).tab;
     const SVG = "http://www.w3.org/2000/svg";
 
     /** Makes an item clickable to select its source lines, and marks it for highlighting. */
@@ -597,8 +598,7 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
       if (formats.pseudocode || explanation.pseudocode) tabs.push(["pseudocode", "Pseudocode"]);
       if (formats.flowchart || explanation.flowchart) tabs.push(["flowchart", "Flowchart"]);
       const available = tabs.map(([id]) => id);
-      const chosen = tabChoices.get(view.entryId);
-      const selected = available.includes(chosen) ? chosen : available.includes(formats.initial) ? formats.initial : "steps";
+      const selected = available.includes(chosenTab) ? chosenTab : available.includes(formats.initial) ? formats.initial : "steps";
       if (selected === "steps" && !(explanation.steps && explanation.steps.length) && tabs.length === 1) return;
       const head = el("div", "flow-head");
       head.append(el("h5", "", "What happens"));
@@ -612,8 +612,22 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
           tab.setAttribute("aria-selected", String(id === selected));
           tab.addEventListener("click", (event) => {
             event.stopPropagation();
-            tabChoices.set(view.entryId, id);
+            if (id === selected) return;
+            chosenTab = id;
+            vscode.setState({ ...(vscode.getState() || {}), tab: id });
+            // Every explanation switches, which changes heights above this one, so keep the clicked tabs in place.
+            const before = bar.getBoundingClientRect().top;
             render(state);
+            const keepInPlace = () => {
+              const after = document.querySelector("#" + CSS.escape(view.entryId) + "-ai .tabs");
+              if (!after) return;
+              ignoreScrollUntil = performance.now() + 200;
+              window.scrollBy(0, after.getBoundingClientRect().top - before);
+              return after;
+            };
+            keepInPlace()?.querySelector('[aria-selected="true"]')?.focus({ preventScroll: true });
+            // Flowcharts are fitted in the next frame, which changes heights once more.
+            requestAnimationFrame(() => requestAnimationFrame(keepInPlace));
           });
           bar.append(tab);
         }
