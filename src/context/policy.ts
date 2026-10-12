@@ -5,10 +5,10 @@ import { dirname, resolve } from "node:path";
 import * as vscode from "vscode";
 
 /**
- * An optional organization exclusion policy, read from files named in user
- * settings. The file formats match the configuration of Copilot
- * content-exclusion hooks, so an organization's existing files can be used
- * as they are:
+ * An optional organization exclusion policy, read from plain-text files
+ * named in user settings, one entry per line with `#` comments. Some
+ * organizations already keep files like these for their Copilot hook
+ * scripts, so they can be used as they are:
  *
  * - blocked file patterns: gitignore-style patterns for files that are never
  *   shared, in any repository;

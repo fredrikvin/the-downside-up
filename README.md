@@ -157,24 +157,64 @@ paths into `.copilotignore` files in each repository, using the same path
 patterns. With an OpenAI API key, no Copilot policy applies at all; check that
 your organization allows sending source code to OpenAI before using it.
 
-If your organization enforces content exclusion with policy files on each
-computer (for example, configuration files for Copilot content-exclusion
-hooks), point these user settings at them. Each takes a file path (`~` is
-expanded), is read only from user settings so a repository cannot change it,
-and adds nothing when empty:
+If your organization enforces content exclusion with its own policy files on
+each computer (some organizations keep these for Copilot hook scripts), point
+these settings at them. Each takes a path to a plain-text file, with one
+entry per line; blank lines and lines starting with `#` are skipped, and `~`
+is expanded. They are read from user settings only, so a repository cannot
+change them, and take effect immediately. An empty setting, or a file that is
+missing or unreadable, adds nothing, so check the paths.
 
-- **Exclusion: Blocked File Patterns File**
-  (`downsideUp.exclusion.blockedFilePatternsFile`): gitignore-style patterns
-  for files that are never sent, in any repository.
-- **Exclusion: Restricted Remotes File**
-  (`downsideUp.exclusion.restrictedRemotesFile`): Git remote URL prefixes
-  (`*` matches anything). A repository with a matching remote is never read or
-  sent unless it opts in with a `.copilotignore` file (at its root or a folder
-  above it) or a `.allowed-services` file naming `copilot` at its Git root.
-- **Exclusion: Allowed Repositories File**
-  (`downsideUp.exclusion.allowedRepositoriesFile`): repository paths (`*`
-  matches one path segment, such as `team/*`) allowed even when their remote
-  is restricted.
+**Exclusion: Blocked File Patterns File**
+(`downsideUp.exclusion.blockedFilePatternsFile`) lists gitignore-style
+patterns for files that are never read into context or sent, in any
+repository. Patterns are matched against paths inside the repository: one
+without `/` matches at any depth, one with `/` is anchored at the repository
+root, and a pattern matching a folder covers everything in it. `*` and `?`
+stay within one folder; `**` crosses folders.
+
+```text
+# Deployment settings with credentials
+deploy*.yml
+*.vault
+# A whole folder, wherever it is
+private-assets
+# Only at the repository root
+docs/internal
+```
+
+**Exclusion: Restricted Remotes File**
+(`downsideUp.exclusion.restrictedRemotesFile`) lists Git remote URL prefixes.
+`*` matches any characters, and a trailing `*` is implied. A repository with
+any matching remote is not read or sent at all (explanations, file summaries,
+and **Refresh Repository Context** stop with the reason, while the local
+preview keeps working) until it opts in with one of:
+
+- a `.copilotignore` file at its root or in a folder above it (an empty file
+  allows everything; patterns in it exclude files as usual),
+- a `.allowed-services` file at its Git root that contains the word
+  `copilot`,
+- a listing in the allowed repositories file below.
+
+```text
+# Every repository on these servers
+ssh://git.example.com/
+https://git.example.com/
+https://*.internal.example.com/
+```
+
+**Exclusion: Allowed Repositories File**
+(`downsideUp.exclusion.allowedRepositoriesFile`) lists repository paths that
+may be sent even when their remote is restricted. A remote's path is its URL
+without the scheme, user, host and port, and `.git`: for
+`ssh://user@git.example.com:29418/team/app.git` it is `team/app`. `*` matches
+within one path segment, and the whole path must match.
+
+```text
+team/app
+# Every repository directly under tools
+tools/*
+```
 
 ### Prefetching (optional)
 

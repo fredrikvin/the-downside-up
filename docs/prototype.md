@@ -333,8 +333,9 @@ The scanner honors `.gitignore`, `.copilotignore` (including `.copilotignore`
 files in folders above the repository, with patterns relative to their own
 folder), and VS Code file/search exclusions, plus an optional organization
 exclusion policy read from files named in user settings only (application
-scope; workspace values are ignored), in the format used by Copilot
-content-exclusion hook configuration: gitignore-style blocked file patterns
+scope; workspace values are ignored), as plain-text files with one entry per
+line and `#` comments (a format some organizations already keep for their
+Copilot hook scripts): gitignore-style blocked file patterns
 applied to repository-relative paths in every repository; restricted remote
 URL prefixes, where a repository with a matching remote is not read at all
 (the scan is empty, explanations and file summaries stop with the reason, and
