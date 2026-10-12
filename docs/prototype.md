@@ -177,6 +177,34 @@ and model by an explicit explanation; it never asks for approval itself and
 shows a notice when it is waiting for one. Prefetching uses the provider's
 usage limits or billing for every function it explains.
 
+Review mode explains the functions changed on the checked-out code ahead of
+the reader. **Review Changes…** offers bases found with Git: the merge base of
+`HEAD` with the remote's default branch, `main`, `master`, `origin/main`, or
+`origin/master`, those branches' tips, `HEAD` (uncommitted changes only), and
+any of the last 50 commits. It compares the base with the working tree
+(`git diff --unified=0 -M <base>` restricted to the repository root, plus
+untracked files that are not ignored, counted whole); commits that are not
+checked out are not explained, since everything else works on the working
+tree. A function counts as changed when a changed line falls inside it
+(including its attached comments), or lines were removed from inside it;
+nested functions and the functions around them all count. Functions come
+from the same local description as the preview, so this works for every
+language the preview describes. At most 200 changed files are considered, and
+excluded files are skipped and counted. Nothing is sent until the user
+confirms the number of functions; running the command is an explicit
+request, so if code sharing is not yet approved for the repository and model,
+the first function is explained as an ordinary request, which asks. The rest
+are explained like prefetching: with the free request slots (never the last
+one), keeping sections collapsed, never prompting, skipping functions with a
+current explanation or an explicit request in progress, and in the file being
+read nearest the reader first, otherwise in path and line order. A failed
+function is retried once after five seconds; after three failures review
+mode stops with a notice. It also stops when the preview closes, on **Cancel**,
+or when consent is missing; **Clear Repository Cache** ends it. A status bar
+item shows progress and opens a list of the changed functions with their
+state, to jump to one, stop, continue, or close review mode. It works
+regardless of the `downsideUp.prefetch.*` settings.
+
 Hovering a call to a function inside another function shows the
 purpose from that function's current saved explanation, found with the same
 local dependency resolution as explanation context. In languages without
@@ -504,7 +532,9 @@ preview, steps that follow the cursor and select their lines when clicked, a flo
 added on request whose nodes follow the cursor and select their lines, prefetching that starts at the cursor, stays within its window, and
 follows the cursor, prefetching of a called function in another package,
 saved-explanation hovers that appear only when an explanation is saved and
-never generate, JavaScript calls resolved through the built-in TypeScript
+never generate, review mode queueing only an edited component and a new
+untracked file's component and explaining both, including the one in a file
+that is not shown, JavaScript calls resolved through the built-in TypeScript
 go-to-definition (standard-library calls not followed) and their hovers, a
 React component's concise preview (component and nested handler) with no
 explanation generated for a plain cursor, its
@@ -525,6 +555,11 @@ the phase instruction, and background added to the prompt only when given;
 flowchart tests cover show nodes, nesting inside show nodes (kept up to 3
 levels; unknown, non-show, self, cyclic, and deeper parents moved to the top
 level), and edges between nesting levels being dropped;
+review-mode tests cover changed lines from diffs (ranges, removals, deleted
+files, paths with spaces), when a removal counts for a function, base choices
+in a real Git repository (merge base, branch tip, uncommitted only, recent
+commits), committed, uncommitted, and untracked changes relative to a
+subdirectory root, and the order of changed functions near the reader;
 React guidance tests cover components, memo-wrapped components, hooks, and
 functions inside them, and none for other code; and a service test checks the
 background reaches the provider for a component and not for a plain function.
@@ -592,6 +627,11 @@ webview's content-security policy.
 - Other language support depends on installed VS Code document-symbol
   providers. There is no whole-program analyzer or guaranteed call graph;
   unresolved references and unavailable tooling are surfaced as limitations.
+- Review mode needs Git and a commit to compare with. It compares with the
+  working tree only, finds changed functions by line overlap (a renamed or
+  moved function counts as changed, and a deleted one is not listed), and
+  skips a changed function it can no longer find by name, for example after
+  edits move it before its turn.
 - Git branch/revision tracking requires an available Git executable and a
   resolvable `HEAD`; when unavailable, source-file fingerprints still apply and
   the limitation is reported.

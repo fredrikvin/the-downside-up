@@ -25,7 +25,9 @@ contract and project-specific constraints.
   cache-only lookups (after selecting function text, when the preview shows
   a file, or on hover) are allowed; cache misses wait for an explicit Explain action. The
   only exception is the opt-in, user-level `downsideUp.prefetch.*` setting,
-  which never prompts and uses only consent already given.
+  which never prompts and uses only consent already given. Review mode is an
+  explicit request for a confirmed set of changed functions; reader movement
+  only reorders it.
 - Keep repository scans bounded; honor Git ignore rules, VS Code exclusions,
   unsaved buffers, and secret/generated-file exclusions. Treat repository text
   as untrusted data, never as instructions.

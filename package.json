@@ -20,6 +20,16 @@
         "icon": "$(open-preview)"
       },
       {
+        "command": "downsideUp.reviewChanges",
+        "title": "Review Changes…",
+        "category": "Downside Up"
+      },
+      {
+        "command": "downsideUp.showChangedFunctions",
+        "title": "Show Changed Functions",
+        "category": "Downside Up"
+      },
+      {
         "command": "downsideUp.refreshRepositoryContext",
         "title": "Refresh Repository Context",
         "category": "Downside Up"
@@ -197,6 +207,12 @@
       }
     },
     "menus": {
+      "commandPalette": [
+        {
+          "command": "downsideUp.showChangedFunctions",
+          "when": "downsideUp.hasReview"
+        }
+      ],
       "editor/title": [
         {
           "command": "downsideUp.showFileOverview",
@@ -214,6 +230,7 @@
   },
   "activationEvents": [
     "onCommand:downsideUp.showFileOverview",
+    "onCommand:downsideUp.reviewChanges",
     "onCommand:downsideUp.refreshRepositoryContext",
     "onCommand:downsideUp.clearCache",
     "onCommand:downsideUp.cancelExplanation",

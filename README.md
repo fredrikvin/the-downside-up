@@ -178,6 +178,26 @@ one function with the current model, which approves code sharing for the
 repository; it never asks for approval itself. Every prefetched explanation
 counts toward your provider's usage limits or billing.
 
+### Review mode
+
+To review a branch or a pull request, check it out and run **Downside Up:
+Review Changes…**. Choose what to compare the checked-out code with: the
+branch's merge base with `main` (or `master`, or the remote's default
+branch), that branch as it is now, only uncommitted changes, or any recent
+commit. The extension finds the functions that changed locally (including
+uncommitted edits and new files), tells you how many, and after you confirm,
+explains them in the background with the request slots your own requests
+leave free, so their explanations are ready when you get to them. In the file
+you are reading, the changed function nearest your cursor goes first, so
+jumping to a changed function that is still waiting moves it forward;
+everything else uses the preview as usual. Functions that already have a
+current explanation are skipped, as are files excluded from AI explanations.
+The status bar shows progress; click it (or run **Downside Up: Show Changed
+Functions**) to jump to a changed function, or to stop. Closing the preview
+or **Cancel** stops it too. Running the command is an explicit request, so it
+asks for code-sharing approval if needed, and every explanation counts toward
+your provider's usage limits or billing.
+
 ### Saved explanations on hover
 
 Hovering a call to a function shows the purpose from its saved AI

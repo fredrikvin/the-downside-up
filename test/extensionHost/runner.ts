@@ -1,4 +1,5 @@
 import * as assert from "node:assert/strict";
+import { rm, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import * as vscode from "vscode";
 import { findFunctionWithEditorTools } from "../../src/languages/editor/symbols";
@@ -278,6 +279,40 @@ export async function run(): Promise<void> {
     "Hovering a rendered component shows its saved explanation."
   );
   console.log("Downside Up integration tests: React components, hooks, and props types resolved.");
+
+  const badgePath = resolve(reactRoot, "src/Badge.tsx");
+  const replaceInCartItem = async (from: string, to: string) => {
+    const text = cartItemDocument.getText();
+    const start = text.indexOf(from);
+    assert.ok(start >= 0, `CartItem.tsx contains ${from}`);
+    const edit = new vscode.WorkspaceEdit();
+    edit.replace(cartItemDocument.uri, new vscode.Range(cartItemDocument.positionAt(start), cartItemDocument.positionAt(start + from.length)), to);
+    await vscode.workspace.applyEdit(edit);
+    await cartItemDocument.save();
+  };
+  try {
+    await replaceInCartItem(">Remove<", ">Delete<");
+    await writeFile(badgePath, "export function Badge({ count }: { count: number }) {\n  return <span>{count}</span>;\n}\n");
+    await vscode.window.showTextDocument(cartViewDocument, vscode.ViewColumn.One);
+    assert.equal(await api.reviewChanges("HEAD"), 2, "Only the changed and the new function are queued.");
+    assert.deepEqual(
+      api.reviewItems().map((item) => `${item.path} ${item.qualifiedName}`).sort(),
+      ["src/Badge.tsx Badge", "src/CartItem.tsx CartItem"]
+    );
+    await waitFor(
+      async () => api.reviewItems().every((item) => item.status === "done") ? true : undefined,
+      "the changed functions to be explained in review mode"
+    );
+    assert.ok(
+      api.allExplanations().some((view) => view.functionName === "Badge" && view.path.endsWith("src/Badge.tsx") && view.status === "current"),
+      "A function in a file that is not shown is explained ahead of the reader."
+    );
+    api.stopReview();
+  } finally {
+    await replaceInCartItem(">Delete<", ">Remove<").catch(() => undefined);
+    await rm(badgePath, { force: true });
+  }
+  console.log("Downside Up integration tests: review mode explained the changed functions.");
 
   const goDocument = await vscode.workspace.openTextDocument(vscode.Uri.file(resolve(goRoot, "main.go")));
   await waitFor(

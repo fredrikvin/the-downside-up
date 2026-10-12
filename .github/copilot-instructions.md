@@ -13,7 +13,9 @@ behavior.
   allowed; a cache miss, file opening, cursor movement, or source edit must not
   initiate provider requests. The only exception is the opt-in, user-level
   `downsideUp.prefetch.*` setting, which must never prompt for consent and
-  only uses consent already given for the repository and model.
+  only uses consent already given for the repository and model. Review mode
+  (**Review Changes…**) is an explicit request for a set of changed functions
+  the user confirms; reader movement may only reorder that set, never add to it.
 - Keep repository scanning bounded and respect Git ignore rules, VS Code
   exclusions, workspace trust, unsaved buffers, and secret/generated-file
   exclusions. The same exclusions apply to the file of the function being

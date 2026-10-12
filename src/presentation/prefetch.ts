@@ -7,7 +7,7 @@ export interface PrefetchCandidate {
 }
 
 /** Lines between the reading position and a function; 0 when the position is inside it. */
-export function prefetchDistance(candidate: PrefetchCandidate, focusLine: number): number {
+export function prefetchDistance(candidate: Pick<PrefetchCandidate, "startLine" | "endLine">, focusLine: number): number {
   if (focusLine < candidate.startLine) return candidate.startLine - focusLine;
   if (focusLine > candidate.endLine) return focusLine - candidate.endLine;
   return 0;
@@ -38,4 +38,28 @@ export function prefetchFocusLine(
 ): number {
   if (!visible || (cursorLine >= visible.start && cursorLine <= visible.end)) return cursorLine;
   return Math.floor((visible.start + visible.end) / 2);
+}
+
+/** A changed function waiting to be explained in review mode. */
+export interface ReviewCandidate extends Omit<PrefetchCandidate, "key"> {
+  /** Repository-relative path of its file. */
+  readonly path: string;
+}
+
+/**
+ * Picks the next changed function to explain: in the file being read, the
+ * one nearest the reading position; otherwise the first one in diff order.
+ * So jumping to a changed function that is still waiting moves it forward.
+ */
+export function nextReview<T extends ReviewCandidate>(
+  pending: readonly T[],
+  reading: { readonly path: string; readonly focusLine: number } | undefined
+): T | undefined {
+  const here = reading ? pending.filter((candidate) => candidate.path === reading.path) : [];
+  if (reading && here.length) {
+    return [...here].sort((left, right) =>
+      prefetchDistance(left, reading.focusLine) - prefetchDistance(right, reading.focusLine) || left.nameLine - right.nameLine
+    )[0];
+  }
+  return pending[0];
 }

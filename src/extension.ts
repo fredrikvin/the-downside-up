@@ -19,7 +19,8 @@ import {
   parseLanguageModelDescriptorId
 } from "./generation/languageModel";
 import { formatUsage } from "./generation/provider";
-import { nextPrefetch, prefetchFocusLine } from "./presentation/prefetch";
+import { nextPrefetch, nextReview, prefetchFocusLine } from "./presentation/prefetch";
+import { baseChoices, changedLinesSince, recentCommits, touchesChange } from "./context/changes";
 import { RequestScheduler, singleFlight } from "./presentation/requestScheduler";
 import { outlineInclude, visibleOutline } from "./presentation/outlineFilter";
 import { innermostAt, pseudocodeLayout, stepRanges, stepsAt, type StepRange } from "./presentation/stepLines";
@@ -75,6 +76,36 @@ interface PrefetchSession {
   /** Set when the session was woken while not waiting, so the wake is not lost. */
   woken: boolean;
   wake?: () => void;
+}
+
+/** A background job that waits to be woken when a request slot frees or the reader moves. */
+interface Wakeable {
+  /** Set when the job was woken while not waiting, so the wake is not lost. */
+  woken: boolean;
+  wake?: () => void;
+}
+
+/** A changed function that review mode explains ahead of the reader. */
+interface ReviewItem {
+  readonly path: string;
+  readonly uri: vscode.Uri;
+  readonly name: string;
+  readonly qualifiedName: string;
+  readonly startLine: number;
+  readonly endLine: number;
+  readonly nameLine: number;
+  readonly nameStart: number;
+  status: "pending" | "explaining" | "done" | "failed" | "skipped";
+}
+
+/** Review mode: explains the functions changed since a base commit, nearest the reader first. */
+interface ReviewSession extends Wakeable {
+  readonly root: string;
+  /** Such as "since main (merge base 1a2b3c4)". */
+  readonly base: string;
+  readonly items: ReviewItem[];
+  readonly retried: Set<ReviewItem>;
+  stopped: boolean;
 }
 
 /** The AI explanation section of one function, kept while the preview is open. */
@@ -133,6 +164,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
   /** Files whose functions were already checked for saved explanations while the preview is open. */
   const savedLookupDone = new Set<string>();
   let prefetchSession: PrefetchSession | undefined;
+  let reviewSession: ReviewSession | undefined;
   /** Signals of prefetch requests, so the consent check never prompts for them. */
   const prefetchSignals = new WeakSet<AbortSignal>();
   /** One code-sharing prompt per repository and model, shared by parallel requests. */
@@ -1078,16 +1110,17 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
   };
 
   /** Wakes a waiting session, or remembers the wake so the next wait returns at once. */
-  function wakeSession(session: PrefetchSession): void {
+  function wakeSession(session: Wakeable): void {
     if (session.wake) session.wake();
     else session.woken = true;
   }
 
   const wakePrefetch = (): void => {
     if (prefetchSession) wakeSession(prefetchSession);
+    if (reviewSession) wakeSession(reviewSession);
   };
 
-  const waitForWake = (session: PrefetchSession): Promise<void> => {
+  const waitForWake = (session: Wakeable): Promise<void> => {
     if (session.woken) {
       session.woken = false;
       return Promise.resolve();
@@ -1332,6 +1365,302 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     });
   };
 
+  const MAX_REVIEW_FAILURES = 3;
+  const reviewStatus = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 50);
+  reviewStatus.command = "downsideUp.showChangedFunctions";
+
+  /** Shows review progress in the status bar; clicking it lists the changed functions. */
+  const updateReviewStatus = (): void => {
+    const session = reviewSession;
+    void vscode.commands.executeCommand("setContext", "downsideUp.hasReview", Boolean(session));
+    if (!session) {
+      reviewStatus.hide();
+      return;
+    }
+    const count = (status: ReviewItem["status"]) => session.items.filter((item) => item.status === status).length;
+    const finished = count("done") + count("failed") + count("skipped");
+    const total = session.items.length;
+    const failed = count("failed") ? `, ${count("failed")} failed` : "";
+    reviewStatus.text = session.stopped
+      ? `$(circle-slash) Downside Up: ${count("done")} of ${total} changed functions explained${failed}`
+      : finished === total
+        ? `$(check) Downside Up: ${count("done")} of ${total} changed functions explained${failed}`
+        : `$(sync~spin) Downside Up: explaining changed functions, ${finished} of ${total}`;
+    reviewStatus.tooltip = `Changed functions ${session.base}. Click to go to one${session.stopped || finished === total ? "" : " or stop"}.`;
+    reviewStatus.show();
+  };
+
+  /** Stops review prefetching; a request already sent finishes and is saved. */
+  const stopReview = (): void => {
+    if (!reviewSession) return;
+    reviewSession.stopped = true;
+    wakeSession(reviewSession);
+    for (const item of reviewSession.items) if (item.status === "explaining" || item.status === "pending") item.status = "pending";
+    updateReviewStatus();
+  };
+
+  const dismissReview = (): void => {
+    stopReview();
+    reviewSession = undefined;
+    updateReviewStatus();
+  };
+
+  /** The reader's file and position, when the shown file is in the review's repository. */
+  const readingPosition = (root: string): { path: string; focusLine: number } | undefined => {
+    if (!preview || preview.root !== root) return undefined;
+    const editor = vscode.window.visibleTextEditors.find((candidate) => sameUri(candidate.document.uri, preview!.document.uri));
+    const visible = editor?.visibleRanges[0];
+    return {
+      path: filePath(root, preview.document.uri),
+      focusLine: prefetchFocusLine(
+        editor?.selection.active.line ?? lastEditorTopLine ?? 0,
+        visible ? { start: visible.start.line, end: visible.end.line } : undefined
+      )
+    };
+  };
+
+  /** Finds a changed function in its file as it is now. */
+  const reviewTarget = async (root: string, item: ReviewItem): Promise<SelectedFunction | undefined> => {
+    const document = await vscode.workspace.openTextDocument(item.uri);
+    const line = Math.min(item.nameLine, document.lineCount - 1);
+    const target = await findFunctionTarget(document, new vscode.Position(line, item.nameStart));
+    return target && target.qualifiedName === item.qualifiedName ? { root, target, document } : undefined;
+  };
+
+  /**
+   * Explains the changed functions in the background with the request slots
+   * explicit requests leave free: in the file being read, nearest the reader
+   * first, then in diff order. Explanations already current are kept. A
+   * failed function is retried once after a pause; after several failures
+   * review mode stops with a notice.
+   */
+  const runReview = async (session: ReviewSession): Promise<void> => {
+    const active = () => !session.stopped && reviewSession === session;
+    while (active()) {
+      if (scheduler.prefetchCapacity === 0) {
+        await waitForWake(session);
+        continue;
+      }
+      const item = nextReview(session.items.filter((candidate) => candidate.status === "pending"), readingPosition(session.root));
+      if (!item) {
+        if (session.items.some((candidate) => candidate.status === "explaining")) {
+          await waitForWake(session);
+          continue;
+        }
+        updateReviewStatus();
+        return;
+      }
+      if (!(await prefetchAllowed(session.root))) {
+        if (!active()) return;
+        notice = { tone: "info", text: "Explaining changed functions stopped: code sharing is not approved for this repository and model, or the workspace is not trusted." };
+        render();
+        stopReview();
+        return;
+      }
+      item.status = "explaining";
+      updateReviewStatus();
+      const value = await reviewTarget(session.root, item).catch(() => undefined);
+      if (!active()) {
+        item.status = "pending";
+        return;
+      }
+      if (!value) {
+        item.status = "skipped";
+        updateReviewStatus();
+        continue;
+      }
+      const state = stateFor(value);
+      if (state.controller || (state.view.status === "current" && state.view.explanation)) {
+        // Already explained, or being explained by an explicit request.
+        item.status = "done";
+        updateReviewStatus();
+        continue;
+      }
+      if (state.view.status === "failed" || state.view.status === "cancelled" || state.view.status === "outdated") forget(state);
+      const fresh = stateFor(value);
+      void generate(fresh, { prefetch: { shouldStart: active } })
+        .then(async () => {
+          if (fresh.view.status === "current") item.status = "done";
+          else if (fresh.view.status === "failed" && active() && !session.retried.has(item)) {
+            // Back off briefly, for example after a rate limit, then try this function once more.
+            session.retried.add(item);
+            await new Promise((resolveWait) => setTimeout(resolveWait, 5_000));
+            if (fresh.view.status === "failed") forget(fresh);
+            item.status = "pending";
+          } else if (fresh.view.status === "failed") {
+            item.status = "failed";
+            if (session.items.filter((candidate) => candidate.status === "failed").length >= MAX_REVIEW_FAILURES && active()) {
+              notice = { tone: "error", text: `Explaining changed functions stopped after several errors: ${fresh.view.error ?? "generation failed"}` };
+              render();
+              stopReview();
+            }
+          } else {
+            // Not started, for example because review mode stopped first.
+            item.status = "pending";
+          }
+          updateReviewStatus();
+        })
+        .finally(() => wakeSession(session));
+    }
+  };
+
+  /**
+   * Starts review mode for the functions changed since `base`. Running the
+   * command is the explicit request; when code sharing is not approved yet,
+   * the first function is explained as an ordinary request, which asks.
+   */
+  const startReview = async (root: string, base: string, baseLabel: string, confirm: boolean): Promise<number> => {
+    const changed = await changedLinesSince(root, base);
+    const items: ReviewItem[] = [];
+    let excluded = 0;
+    const paths = [...changed.keys()].sort();
+    for (const path of paths.slice(0, MAX_REVIEW_FILES)) {
+      const absolute = resolve(root, path);
+      if (!isWithin(root, absolute)) continue;
+      if (await sharingExclusion(root, absolute).catch(() => "unreadable")) {
+        excluded++;
+        continue;
+      }
+      const document = await vscode.workspace.openTextDocument(vscode.Uri.file(absolute)).then((value) => value, () => undefined);
+      if (!document) continue;
+      const ranges = changed.get(path)!;
+      const overview = await buildFileOverview(document, path).catch(() => undefined);
+      for (const entry of overview?.entries ?? []) {
+        if (!entry.explainable || !touchesChange(ranges, entry.startLine, entry.endLine)) continue;
+        items.push({
+          path,
+          uri: document.uri,
+          name: entry.name,
+          qualifiedName: entry.qualifiedName,
+          startLine: entry.startLine,
+          endLine: entry.endLine,
+          nameLine: entry.nameLine,
+          nameStart: entry.nameStart,
+          status: "pending"
+        });
+      }
+    }
+    const files = new Set(items.map((item) => item.path)).size;
+    const notes = [
+      paths.length > MAX_REVIEW_FILES ? `Only the first ${MAX_REVIEW_FILES} of ${paths.length} changed files are included.` : "",
+      excluded ? `${excluded} changed file${excluded === 1 ? " is" : "s are"} excluded from AI explanations and skipped.` : ""
+    ].filter(Boolean).join(" ");
+    if (items.length === 0) {
+      if (confirm) await vscode.window.showInformationMessage(`No changed functions were found ${baseLabel}. ${notes}`.trim());
+      return 0;
+    }
+    if (confirm) {
+      const accept = "Explain Changed Functions";
+      const answer = await vscode.window.showInformationMessage(
+        `Explain ${items.length} changed function${items.length === 1 ? "" : "s"} in ${files} file${files === 1 ? "" : "s"} ${baseLabel} in the background? Functions with a current explanation are skipped; each new explanation is a request to your model provider.`,
+        { modal: true, detail: notes || undefined },
+        accept
+      );
+      if (answer !== accept) return 0;
+    }
+    stopReview();
+    const session: ReviewSession = { root, base: baseLabel, items, retried: new Set(), stopped: false, woken: false };
+    reviewSession = session;
+    updateReviewStatus();
+    if (!(await prefetchAllowed(root))) {
+      // The first function is an ordinary request, so code sharing is approved the usual way.
+      const first = items[0]!;
+      const value = await reviewTarget(root, first).catch(() => undefined);
+      if (value && reviewSession === session) {
+        first.status = "explaining";
+        updateReviewStatus();
+        const state = stateFor(value);
+        await generate(state);
+        first.status = state.view.status === "current" ? "done" : "failed";
+        updateReviewStatus();
+      }
+    }
+    void runReview(session).catch(() => stopReview());
+    return items.length;
+  };
+
+  const MAX_REVIEW_FILES = 200;
+
+  /** Asks which changes to review and starts review mode. */
+  const reviewChangesCommand = async (): Promise<void> => {
+    const root = await rootForCommand() ?? (vscode.workspace.workspaceFolders?.length === 1
+      ? await findRepositoryRoot(vscode.workspace.workspaceFolders[0]!.uri.fsPath).catch(() => undefined)
+      : undefined);
+    if (!root) {
+      await vscode.window.showInformationMessage("Open a source file in the repository to review first.");
+      return;
+    }
+    const choices = await baseChoices(root);
+    if (choices.length === 0) {
+      await vscode.window.showInformationMessage("Review mode needs a Git repository with at least one commit.");
+      return;
+    }
+    const pickCommit = { label: "$(git-commit) Changes since a commit…", description: "choose from recent commits", phrase: "", commit: "" };
+    const picked = await vscode.window.showQuickPick([...choices, pickCommit], {
+      title: "Explain changed functions",
+      placeHolder: "Compare the checked-out code with…"
+    });
+    if (!picked) return;
+    let base = picked.commit;
+    let label = picked.phrase;
+    if (picked === pickCommit) {
+      const commits = await recentCommits(root);
+      const commit = await vscode.window.showQuickPick(
+        commits.map((entry) => ({ label: entry.subject, description: `${entry.shortHash} · ${entry.when}`, commit: entry })),
+        { title: "Explain functions changed since…", placeHolder: "The changes after this commit, up to the checked-out code, are included", matchOnDescription: true }
+      );
+      if (!commit) return;
+      base = commit.commit.hash;
+      label = `since ${commit.commit.shortHash}`;
+    }
+    if (!panel) {
+      const editor = vscode.window.activeTextEditor ?? lastTextEditor;
+      ensurePanel();
+      if (editor?.document.uri.scheme === "file") await previewDocument(editor.document);
+    }
+    await startReview(root, base, label, true);
+  };
+
+  /** Lists the changed functions with their state; choosing one opens it, and the preview follows. */
+  const showChangedFunctionsCommand = async (): Promise<void> => {
+    const session = reviewSession;
+    if (!session) {
+      await vscode.window.showInformationMessage("No changes are being reviewed. Run \"Downside Up: Review Changes…\" first.");
+      return;
+    }
+    const icons: Record<ReviewItem["status"], string> = {
+      pending: "$(circle-outline)", explaining: "$(sync~spin)", done: "$(check)", failed: "$(error)", skipped: "$(circle-slash)"
+    };
+    const running = !session.stopped && session.items.some((item) => item.status === "pending" || item.status === "explaining");
+    const control = running
+      ? { label: "$(debug-stop) Stop explaining changed functions", action: "stop" as const }
+      : { label: "$(close) Close review mode", action: "dismiss" as const };
+    const resume = !running && session.items.some((item) => item.status === "pending")
+      ? [{ label: "$(debug-start) Continue explaining changed functions", action: "resume" as const }]
+      : [];
+    const picked = await vscode.window.showQuickPick<vscode.QuickPickItem & { item?: ReviewItem; action?: "stop" | "dismiss" | "resume" }>(
+      [
+        ...session.items.map((item) => ({ label: `${icons[item.status]} ${item.qualifiedName}`, description: item.path, item })),
+        { label: "", kind: vscode.QuickPickItemKind.Separator },
+        ...resume,
+        control
+      ],
+      { title: `Changed functions ${session.base}`, placeHolder: "Go to a changed function", matchOnDescription: true }
+    );
+    if (!picked) return;
+    if (picked.action === "stop") stopReview();
+    else if (picked.action === "dismiss") dismissReview();
+    else if (picked.action === "resume") {
+      session.stopped = false;
+      updateReviewStatus();
+      void runReview(session).catch(() => stopReview());
+    } else if (picked.item) {
+      const position = new vscode.Position(picked.item.nameLine, picked.item.nameStart);
+      const document = await vscode.workspace.openTextDocument(picked.item.uri);
+      await vscode.window.showTextDocument(document, { selection: new vscode.Range(position, position), viewColumn: vscode.ViewColumn.One });
+    }
+  };
+
   async function handlePanelAction(action: PanelAction): Promise<void> {
     switch (action.type) {
       case "navigate":
@@ -1405,6 +1734,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
         if (panel !== created) return;
         clearReveal();
         stopPrefetch();
+        stopReview();
         for (const state of [...functions.values()]) forget(state);
         savedLookupEpoch++;
         savedLookupDone.clear();
@@ -1521,6 +1851,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     );
     if (answer !== "Clear repository cache") return;
     stopPrefetch();
+    if (reviewSession?.root === root) dismissReview();
     savedLookupEpoch++;
     for (const state of [...functions.values()]) if (state.value.root === root) forget(state);
     repositoryJob?.abort();
@@ -1598,6 +1929,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
 
   const cancelExplanations = (): void => {
     stopPrefetch();
+    stopReview();
     repositoryJob?.abort();
     for (const state of functions.values()) state.controller?.abort();
   };
@@ -1738,6 +2070,9 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
 
   context.subscriptions.push(
     vscode.commands.registerCommand("downsideUp.showFileOverview", openPreviewCommand),
+    vscode.commands.registerCommand("downsideUp.reviewChanges", reviewChangesCommand),
+    vscode.commands.registerCommand("downsideUp.showChangedFunctions", showChangedFunctionsCommand),
+    reviewStatus,
     vscode.commands.registerCommand("downsideUp.refreshRepositoryContext", refreshRepositoryContext),
     vscode.commands.registerCommand("downsideUp.clearCache", clearRepositoryCache),
     vscode.commands.registerCommand("downsideUp.cancelExplanation", cancelExplanations),
@@ -1788,6 +2123,12 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     fileSummary: () => fileSummary && preview && fileSummary.uri === preview.document.uri.toString()
       ? { text: fileSummary.text, current: fileSummary.current }
       : undefined,
+    reviewChanges: (base: string) => {
+      const root = preview?.root;
+      return root ? startReview(root, base, "for testing", false) : Promise.resolve(0);
+    },
+    reviewItems: () => (reviewSession?.items ?? []).map((item) => ({ qualifiedName: item.qualifiedName, path: item.path, status: item.status })),
+    stopReview: () => dismissReview(),
     allExplanations: () => [...functions.values()].map((state) => ({
       functionName: state.view.functionName,
       status: state.view.status,
@@ -1798,6 +2139,9 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
 }
 
 export interface DownsideUpTestApi {
+  reviewChanges(base: string): Promise<number>;
+  reviewItems(): Array<{ qualifiedName: string; path: string; status: string }>;
+  stopReview(): void;
   previewExplanations(): Array<{ functionName: string; status: string; expanded: boolean }>;
   allExplanations(): Array<{ functionName: string; status: string; path: string; error?: string }>;
   shownOutline(): Array<{ kindLabel: string; name: string }>;
