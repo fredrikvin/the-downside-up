@@ -1531,22 +1531,6 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     render();
   };
 
-  const chooseWorkspace = async (document?: vscode.TextDocument): Promise<vscode.WorkspaceFolder | undefined> => {
-    const folders = vscode.workspace.workspaceFolders ?? [];
-    if (folders.length === 0) {
-      await vscode.window.showWarningMessage("Open a local repository folder before explaining code.");
-      return undefined;
-    }
-    const folder = document ? vscode.workspace.getWorkspaceFolder(document.uri) : undefined;
-    if (folder) return folder;
-    if (folders.length === 1) return folders[0];
-    const chosen = await vscode.window.showQuickPick(
-      folders.map((entry) => ({ label: entry.name, description: entry.uri.fsPath, folder: entry })),
-      { placeHolder: "Choose which repository contains the active source file" }
-    );
-    return chosen?.folder;
-  };
-
   const findFunctionTarget = async (
     document: vscode.TextDocument,
     position: vscode.Position
@@ -1560,51 +1544,17 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     return target ?? findFunctionWithEditorTools(document, position);
   };
 
-  const selectFunction = async (): Promise<SelectedFunction | undefined> => {
-    const editor = vscode.window.activeTextEditor;
-    if (!editor) {
-      await vscode.window.showWarningMessage("Open a source file and place the cursor inside a function.");
-      return undefined;
-    }
-    const folder = await chooseWorkspace(editor.document);
-    if (!folder) return undefined;
-    if (editor.document.uri.scheme !== "file") {
-      await vscode.window.showWarningMessage("This prototype supports local file workspaces only.");
-      return undefined;
-    }
-    let root: string;
-    try {
-      root = await findRepositoryRoot(folder.uri.fsPath);
-    } catch (error) {
-      await vscode.window.showErrorMessage(
-        `Could not resolve the repository root: ${error instanceof Error ? error.message : "unknown error"}`
-      );
-      return undefined;
-    }
-    let target: FunctionTarget | undefined;
-    try {
-      target = await findFunctionTarget(editor.document, editor.selection.active);
-    } catch (error) {
-      await vscode.window.showErrorMessage(
-        `Function discovery is unavailable: ${error instanceof Error ? error.message : "unknown tooling error"}`
-      );
-    }
-    if (!target) {
-      await vscode.window.showInformationMessage(
-        `No enclosing function or method was found for ${editor.document.languageId}. Ensure the editor has a language symbol provider; this command does not explain arbitrary blocks.`
-      );
-      return undefined;
-    }
-    return { root, target, document: editor.document };
-  };
-
-
-  const explainCommand = async (): Promise<void> => {
-    const value = await selectFunction();
-    if (!value) return;
-    ensurePanel();
-    if (!preview || !sameUri(preview.document.uri, value.document.uri)) await showPreview(value.document, value.root);
-    const state = stateFor(value);
+  /**
+   * Opens the explanation of the function that holds a text selection,
+   * generating or regenerating it when none is current. Selecting text and
+   * opening the preview is the explicit request; anything else does nothing.
+   */
+  const explainSelection = async (document: vscode.TextDocument, selection: vscode.Selection): Promise<void> => {
+    if (!preview || !sameUri(preview.document.uri, document.uri)) return;
+    const { root } = preview;
+    const target = await findFunctionTarget(document, selection.start).catch(() => undefined);
+    if (!target || !target.range.contains(selection.start) || !target.range.contains(selection.end)) return;
+    const state = stateFor({ root, target, document });
     if (state.view.status === "outdated" || state.view.status === "failed" || state.view.status === "cancelled") {
       await generate(state);
     } else {
@@ -1612,6 +1562,12 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     }
   };
 
+  /**
+   * Opens or reveals the preview of the active file (or the given one); it
+   * follows the editor's position. With a text selection inside a function,
+   * that function's explanation is opened too, and generated or regenerated
+   * when none is current. A plain cursor never starts generation.
+   */
   const openPreviewCommand = async (resource?: vscode.Uri): Promise<void> => {
     let document: vscode.TextDocument | undefined;
     if (resource instanceof vscode.Uri && resource.scheme === "file") {
@@ -1629,10 +1585,15 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       await vscode.window.showWarningMessage("Open the source file inside a workspace folder to preview it.");
       return;
     }
+    const editor = vscode.window.activeTextEditor ?? lastTextEditor;
+    const selection = editor && sameUri(editor.document.uri, document.uri) && editor.selections.length === 1 && !editor.selection.isEmpty
+      ? editor.selection
+      : undefined;
     const existing = panel;
     ensurePanel();
     if (existing) existing.panel.reveal(undefined, true);
     await previewDocument(document);
+    if (selection) await explainSelection(document, selection);
   };
 
   const cancelExplanations = (): void => {
@@ -1776,7 +1737,6 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
   });
 
   context.subscriptions.push(
-    vscode.commands.registerCommand("downsideUp.explainFunction", explainCommand),
     vscode.commands.registerCommand("downsideUp.showFileOverview", openPreviewCommand),
     vscode.commands.registerCommand("downsideUp.refreshRepositoryContext", refreshRepositoryContext),
     vscode.commands.registerCommand("downsideUp.clearCache", clearRepositoryCache),

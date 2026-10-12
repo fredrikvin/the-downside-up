@@ -116,8 +116,12 @@ node with nodes inside it holds a smaller flow laid out the same way, and
 boxes in its row line up with its top. Clicking a node inside it selects only
 that node's lines. No diagram library or HTML parsing is involved.
 
-Every function has an **AI explanation** section. Opening it, or
-clicking the function name, is an explicit request: the extension first looks
+Every function has an **AI explanation** section. Opening it,
+clicking the function name, or running **Open Preview to the Side** (the
+editor title-bar button) while text inside the function is selected is an
+explicit request (with a selection, an outdated, failed, or cancelled
+explanation is regenerated); with only a cursor, opening the preview never
+generates. For a request, the extension first looks
 for a current saved explanation (local only) and generates one only when none
 exists and the section is still open. Loading shows a spinner and can be
 cancelled. Several sections can be open, and up to
@@ -434,8 +438,9 @@ functions in the repository are likewise shown as outdated once, because the
 called functions are now part of their context; functions whose editor symbol
 details were previously unread may also need one new explanation.
 
-Invalidation never regenerates automatically. Use **Downside Up: Explain
-Function** or the preview's **Regenerate** link to regenerate. **Refresh Repository
+Invalidation never regenerates automatically. Use the preview's
+**Regenerate** link, or select text in the function and run **Open Preview to
+the Side**, to regenerate. **Refresh Repository
 Context** explicitly reviews or rebuilds the overview. **Clear Repository
 Cache** removes cached overviews, explanations, and saved provider consent for
 that repository. Freshness means recorded inputs match; it does not prove the
@@ -457,8 +462,8 @@ npm run package
 
 Open the project in VS Code and press F5 to launch the Extension Development
 Host. Open a fixture source file and run **Downside Up: Open Preview to the
-Side**, then click a function in the preview (or put the cursor inside a
-function and run **Downside Up: Explain Function**). For live generation, either run **Downside
+Side**, then click a function in the preview (or select text inside a
+function before opening the preview). For live generation, either run **Downside
 Up: Choose Language Model** to use GitHub Copilot or another VS Code
 language model, or configure `downsideUp.provider` as `openai` and store an
 API key using **Downside Up: Set OpenAI API Key**. Then explicitly accept the
@@ -493,7 +498,7 @@ signatures with their freshness). Extension
 host tests exercise Rust, Go, JavaScript, and React discovery (Go without a language
 server), distinct identities for
 same-named Rust methods in different `impl` blocks, document-ordered outlines,
-explanation commands, preview creation, selection changes during an in-flight
+explanations requested by selecting text and opening the preview, preview creation, selection changes during an in-flight
 request, saved explanations listed as ready after closing and reopening the
 preview, steps that follow the cursor and select their lines when clicked, a flowchart
 added on request whose nodes follow the cursor and select their lines, prefetching that starts at the cursor, stays within its window, and
@@ -501,7 +506,8 @@ follows the cursor, prefetching of a called function in another package,
 saved-explanation hovers that appear only when an explanation is saved and
 never generate, JavaScript calls resolved through the built-in TypeScript
 go-to-definition (standard-library calls not followed) and their hovers, a
-React component's concise preview (component and nested handler), its
+React component's concise preview (component and nested handler) with no
+explanation generated for a plain cursor, its
 hook, rendered component, and helper resolved in order of first use through
 the real TypeScript server, its props interface tracked, a `memo`-wrapped
 arrow component explained and shown when hovering `<CartItem>`, refusal to explain a function in a `.copilotignore`d file, and

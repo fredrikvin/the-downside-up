@@ -90,8 +90,12 @@ Preview to the Side** (or use the preview button in the editor title bar).
   in the editor opens its section only when a saved explanation exists.
   Selecting never starts generation by itself.
 
-**Downside Up: Explain Function** explains the function at the cursor from the
-command palette. The repository context used for explanations is shown at the
+**Downside Up: Open Preview to the Side** (the preview button in the editor
+title bar) opens or reveals the preview of the active file, following the
+editor's position. If text is selected inside a function, it also opens that
+function's explanation, generating or regenerating it when none is current, so
+selecting a function's name and opening the preview explains it. With a plain
+cursor it only opens the preview. The repository context used for explanations is shown at the
 end of the preview. The development fixtures are in `fixtures/rust-app`,
 `fixtures/go-app`, `fixtures/js-app`, and `fixtures/react-app`.
 

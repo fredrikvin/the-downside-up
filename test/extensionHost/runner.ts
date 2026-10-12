@@ -100,14 +100,14 @@ export async function run(): Promise<void> {
   assert.equal(rustTarget?.name, "checkout");
   assert.equal(rustTarget?.languageId, "rust");
   assert.match(rustTarget?.signature ?? "", /fn checkout/);
-  rustEditor.selection = new vscode.Selection(rustCursor, rustCursor);
-  await vscode.commands.executeCommand("downsideUp.explainFunction");
+  rustEditor.selection = new vscode.Selection(rustCursor, rustCursor.translate(0, 1));
+  await vscode.commands.executeCommand("downsideUp.showFileOverview");
   assert.equal(extension.isActive, true, "The contributed command activated the extension.");
   assert.ok(
     (await vscode.commands.getCommands(true)).includes("downsideUp.selectLanguageModel"),
     "The language model picker command is registered."
   );
-  console.log("Downside Up integration tests: Rust explanation command completed.");
+  console.log("Downside Up integration tests: Rust explanation from a selection completed.");
   const rustPanel = await waitForPanel();
   assert.equal(rustPanel.label, "Downside Up: main.rs");
 
@@ -134,15 +134,15 @@ export async function run(): Promise<void> {
   console.log("Downside Up integration tests: JavaScript symbol lookup completed.");
   assert.equal(jsTarget.name, "checkout");
   assert.equal(jsTarget.analysis, "vscode-symbols");
-  jsEditor.selection = new vscode.Selection(jsCursor, jsCursor);
-  await vscode.commands.executeCommand("downsideUp.explainFunction");
-  console.log("Downside Up integration tests: JavaScript explanation command completed.");
+  jsEditor.selection = new vscode.Selection(jsCursor, jsCursor.translate(0, 1));
+  await vscode.commands.executeCommand("downsideUp.showFileOverview");
+  console.log("Downside Up integration tests: JavaScript explanation from a selection completed.");
   const jsPanel = await waitForPanel();
   assert.equal(jsPanel.label, "Downside Up: checkout.js");
 
   const racingRustEditor = await vscode.window.showTextDocument(rustDocument, vscode.ViewColumn.One);
-  racingRustEditor.selection = new vscode.Selection(rustCursor, rustCursor);
-  const olderRequest = vscode.commands.executeCommand("downsideUp.explainFunction");
+  racingRustEditor.selection = new vscode.Selection(rustCursor, rustCursor.translate(0, 1));
+  const olderRequest = vscode.commands.executeCommand("downsideUp.showFileOverview");
   await new Promise((resolveWait) => setTimeout(resolveWait, 25));
 
   const otherCursor = jsDocument.positionAt(jsSource.indexOf("describeCatalog") + 5);
@@ -152,8 +152,8 @@ export async function run(): Promise<void> {
   );
   assert.equal(otherTarget.name, "describeCatalog");
   const racingJsEditor = await vscode.window.showTextDocument(jsDocument, vscode.ViewColumn.One);
-  racingJsEditor.selection = new vscode.Selection(otherCursor, otherCursor);
-  const newerRequest = vscode.commands.executeCommand("downsideUp.explainFunction");
+  racingJsEditor.selection = new vscode.Selection(otherCursor, otherCursor.translate(0, 1));
+  const newerRequest = vscode.commands.executeCommand("downsideUp.showFileOverview");
   await Promise.all([olderRequest, newerRequest]);
   const finalPanel = await waitForPanel();
   assert.equal(finalPanel.label, "Downside Up: checkout.js", "The newer request's file is shown.");
@@ -217,8 +217,8 @@ export async function run(): Promise<void> {
   const storageDocument = await vscode.workspace.openTextDocument(vscode.Uri.file(resolve(jsRoot, "src/storage.js")));
   const storageEditor = await vscode.window.showTextDocument(storageDocument, vscode.ViewColumn.One);
   const persistCursor = storageDocument.positionAt(storageDocument.getText().indexOf("persist") + 2);
-  storageEditor.selection = new vscode.Selection(persistCursor, persistCursor);
-  await vscode.commands.executeCommand("downsideUp.explainFunction");
+  storageEditor.selection = new vscode.Selection(persistCursor, persistCursor.translate(0, 1));
+  await vscode.commands.executeCommand("downsideUp.showFileOverview");
   await waitFor(
     async () => api.allExplanations().some((view) => view.functionName === "persist" && view.status === "current") ? true : undefined,
     "the explanation of the called JavaScript function"
@@ -237,6 +237,11 @@ export async function run(): Promise<void> {
     async () => api.shownOutline().map((entry) => `${entry.kindLabel} ${entry.name}`).join(", ") === "Component CartView, Function handleCheckout"
       ? true : undefined,
     "the React component and its handler in the concise preview"
+  );
+  assert.equal(
+    api.allExplanations().some((view) => view.functionName === "CartView"),
+    false,
+    "Opening the preview with a plain cursor in a function does not generate its explanation."
   );
   const cartViewCursor = cartViewDocument.positionAt(cartViewDocument.getText().indexOf("document.title"));
   const cartView = await findFunctionTarget(cartViewDocument, cartViewCursor);
@@ -260,8 +265,8 @@ export async function run(): Promise<void> {
   const cartItemDocument = await vscode.workspace.openTextDocument(vscode.Uri.file(resolve(reactRoot, "src/CartItem.tsx")));
   const cartItemEditor = await vscode.window.showTextDocument(cartItemDocument, vscode.ViewColumn.One);
   const cartItemCursor = cartItemDocument.positionAt(cartItemDocument.getText().indexOf("const CartItem") + 8);
-  cartItemEditor.selection = new vscode.Selection(cartItemCursor, cartItemCursor);
-  await vscode.commands.executeCommand("downsideUp.explainFunction");
+  cartItemEditor.selection = new vscode.Selection(cartItemCursor, cartItemCursor.translate(0, 1));
+  await vscode.commands.executeCommand("downsideUp.showFileOverview");
   await waitFor(
     async () => api.allExplanations().some((view) => view.functionName === "CartItem" && view.status === "current") ? true : undefined,
     "the explanation of the memo-wrapped arrow component"
@@ -289,8 +294,8 @@ export async function run(): Promise<void> {
   assert.equal(methodTarget?.analysis, "go-tree-sitter", "Go discovery does not need a language server.");
   const goEditor = await vscode.window.showTextDocument(goDocument, vscode.ViewColumn.One);
   const goCursor = goDocument.positionAt(goDocument.getText().indexOf("func checkout") + 6);
-  goEditor.selection = new vscode.Selection(goCursor, goCursor);
-  await vscode.commands.executeCommand("downsideUp.explainFunction");
+  goEditor.selection = new vscode.Selection(goCursor, goCursor.translate(0, 1));
+  await vscode.commands.executeCommand("downsideUp.showFileOverview");
   await waitFor(
     async () => vscode.window.tabGroups.all.flatMap((group) => group.tabs)
       .some((tab) => tab.label === "Downside Up: main.go") ? true : undefined,
@@ -301,7 +306,7 @@ export async function run(): Promise<void> {
       .some((view) => view.functionName === "checkout" && view.status === "current") ? true : undefined,
     "the Go explanation in the preview outline"
   );
-  console.log("Downside Up integration tests: Go explanation command completed.");
+  console.log("Downside Up integration tests: Go explanation from a selection completed.");
 
   const checkoutBody = goDocument.positionAt(goDocument.getText().indexOf("catalog.MarkUnavailable(book.Title)"));
   goEditor.selection = new vscode.Selection(checkoutBody, checkoutBody);
@@ -400,8 +405,8 @@ export async function run(): Promise<void> {
   const legacyDocument = await vscode.workspace.openTextDocument(vscode.Uri.file(resolve(goRoot, "legacy/legacy.go")));
   const legacyEditor = await vscode.window.showTextDocument(legacyDocument, vscode.ViewColumn.One);
   const rateCursor = legacyDocument.positionAt(legacyDocument.getText().indexOf("func Rate") + 6);
-  legacyEditor.selection = new vscode.Selection(rateCursor, rateCursor);
-  await vscode.commands.executeCommand("downsideUp.explainFunction");
+  legacyEditor.selection = new vscode.Selection(rateCursor, rateCursor.translate(0, 1));
+  await vscode.commands.executeCommand("downsideUp.showFileOverview");
   const refused = await waitFor(
     async () => api.allExplanations().find((view) => view.functionName === "Rate" && view.status === "failed"),
     "an explanation request for a .copilotignore'd file to be refused"
