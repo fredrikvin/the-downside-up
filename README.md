@@ -140,7 +140,8 @@ freshness, limits, and known limitations.
 ### Content exclusion and enterprise policies
 
 The extension never explains, prefetches, or sends as context any file that
-is excluded by `.gitignore` or `.copilotignore` (at any folder level), by VS
+is excluded by `.gitignore` or `.copilotignore` (at any folder level inside
+the repository, and `.copilotignore` in folders above it), by VS
 Code's `files.exclude` or `search.exclude`, by being in a hidden, dependency,
 build, or vendored folder, or by having a secret-like or generated name.
 Explaining a function in such a file stops with the reason before anything is
@@ -155,6 +156,25 @@ the text came from. To apply your organization's rules, mirror the excluded
 paths into `.copilotignore` files in each repository, using the same path
 patterns. With an OpenAI API key, no Copilot policy applies at all; check that
 your organization allows sending source code to OpenAI before using it.
+
+If your organization enforces content exclusion with policy files on each
+computer (for example, configuration files for Copilot content-exclusion
+hooks), point these user settings at them. Each takes a file path (`~` is
+expanded), is read only from user settings so a repository cannot change it,
+and adds nothing when empty:
+
+- **Exclusion: Blocked File Patterns File**
+  (`downsideUp.exclusion.blockedFilePatternsFile`): gitignore-style patterns
+  for files that are never sent, in any repository.
+- **Exclusion: Restricted Remotes File**
+  (`downsideUp.exclusion.restrictedRemotesFile`): Git remote URL prefixes
+  (`*` matches anything). A repository with a matching remote is never read or
+  sent unless it opts in with a `.copilotignore` file (at its root or a folder
+  above it) or a `.allowed-services` file naming `copilot` at its Git root.
+- **Exclusion: Allowed Repositories File**
+  (`downsideUp.exclusion.allowedRepositoriesFile`): repository paths (`*`
+  matches one path segment, such as `team/*`) allowed even when their remote
+  is restricted.
 
 ### Prefetching (optional)
 

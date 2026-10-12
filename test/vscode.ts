@@ -84,6 +84,14 @@ export const workspace = {
     return {
       get<T>(key: string, fallback?: T): T | undefined {
         return vscodeConfiguration.get(`${section ?? ""}.${key}`) as T | undefined ?? fallback;
+      },
+      /** Configured test values count as user settings. */
+      inspect<T>(key: string): { globalValue?: T; workspaceValue?: T } | undefined {
+        const workspaceValue = vscodeConfiguration.get(`workspace:${section ?? ""}.${key}`) as T | undefined;
+        return {
+          globalValue: vscodeConfiguration.get(`${section ?? ""}.${key}`) as T | undefined,
+          ...(workspaceValue === undefined ? {} : { workspaceValue })
+        };
       }
     };
   },

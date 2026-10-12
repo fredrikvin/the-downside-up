@@ -6,6 +6,7 @@ import * as vscode from "vscode";
 import ignore from "ignore";
 import { minimatch } from "minimatch";
 import { fingerprint } from "../core/fingerprint";
+import { currentPolicy } from "./policy";
 import { bundledLanguageIdForPath } from "../languages/registry";
 
 const MAX_FILES = 2_000;
@@ -184,7 +185,32 @@ function isEditorExcluded(root: string, path: string): boolean {
   );
 }
 
+const ancestorRulesCache = new Map<string, { at: number; value: Promise<Array<{ directory: string; rules: ReturnType<typeof ignore> }>> }>();
+
+/** `.copilotignore` files in the folders above the repository, which apply to it as they do for Copilot. */
+function ancestorCopilotIgnores(root: string): Promise<Array<{ directory: string; rules: ReturnType<typeof ignore> }>> {
+  const cached = ancestorRulesCache.get(root);
+  if (cached && Date.now() - cached.at < 5_000) return cached.value;
+  const value = (async () => {
+    const found: Array<{ directory: string; rules: ReturnType<typeof ignore> }> = [];
+    let directory = dirname(root);
+    while (directory !== root) {
+      const text = await readFile(resolve(directory, ".copilotignore"), "utf8").catch(() => undefined);
+      if (text !== undefined) found.push({ directory, rules: ignore().add(text) });
+      const parent = dirname(directory);
+      if (parent === directory) break;
+      directory = parent;
+    }
+    return found;
+  })();
+  ancestorRulesCache.set(root, { at: Date.now(), value });
+  return value;
+}
+
 async function isIgnored(root: string, relativePath: string): Promise<boolean> {
+  for (const { directory, rules } of await ancestorCopilotIgnores(root)) {
+    if (rules.ignores(relative(directory, resolve(root, relativePath)).split(sep).join("/"))) return true;
+  }
   const segments = relativePath.split("/");
   let parent = root;
   for (let index = 0; index < segments.length; index++) {
@@ -256,6 +282,7 @@ export async function gatherInventory(
   const root = await realpath(rootPath);
   const paths: string[] = [];
   const limitations: string[] = [];
+  const policy = await currentPolicy();
   const visit = async (directory: string): Promise<void> => {
     if (paths.length >= MAX_FILES) return;
     const entries = await readdir(directory, { withFileTypes: true });
@@ -267,7 +294,7 @@ export async function gatherInventory(
       if (entry.isDirectory()) {
         if (entry.name.startsWith(".") || ALWAYS_SKIP_DIRS.has(entry.name)) continue;
         const rel = canonicalRelative(relative(root, absolutePath));
-        if (await isIgnored(root, rel)) continue;
+        if (policy.blockedBy(rel) || await isIgnored(root, rel)) continue;
         await visit(absolutePath);
         continue;
       }
@@ -275,6 +302,7 @@ export async function gatherInventory(
       const rel = canonicalRelative(relative(root, absolutePath));
       if (
         isSecretOrGenerated(rel) ||
+        policy.blockedBy(rel) ||
         isEditorExcluded(root, rel) ||
         !eligiblePath(rel) ||
         await isIgnored(root, rel)
@@ -282,7 +310,10 @@ export async function gatherInventory(
       paths.push(rel);
     }
   };
-  await visit(root);
+  // A restricted repository is not read at all, so nothing from it can reach an overview or context.
+  const restricted = await policy.repositoryRestriction(root);
+  if (restricted) limitations.push(`No files were read because ${restricted}.`);
+  else await visit(root);
   if (paths.length >= MAX_FILES) limitations.push(`Inventory stopped at ${MAX_FILES} eligible files.`);
 
   const files: InventoryFile[] = [];
@@ -369,8 +400,10 @@ export function isEligibleRelativePath(root: string, path: string): boolean {
  * Applies the scanner's rules to one file: Git and Copilot ignore files at
  * every level, VS Code file and search exclusions, hidden, dependency, and
  * build folders, secret-like or generated names, and symlinks leaving the
- * repository. GitHub's server-side Copilot content exclusion is not visible
- * here; mirror it into `.copilotignore` to apply it.
+ * repository, `.copilotignore` files in folders above it, and the optional
+ * organization exclusion policy (`./policy.ts`). GitHub's server-side Copilot
+ * content exclusion is not visible here; mirror it into `.copilotignore` or a
+ * policy file to apply it.
  */
 export async function sharingExclusion(rootPath: string, filePath: string): Promise<string | undefined> {
   let root: string;
@@ -384,6 +417,11 @@ export async function sharingExclusion(rootPath: string, filePath: string): Prom
   }
   if (!isWithin(root, file)) return "it is outside the repository";
   const rel = canonicalRelative(relative(root, file));
+  const policy = await currentPolicy();
+  const restricted = await policy.repositoryRestriction(root);
+  if (restricted) return restricted;
+  const blocked = policy.blockedBy(rel);
+  if (blocked) return `your organization's exclusion policy blocks files matching '${blocked}'`;
   const folders = rel.split("/").slice(0, -1);
   if (folders.some((folder) => ALWAYS_SKIP_DIRS.has(folder))) return "it is in a dependency, build, or vendored folder";
   if (isSecretOrGenerated(rel)) return "it is hidden, secret-like, or generated";

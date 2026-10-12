@@ -21,6 +21,7 @@ import {
 import { formatUsage } from "./generation/provider";
 import { nextPrefetch, nextReview, prefetchFocusLine } from "./presentation/prefetch";
 import { baseChoices, changedLinesSince, recentCommits, touchesChange } from "./context/changes";
+import { clearPolicyCache } from "./context/policy";
 import { RequestScheduler, singleFlight } from "./presentation/requestScheduler";
 import { outlineInclude, visibleOutline } from "./presentation/outlineFilter";
 import { innermostAt, pseudocodeLayout, stepRanges, stepsAt, type StepRange } from "./presentation/stepLines";
@@ -2034,6 +2035,11 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
   });
 
   const onConfigChange = vscode.workspace.onDidChangeConfiguration((event) => {
+    if (event.affectsConfiguration("downsideUp.exclusion")) {
+      clearPolicyCache();
+      // The shown file may now be excluded, or allowed again.
+      if (panel && preview) void previewDocument(preview.document);
+    }
     if (
       event.affectsConfiguration("downsideUp.preview.include") ||
       event.affectsConfiguration("downsideUp.explanations")

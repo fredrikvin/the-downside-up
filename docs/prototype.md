@@ -329,8 +329,21 @@ to 48 KiB. The scanner examines at most 2,000 eligible files, reads at most
 priming source/document text is capped at 80 KiB, with up to 16 KiB for the
 symbol outline. Excessive complete prompts fail before source is sent.
 
-The scanner honors `.gitignore`, `.copilotignore`, and VS Code file/search
-exclusions. It avoids symlinks, hidden trees, common generated/dependency/vendor
+The scanner honors `.gitignore`, `.copilotignore` (including `.copilotignore`
+files in folders above the repository, with patterns relative to their own
+folder), and VS Code file/search exclusions, plus an optional organization
+exclusion policy read from files named in user settings only (application
+scope; workspace values are ignored), in the format used by Copilot
+content-exclusion hook configuration: gitignore-style blocked file patterns
+applied to repository-relative paths in every repository; restricted remote
+URL prefixes, where a repository with a matching remote is not read at all
+(the scan is empty, explanations and file summaries stop with the reason, and
+**Refresh Repository Context** sends nothing) unless it has a `.copilotignore`
+at its root or in a folder above it, a `.allowed-services` file at its Git
+root naming `copilot`, or a repository path matching the allowed-repositories
+file (`*` matches one path segment). Empty settings and unreadable files add
+nothing, matching the hooks; decisions about a repository are cached for ten
+seconds and cleared when the settings change. It avoids symlinks, hidden trees, common generated/dependency/vendor
 directories, secret-like names, credentials, binaries, and lock-binary files.
 The same rules apply to the file that holds the function being explained:
 before any scanning or provider request, an explanation (explicit or
@@ -400,7 +413,8 @@ GitHub Copilot content exclusion configured by administrators on GitHub is
 not applied to this extension's requests, even with Copilot models: GitHub
 enforces it in Copilot's own features, and requests through the VS Code
 Language Model API carry plain text without file identity. Organizations
-that rely on it should mirror the excluded paths into `.copilotignore`.
+that rely on it should mirror the excluded paths into `.copilotignore` or the
+organization policy files above.
 For VS Code language models, data handling follows the model provider's terms
 (for Copilot, the user's or organization's Copilot plan and policies). No
 provider request occurs without the user requesting an explanation or
@@ -555,6 +569,13 @@ the phase instruction, and background added to the prompt only when given;
 flowchart tests cover show nodes, nesting inside show nodes (kept up to 3
 levels; unknown, non-show, self, cyclic, and deeper parents moved to the top
 level), and edges between nesting levels being dropped;
+policy tests cover blocked, anchored, and folder patterns, remote prefixes and
+repository paths, no effect without settings, blocked files left out of the
+scan and refused as the explained file, restricted repositories with an empty
+scan until they opt in with `.allowed-services`, `.copilotignore`, or an
+allowed-repository listing, workspace values being ignored, and
+`.copilotignore` files above the repository; a settings test keeps the policy
+settings user-level;
 review-mode tests cover changed lines from diffs (ranges, removals, deleted
 files, paths with spaces), when a removal counts for a function, base choices
 in a real Git repository (merge base, branch tip, uncommitted only, recent
@@ -581,7 +602,11 @@ webview's content-security policy.
 
 - GitHub Copilot's server-side content exclusion is not visible to the
   extension and is not applied to its requests; only `.gitignore`,
-  `.copilotignore`, VS Code exclusions, and the built-in path rules are.
+  `.copilotignore`, VS Code exclusions, the built-in path rules, and the
+  optional organization policy files are. Blocked patterns are matched
+  against repository-relative paths, so a pattern containing a slash is
+  anchored at the repository root, and negated patterns (`!`) in a
+  `.copilotignore` re-include files only within the same file.
 - Rust macros, procedural macros, and conditional compilation may hide or alter
   syntax and relationships. Tree-sitter is not a Rust compiler.
 - Cross-file Rust tracking follows bodies at depth 1 and signatures at depth 2,

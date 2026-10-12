@@ -26,4 +26,12 @@ describe("extension settings", () => {
     expect(used.size).toBeGreaterThan(8);
     expect([...used].filter((key) => !declared.has(key))).toEqual([]);
   });
+
+  it("keeps exclusion policy settings user-level, so a repository cannot change them", () => {
+    const properties = JSON.parse(readFileSync(resolve("package.json"), "utf8")).contributes.configuration.properties;
+    const policy = readFileSync(resolve("src/context/policy.ts"), "utf8");
+    const keys = [...policy.matchAll(/"(exclusion\.[A-Za-z]+)"/g)].map((match) => `downsideUp.${match[1]}`);
+    expect(keys).toHaveLength(3);
+    for (const key of keys) expect(properties[key]?.scope, key).toBe("application");
+  });
 });

@@ -21,6 +21,7 @@ import {
   type FunctionContext
 } from "./context/related";
 import { addLocalSymbolOutline } from "./context/symbolIndex";
+import { currentPolicy } from "./context/policy";
 import { languageFor } from "./languages/registry";
 import { normalizeStepLines } from "./presentation/stepLines";
 import {
@@ -567,6 +568,8 @@ export class ExplanationService {
   ): Promise<{ overview: RepositoryOverview; usage: Usage }> {
     const startingFence = this.fence(root);
     const descriptor = this.options.describeProvider();
+    const restricted = await (await currentPolicy()).repositoryRestriction(root);
+    if (restricted) throw new Error(`Nothing was sent because ${restricted}.`);
     const cache = await this.options.store.read(root);
     const baseInventory = await gatherInventory(root, cache.overview?.checkedSnapshot);
     const inventory = await addLocalSymbolOutline(baseInventory);

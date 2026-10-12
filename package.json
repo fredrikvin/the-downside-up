@@ -199,6 +199,24 @@
           "scope": "application",
           "markdownDescription": "For the function you are reading, how many of the functions and methods it calls in other files are prefetched (in languages other than Rust and Go, calls are found with the editor's go-to-definition), right after the function itself. Only the first calls in order of use are considered, and ones already explained count toward the number. `0` prefetches none. Requires `#downsideUp.prefetch.enabled#`."
         },
+        "downsideUp.exclusion.blockedFilePatternsFile": {
+          "type": "string",
+          "default": "",
+          "scope": "application",
+          "markdownDescription": "Path to a file of gitignore-style patterns (one per line, `#` for comments) for files that are never sent to a model provider, in any repository, in addition to `.gitignore` and `.copilotignore`. Uses the same format as Copilot content-exclusion hook configuration, so an organization's existing file can be used. `~` is expanded. User settings only."
+        },
+        "downsideUp.exclusion.restrictedRemotesFile": {
+          "type": "string",
+          "default": "",
+          "scope": "application",
+          "markdownDescription": "Path to a file of Git remote URL prefixes (one per line, `*` matches anything). A repository with a matching remote is never sent to a model provider unless it opts in with a `.copilotignore` file (at its root or a folder above it), a `.allowed-services` file naming `copilot` at its Git root, or a listing in `#downsideUp.exclusion.allowedRepositoriesFile#`. `~` is expanded. User settings only."
+        },
+        "downsideUp.exclusion.allowedRepositoriesFile": {
+          "type": "string",
+          "default": "",
+          "scope": "application",
+          "markdownDescription": "Path to a file of repository paths (one per line, `*` matches one path segment, such as `team/*`) that may be sent even though `#downsideUp.exclusion.restrictedRemotesFile#` restricts their remote. `~` is expanded. User settings only."
+        },
         "downsideUp.hover.savedExplanations": {
           "type": "boolean",
           "default": true,
