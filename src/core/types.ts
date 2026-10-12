@@ -56,12 +56,19 @@ export interface PseudocodeLine extends LineLinked {
   readonly depth: number;
 }
 
-export type FlowNodeKind = "start" | "action" | "decision" | "end";
+/** `show` is an exit that returns something shown on screen, such as a React element. */
+export type FlowNodeKind = "start" | "action" | "decision" | "end" | "show";
 
 export interface FlowNode extends LineLinked {
   readonly id: string;
   readonly kind: FlowNodeKind;
   readonly label: string;
+  /**
+   * The `show` node this node is drawn inside, as part of the logic that
+   * decides what appears within it (such as a button's label); absent at the
+   * top level.
+   */
+  readonly parent?: string;
 }
 
 export interface FlowEdge {

@@ -86,7 +86,13 @@ shown as tabs beside the steps (`downsideUp.explanations.initialFormat` picks
 the first tab; choosing a tab switches every explanation, like language tabs in
 documentation, keeps the clicked tabs in place on screen, and lasts while the
 preview is open): plain-language pseudocode lines with indentation, and a
-flowchart of start, action, decision, and end nodes with labelled edges. Both
+flowchart of start, action, decision, end, and show nodes with labelled edges.
+A show node is an exit that returns something shown on screen, such as a
+React element, drawn like a small window (a thick top bar and a "Shows"
+caption). The logic that decides what appears inside it, such as a decision
+choosing a "Delete" or "Cancel" label inside a button, can be drawn inside it
+as its own small flow, and show nodes can contain show nodes, up to 3 levels
+deep. Both
 carry source lines checked like steps, so they highlight at the cursor and
 select their lines when clicked. Enabled views are requested together with
 new explanations (making each request somewhat larger). For a saved
@@ -95,13 +101,20 @@ that sends the function source with numbered lines and the saved step titles,
 and saves the view into the explanation only if the function and its context
 are unchanged afterwards. The flowchart is validated before use (at most 24
 nodes and 40 edges, unique node IDs, edges only between known nodes); an
-invalid view is dropped without failing the explanation. The panel draws the
+invalid view is dropped without failing the explanation. A node nested in
+anything other than a show node, in itself, in a cycle, or more than 3 levels
+deep is drawn at the top level instead, and an edge between nodes at
+different nesting levels is dropped, since each level is drawn as its own
+flow. The panel draws the
 flowchart itself from HTML boxes and SVG lines, with every label set as text:
 the main path runs downward in the first column, an early exit sits to the
 right of the node it leaves from, and edges that loop back are routed up the
 left side, so loops and exits never cross. Room for loops is reserved only when
 a chart has them, and a chart wider than its column is scaled down (to at least
-60%) so the whole flow stays visible; below that it scrolls sideways. No diagram library or HTML parsing is involved.
+60%) so the whole flow stays visible; below that it scrolls sideways. A show
+node with nodes inside it holds a smaller flow laid out the same way, and
+boxes in its row line up with its top. Clicking a node inside it selects only
+that node's lines. No diagram library or HTML parsing is involved.
 
 Every function has an **AI explanation** section. Opening it, or
 clicking the function name, is an explicit request: the extension first looks
@@ -503,6 +516,9 @@ saved explanation; service tests cover file summaries being generated once,
 reused while current, outdated after edits, and never made for excluded files;
 provider tests cover step phases (kept, trimmed, or dropped when unusable),
 the phase instruction, and background added to the prompt only when given;
+flowchart tests cover show nodes, nesting inside show nodes (kept up to 3
+levels; unknown, non-show, self, cyclic, and deeper parents moved to the top
+level), and edges between nesting levels being dropped;
 React guidance tests cover components, memo-wrapped components, hooks, and
 functions inside them, and none for other code; and a service test checks the
 background reaches the provider for a component and not for a plain function.

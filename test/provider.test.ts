@@ -176,6 +176,9 @@ describe("structured generation", () => {
     expect(system).not.toContain("Background on this kind of function");
     const [guided] = explanationPrompt({ ...promptInput, guidance: "This function is a React component." });
     expect(guided).toContain("Background on this kind of function: This function is a React component.");
+    const [charted] = explanationPrompt({ ...promptInput, formats: ["flowchart"] });
+    expect(charted).toContain("Use show instead of end for a return of something shown on screen");
+    expect(charted).toContain("give those the show node's id");
     expect(parseFileSummary({ summary: "  Reads books.  " })).toEqual({ summary: "Reads books." });
     const flowchart = {
       nodes: [
@@ -194,6 +197,31 @@ describe("structured generation", () => {
     expect(parseExplanation({ ...explanation, flowchart: { ...flowchart, nodes: [flowchart.nodes[0], flowchart.nodes[0]] } }).flowchart)
       .toBeUndefined();
     expect(() => parseFormat({ flowchart: { nodes: [], edges: [] } }, "flowchart")).toThrow("invalid flowchart");
+    const node = (id: string, kind: string, parent = "") => ({ id, kind, label: id, parent, startLine: 0, endLine: 0 });
+    const nested = parseFormat({ flowchart: {
+      nodes: [
+        node("start", "start"), node("list", "show"), node("line", "show", "list"), node("pick", "decision", "line"),
+        node("delete", "show", "line"), node("a", "show", "b"), node("b", "show", "a"), node("self", "show", "self"),
+        node("orphan", "action", "missing"), node("under-action", "action", "pick"),
+        node("d1", "show", "line"), node("d2", "show", "d1"), node("d3", "action", "d2")
+      ],
+      edges: [
+        { from: "start", to: "list", label: "" },
+        { from: "pick", to: "delete", label: "yes" },
+        { from: "start", to: "pick", label: "across levels" }
+      ]
+    } }, "flowchart").flowchart!;
+    const parents = Object.fromEntries(nested.nodes.map((entry) => [entry.id, entry.parent ?? ""]));
+    expect(parents).toEqual({
+      start: "", list: "", line: "list", pick: "line", delete: "line",
+      // Cycles, self-nesting, unknown or non-show parents, and nesting over 3 levels are drawn at the top level.
+      a: "", b: "", self: "", orphan: "", "under-action": "", d1: "line", d2: "d1", d3: ""
+    });
+    expect(nested.edges.map((edge) => `${edge.from}>${edge.to}`)).toEqual(["start>list", "pick>delete"]);
+    expect(() => parseFormat({ flowchart: { nodes: [node("x", "show", "y"), node("y", "show", "x")].map((entry) => ({ ...entry, parent: "list" })), edges: [] } }, "flowchart"))
+      .not.toThrow();
+    expect(JSON.stringify(explanationSchemaFor(["flowchart"]))).toContain('"show"');
+    expect(JSON.stringify(explanationSchemaFor(["flowchart"]))).toContain('"parent"');
     expect(JSON.stringify(explanationSchemaFor(["flowchart"]))).toContain('"flowchart"');
     expect(JSON.stringify(explanationSchema)).not.toContain('"flowchart"');
     const [summarySystem, summaryUser] = fileSummaryPrompt({

@@ -2,6 +2,7 @@ import type {
   ExplanationFormat,
   FileSummary,
   Flowchart,
+  FlowNode,
   FunctionExplanation,
   PseudocodeLine,
   RepositoryOverview
@@ -56,8 +57,8 @@ const flowchartSchema = objectSchema(
     nodes: {
       type: "array",
       items: objectSchema(
-        { id: string, kind: { type: "string", enum: ["start", "action", "decision", "end"] }, label: string, startLine: integer, endLine: integer },
-        ["id", "kind", "label", "startLine", "endLine"]
+        { id: string, kind: { type: "string", enum: ["start", "action", "decision", "end", "show"] }, label: string, parent: string, startLine: integer, endLine: integer },
+        ["id", "kind", "label", "parent", "startLine", "endLine"]
       )
     },
     edges: { type: "array", items: objectSchema({ from: string, to: string, label: string }, ["from", "to", "label"]) }
@@ -197,6 +198,8 @@ export function parseExplanation(value: unknown): FunctionExplanation {
 
 const MAX_FLOW_NODES = 24;
 const MAX_FLOW_EDGES = 40;
+/** How deep `show` nodes may be drawn inside each other. */
+const MAX_FLOW_NESTING = 3;
 
 function parsePseudocode(value: unknown): PseudocodeLine[] {
   return readObjects(value, "pseudocode", 40, (item) => {
@@ -210,24 +213,54 @@ function parsePseudocode(value: unknown): PseudocodeLine[] {
   });
 }
 
-/** Checks the flowchart's structure: bounded size, unique node IDs, and edges between known nodes. */
+/**
+ * Keeps a node's parent only when it is another `show` node and the nesting
+ * is at most `MAX_FLOW_NESTING` deep without a cycle; otherwise the node is
+ * drawn at the top level.
+ */
+function checkedParents(nodes: readonly FlowNode[]): FlowNode[] {
+  const withoutParent = ({ parent: _dropped, ...rest }: FlowNode): FlowNode => rest;
+  const kinds = new Map(nodes.map((node) => [node.id, node.kind]));
+  const direct = nodes.map((node) =>
+    node.parent && (node.parent === node.id || kinds.get(node.parent) !== "show") ? withoutParent(node) : node);
+  const parentOf = new Map(direct.map((node) => [node.id, node.parent]));
+  const tooDeep = (id: string): boolean => {
+    let current = parentOf.get(id);
+    for (let level = 1; current; level++) {
+      // A cycle never reaches the top, so it also ends here.
+      if (level > MAX_FLOW_NESTING) return true;
+      current = parentOf.get(current);
+    }
+    return false;
+  };
+  return direct.map((node) => (node.parent && tooDeep(node.id) ? withoutParent(node) : node));
+}
+
+/**
+ * Checks the flowchart's structure: bounded size, unique node IDs, edges
+ * between known nodes, and nesting inside `show` nodes. An edge between nodes
+ * at different nesting levels is dropped, since each level is drawn as its
+ * own flow.
+ */
 function parseFlowchart(value: unknown): Flowchart {
   const source = record(value);
-  const nodes = readObjects(source.nodes, "flowchart nodes", MAX_FLOW_NODES, (item) => {
+  const nodes = checkedParents(readObjects(source.nodes, "flowchart nodes", MAX_FLOW_NODES, (item): FlowNode => {
     const kind = item.kind;
-    if (kind !== "start" && kind !== "action" && kind !== "decision" && kind !== "end") {
+    if (kind !== "start" && kind !== "action" && kind !== "decision" && kind !== "end" && kind !== "show") {
       throw new Error("The provider response contains an invalid flowchart node kind.");
     }
+    const parent = typeof item.parent === "string" ? item.parent.trim() : "";
     return {
       id: readText(item, "id", 40),
       kind,
       label: readText(item, "label", 160),
+      ...(parent ? { parent } : {}),
       startLine: readLine(item, "startLine"),
       endLine: readLine(item, "endLine")
-    } as const;
-  });
+    };
+  }));
   const ids = new Set(nodes.map((node) => node.id));
-  if (nodes.length === 0 || ids.size !== nodes.length) {
+  if (nodes.length === 0 || ids.size !== nodes.length || nodes.every((node) => node.parent)) {
     throw new Error("The provider response contains an invalid flowchart.");
   }
   const edges = readObjects(source.edges, "flowchart edges", MAX_FLOW_EDGES, (item) => ({
@@ -238,7 +271,8 @@ function parseFlowchart(value: unknown): Flowchart {
   if (edges.some((edge) => !ids.has(edge.from) || !ids.has(edge.to))) {
     throw new Error("The provider response contains a flowchart edge to an unknown node.");
   }
-  return { nodes, edges };
+  const parentOf = new Map(nodes.map((node) => [node.id, node.parent ?? ""]));
+  return { nodes, edges: edges.filter((edge) => parentOf.get(edge.from) === parentOf.get(edge.to)) };
 }
 
 /**

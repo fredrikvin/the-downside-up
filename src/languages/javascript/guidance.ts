@@ -21,7 +21,7 @@ export const COMPONENT_GUIDANCE = [
   "Functions passed to props such as onClick run later, when the person interacts, not while the component is shown.",
   "Use the phase field to group steps by when they run, such as \"Each time it is shown\", \"After it appears\", and \"When the person clicks Check out\".",
   "In pseudocode, put code that runs later under a line such as \"when the person clicks Check out:\".",
-  "In a flowchart, follow what happens each time it is shown, and show code that runs later as a single action such as \"Set up the Check out button\"."
+  "In a flowchart, follow what happens each time it is shown, end each returned element with a show node, and draw conditions inside the returned markup (such as a ternary choosing a button's label) as nodes inside the show node of the element that contains them. Show code that runs later as a single action such as \"Set up the Check out button\"."
 ].join(" ");
 
 export const HOOK_GUIDANCE = [

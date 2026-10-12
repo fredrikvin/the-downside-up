@@ -218,6 +218,20 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
     .flow-node.kind-start, .flow-node.kind-end { border-radius: 999px; }
     .flow-node.kind-end { border-style: dashed; }
     .flow-node.kind-decision { border: 2px solid var(--vscode-charts-yellow, #c9a000); }
+    /* What a function returns to be shown on screen, drawn like a small window. */
+    .flow-node.kind-show {
+      --show: var(--vscode-charts-blue, #3794ff);
+      border: 2px solid var(--show); border-top-width: 7px; border-radius: 6px;
+      background: color-mix(in srgb, var(--show) 10%, var(--vscode-editorWidget-background, var(--vscode-editor-background, #fff)));
+    }
+    .flow-node.kind-show::before {
+      content: "Shows"; display: block; margin-bottom: 1px;
+      font-size: .7em; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--show);
+    }
+    .flow-node.holds { max-width: none; padding: 4px 8px 8px; }
+    .flow-node.holds > .flow-node-label { margin-bottom: 2px; }
+    .flow.flow-inner { display: inline-grid; column-gap: 20px; row-gap: 24px; padding: 6px 8px 2px 2px; text-align: center; }
+    .flow.flow-inner.has-loops { padding-left: 40px; }
     .flow-node.kind-start, .flow-node.kind-end { color: var(--vscode-descriptionForeground, inherit); }
     .flow-node.linked { cursor: pointer; }
     .flow-node.linked:hover { border-color: var(--vscode-focusBorder); }
@@ -352,11 +366,14 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
       item.title = "Select these lines in the editor";
       const reveal = (target) => {
         if (target && target.closest && target.closest("a")) return;
+        // A flowchart node inside another handles its own clicks.
+        if (target && target.closest && target.closest("[data-" + attribute + "]") !== item) return;
         post({ type: "revealItem", entryId: view.entryId, kind, index });
       };
       item.addEventListener("click", (clicked) => reveal(clicked.target));
       item.addEventListener("keydown", (pressed) => {
         const name = pressed["key"];
+        if (pressed.target !== item) return;
         if (name === "Enter" || name === " ") { pressed.preventDefault(); reveal(undefined); }
       });
     }
@@ -405,8 +422,9 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
     /**
      * Places flowchart nodes in rows: each node's row is its longest distance
      * from the start along forward edges, so the main path runs downward. An
-     * early exit (an end reached only from a node that also continues) sits on
-     * its source's row, to the right. Edges that loop back are drawn on the left.
+     * early exit (an end or show node reached only from a node that also
+     * continues) sits on its source's row, to the right. Edges that loop back
+     * are drawn on the left.
      */
     function layoutFlow(chart) {
       const order = new Map(chart.nodes.map((node, index) => [node.id, index]));
@@ -429,12 +447,13 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
       const forward = chart.edges.filter((edge) => !back.has(edge) && edge.from !== edge.to);
       const kinds = new Map(chart.nodes.map((node) => [node.id, node.kind]));
       const sideExit = new Map();
+      const isExit = (kind) => kind === "end" || kind === "show";
       for (const node of chart.nodes) {
-        if (node.kind !== "end") continue;
+        if (!isExit(node.kind)) continue;
         const incoming = forward.filter((edge) => edge.to === node.id);
         if (incoming.length !== 1) continue;
         const source = incoming[0].from;
-        if (forward.some((edge) => edge.from === source && edge.to !== node.id && kinds.get(edge.to) !== "end")) sideExit.set(node.id, source);
+        if (forward.some((edge) => edge.from === source && edge.to !== node.id && !isExit(kinds.get(edge.to)))) sideExit.set(node.id, source);
       }
       const indegree = new Map(chart.nodes.map((node) => [node.id, 0]));
       for (const edge of forward) indegree.set(edge.to, indegree.get(edge.to) + 1);
@@ -454,34 +473,55 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
         const row = rank.get(node.id);
         (rows[row] = rows[row] || []).push(node);
       }
-      const ending = (node) => (node.kind === "end" ? 1 : 0);
+      const ending = (node) => (isExit(node.kind) ? 1 : 0);
       return {
         rows: rows.filter(Boolean).map((row) => row.sort((left, right) => ending(left) - ending(right) || order.get(left.id) - order.get(right.id))),
         back
       };
     }
 
+    /**
+     * Draws the flowchart. A show node with nodes inside it (the logic that
+     * decides what appears within it) holds its own small flow, laid out and
+     * connected like the top level.
+     */
     function renderFlowchart(chart, view) {
       const scroll = el("div", "flow-scroll");
-      const flow = el("div", "flow");
+      const levels = [];
+      const build = (parentId) => {
+        const nodes = chart.nodes.filter((node) => (node.parent || "") === parentId);
+        const ids = new Set(nodes.map((node) => node.id));
+        const edges = chart.edges.filter((edge) => ids.has(edge.from) && ids.has(edge.to));
+        const level = el("div", parentId ? "flow flow-inner" : "flow");
+        const { rows, back } = layoutFlow({ nodes, edges });
+        // Room on the left only for flows with loops, which are routed there.
+        if (back.size) level.classList.add("has-loops");
+        const boxes = new Map();
+        // Grid cells keep the main path in the first column, with exits to its right.
+        const holds = (node) => node.kind === "show" && chart.nodes.some((other) => other.parent === node.id);
+        rows.forEach((row, rowIndex) => {
+          // Next to a tall container, boxes line up with its top rather than its middle.
+          const tall = row.some(holds);
+          row.forEach((node, columnIndex) => {
+            const container = holds(node);
+            const box = el("div", "flow-node kind-" + node.kind + (container ? " holds" : ""));
+            if (container) box.append(el("div", "flow-node-label", node.label), build(node.id));
+            else box.textContent = node.label;
+            box.style.gridRow = String(rowIndex + 1);
+            box.style.gridColumn = String(columnIndex + 1);
+            if (tall) box.style.alignSelf = "start";
+            linkItem(box, view, "node", chart.nodes.indexOf(node), "node");
+            boxes.set(node.id, box);
+            level.append(box);
+          });
+        });
+        levels.push({ flow: level, boxes, edges, back, index: levels.length });
+        return level;
+      };
+      const flow = build("");
       flow.setAttribute("role", "group");
       flow.setAttribute("aria-label", "Flowchart");
       scroll.append(flow);
-      const { rows, back } = layoutFlow(chart);
-      // Room on the left only for charts with loops, which are routed there.
-      if (back.size) flow.classList.add("has-loops");
-      const boxes = new Map();
-      // Grid cells keep the main path in the first column, with exits to its right.
-      rows.forEach((row, rowIndex) => {
-        row.forEach((node, columnIndex) => {
-          const box = el("div", "flow-node kind-" + node.kind, node.label);
-          box.style.gridRow = String(rowIndex + 1);
-          box.style.gridColumn = String(columnIndex + 1);
-          linkItem(box, view, "node", chart.nodes.indexOf(node), "node");
-          boxes.set(node.id, box);
-          flow.append(box);
-        });
-      });
       /**
        * Shrinks a chart wider than its column (down to 60%) so the whole flow
        * stays visible; negative margins give back the space the scaling frees.
@@ -501,18 +541,19 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
         }
         return scale;
       };
-      const draw = () => {
-        flow.querySelector(".flow-edges")?.remove();
-        const scale = fit();
-        const base = flow.getBoundingClientRect();
+      /** Draws one level's edges in an SVG inside that level; positions are converted back from the chart's scale. */
+      const drawLevel = (level, scale) => {
+        const { flow: holder, boxes, edges, back } = level;
+        for (const old of holder.querySelectorAll(":scope > .flow-edges")) old.remove();
+        const base = holder.getBoundingClientRect();
         if (!base.width) return;
         const svg = document.createElementNS(SVG, "svg");
         svg.setAttribute("class", "flow-edges");
-        svg.setAttribute("width", String(flow.scrollWidth));
-        svg.setAttribute("height", String(flow.scrollHeight));
+        svg.setAttribute("width", String(holder.scrollWidth));
+        svg.setAttribute("height", String(holder.scrollHeight));
         const defs = document.createElementNS(SVG, "defs");
         const marker = document.createElementNS(SVG, "marker");
-        const markerId = "arrow-" + view.entryId;
+        const markerId = "arrow-" + view.entryId + "-" + level.index;
         marker.setAttribute("id", markerId);
         marker.setAttribute("viewBox", "0 0 8 8");
         marker.setAttribute("refX", "7");
@@ -535,10 +576,11 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
           const bottom = (r.bottom - base.top) / scale;
           return { left, right, top, bottom, x: (left + right) / 2, y: (top + bottom) / 2 };
         };
+        if (!boxes.size) return;
         // Loops go up the left of the main path; exits use the right, so they never cross.
         const left = Math.min(...[...boxes.keys()].map((id) => rect(id).left));
         let lane = 0;
-        for (const edge of chart.edges) {
+        for (const edge of edges) {
           const from = rect(edge.from);
           const to = rect(edge.to);
           const path = document.createElementNS(SVG, "path");
@@ -571,7 +613,11 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
             });
           }
         }
-        flow.prepend(svg);
+        holder.prepend(svg);
+      };
+      const draw = () => {
+        const scale = fit();
+        for (const level of levels) drawLevel(level, scale);
       };
       requestAnimationFrame(draw);
       if (typeof ResizeObserver === "function") {
