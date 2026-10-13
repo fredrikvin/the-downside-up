@@ -2,7 +2,7 @@
   "name": "the-downside-up",
   "displayName": "The Downside Up",
   "description": "Understand unfamiliar code with grounded, cached explanations beside the source.",
-  "version": "0.20.0",
+  "version": "0.21.0",
   "publisher": "the-downside-up",
   "license": "UNLICENSED",
   "engines": {

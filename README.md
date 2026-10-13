@@ -156,7 +156,7 @@ The development fixtures are in `fixtures/rust-app`,
 `fixtures/go-app`, `fixtures/js-app`, and `fixtures/react-app`.
 
 To install a locally packaged VSIX, run
-`code --install-extension the-downside-up-0.20.0.vsix`.
+`code --install-extension the-downside-up-0.21.0.vsix`.
 
 ## Provider setup
 
