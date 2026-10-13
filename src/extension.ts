@@ -9,9 +9,11 @@ import {
 } from "./controller";
 import { findRepositoryRoot, gatherInventory, listFolder, sharingExclusion, type FolderChild, type RepositoryInventory } from "./context/inventory";
 import { folderStructure, type StructureGraph } from "./context/structure";
+import { folderSummaryInput } from "./context/folderInput";
+import type { FolderSummaryPromptInput } from "./generation/provider";
 import { findCalledFunctions, type CalledFunction } from "./context/related";
 import { buildFileOverview, type FileOverview, type OutlineEntry } from "./context/fileOverview";
-import type { ExplanationFormat, FunctionExplanation, FunctionTarget, LineLinked, RepositoryOverview } from "./core/types";
+import type { ExplanationFormat, FolderSummary, FunctionExplanation, FunctionTarget, LineLinked, RepositoryOverview } from "./core/types";
 import { MockProvider } from "./generation/mock";
 import { OpenAIProvider } from "./generation/openai";
 import {
@@ -89,9 +91,15 @@ interface FolderPreview {
   /** Repository-relative path, or "" for the repository root. */
   readonly path: string;
   readonly children: readonly FolderChild[];
+  /** Saved summaries of its files and subfolders, by path. */
   readonly summaries: ReadonlyMap<string, { summary: string; current: boolean }>;
   readonly structure?: StructureGraph;
   readonly limitations: readonly string[];
+  /** What a folder summary would be made from, once the structure is known. */
+  readonly input?: FolderSummaryPromptInput;
+  readonly ai?: { value: FolderSummary; current: boolean };
+  readonly summaryJob?: AbortController;
+  readonly summaryError?: string;
 }
 
 /** A background job that waits to be woken when a request slot frees or the reader moves. */
@@ -648,7 +656,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       formats: formatSettings(),
       ...(shownContext ? { overview: shownContext.overview } : {}),
       ...(notice ? { notice } : {}),
-      busy: Boolean(repositoryJob),
+      busy: Boolean(repositoryJob || folderPreview?.summaryJob),
       hasRepository: Boolean(preview || folderPreview)
     });
     syncStepHighlight();
@@ -678,7 +686,9 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     return crumbs;
   };
 
-  const folderView = (shown: FolderPreview, target: (open: () => Promise<void>) => string): FolderView => ({
+  const folderView = (shown: FolderPreview, target: (open: () => Promise<void>) => string): FolderView => {
+    const parts = new Map((shown.ai?.value.parts ?? []).map((part) => [part.name, part.summary]));
+    return {
     name: shown.path ? basename(shown.path) : basename(shown.root),
     path: shown.path,
     fileCount: shown.children.reduce((total, child) => total + (child.kind === "folder" ? child.fileCount ?? 0 : 1), 0),
@@ -687,12 +697,18 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       return {
         ...child,
         target: target(() => child.kind === "folder" ? showFolder(shown.root, child.path) : openRepositoryFile(shown.root, child.path)),
-        ...(summary ? { summary: { text: summary.summary, current: summary.current } } : {})
+        ...(summary ? { summary: { text: summary.summary, current: summary.current } } : {}),
+        ...(!summary && parts.has(child.name) ? { partSummary: parts.get(child.name)! } : {})
       };
     }),
     ...(shown.structure ? { structure: { nodes: shown.structure.nodes, edges: shown.structure.edges } } : {}),
-    limitations: [...shown.limitations, ...(shown.structure?.limitations ?? [])]
-  });
+    limitations: [...shown.limitations, ...(shown.structure?.limitations ?? [])],
+    ...(shown.ai ? { ai: { summary: shown.ai.value.summary, overview: shown.ai.value.overview, current: shown.ai.current } } : {}),
+    summarizing: Boolean(shown.summaryJob),
+    canSummarize: Boolean(shown.input),
+    ...(shown.summaryError ? { summaryError: shown.summaryError } : {})
+    };
+  };
 
   /** Reads a repository file's current text, preferring an open buffer; small files only. */
   const repositoryText = async (root: string, path: string): Promise<string | undefined> => {
@@ -726,8 +742,57 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     panel.setFileReferenceHandlers(new Map());
     render();
     const structure = await folderStructure(root, path, children).catch(() => undefined);
-    if (epoch !== folderEpoch || !folderPreview || folderPreview.path !== path || folderPreview.root !== root || !structure) return;
-    folderPreview = { ...folderPreview, structure };
+    const current = () => epoch === folderEpoch && folderPreview?.path === path && folderPreview.root === root;
+    if (!current() || !structure) return;
+    folderPreview = { ...folderPreview!, structure };
+    render();
+    // Subfolders' saved summaries count like files' when listing and summarizing.
+    const subfolderSummaries = new Map<string, { summary: string; current: boolean }>();
+    for (const child of children.filter((entry) => entry.kind === "folder")) {
+      const saved = await service.savedFolderSummary(root, child.path).catch(() => undefined);
+      if (saved) subfolderSummaries.set(child.path, { summary: saved, current: true });
+    }
+    const input = await folderSummaryInput(basename(root), path, children, structure, {
+      fileSummary: (file) => summaries.get(file)?.summary,
+      folderSummary: async (folder) => subfolderSummaries.get(folder)?.summary,
+      text: (file) => repositoryText(root, file).catch(() => undefined),
+      contents: async (folder) => (await listFolder(root, folder)).children.map((entry) => entry.name + (entry.kind === "folder" ? "/" : ""))
+    }).catch(() => undefined);
+    if (!current() || !input) return;
+    const saved = await service.findFolderSummary(root, input).catch(() => undefined);
+    if (!current()) return;
+    folderPreview = {
+      ...folderPreview!,
+      summaries: new Map([...folderPreview!.summaries, ...subfolderSummaries]),
+      input,
+      ...(saved ? { ai: saved } : {})
+    };
+    render();
+  };
+
+  /** Generates the shown folder's summary on explicit request; it may ask for code-sharing approval. */
+  const summarizeShownFolder = async (): Promise<void> => {
+    const shown = folderPreview;
+    if (!shown?.input || shown.summaryJob) return;
+    if (!(await ensureLanguageModelSelected())) return;
+    const controller = new AbortController();
+    const same = () => folderPreview?.root === shown.root && folderPreview.path === shown.path;
+    if (!same()) return;
+    folderPreview = { ...folderPreview!, summaryJob: controller, summaryError: undefined };
+    render();
+    try {
+      const result = await scheduler.schedule("explicit", () => service.summarizeFolder(shown.root, shown.input!, controller.signal));
+      if (same()) folderPreview = { ...folderPreview!, ai: { value: result.value, current: true }, summaryJob: undefined };
+    } catch (error) {
+      if (same()) {
+        const cancelled = controller.signal.aborted || (error instanceof DOMException && error.name === "AbortError");
+        folderPreview = {
+          ...folderPreview!,
+          summaryJob: undefined,
+          ...(cancelled ? {} : { summaryError: `Could not summarize this folder: ${errorMessage(error)}` })
+        };
+      }
+    }
     render();
   };
 
@@ -1805,6 +1870,10 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
         return;
       case "cancel":
         repositoryJob?.abort();
+        folderPreview?.summaryJob?.abort();
+        return;
+      case "summarizeFolder":
+        await summarizeShownFolder();
         return;
       case "refreshContext":
         await refreshRepositoryContext();
@@ -2076,6 +2145,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
   };
 
   const cancelExplanations = (): void => {
+    folderPreview?.summaryJob?.abort();
     stopPrefetch();
     stopReview();
     repositoryJob?.abort();
@@ -2287,9 +2357,12 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       ? {
           path: folderPreview.path,
           children: folderPreview.children.map((child) => `${child.kind} ${child.path}`),
-          edges: (folderPreview.structure?.edges ?? []).map((edge) => `${edge.from} > ${edge.to}`).sort()
+          edges: (folderPreview.structure?.edges ?? []).map((edge) => `${edge.from} > ${edge.to}`).sort(),
+          ...(folderPreview.ai ? { summary: folderPreview.ai.value.summary, current: folderPreview.ai.current } : {}),
+          ready: Boolean(folderPreview.input)
         }
       : undefined,
+    summarizeFolder: () => summarizeShownFolder(),
     previewFolder: (path: string) => preview ? showFolder(preview.root, path) : folderPreview ? showFolder(folderPreview.root, path) : Promise.resolve(),
     allExplanations: () => [...functions.values()].map((state) => ({
       functionName: state.view.functionName,
@@ -2301,7 +2374,8 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
 }
 
 export interface DownsideUpTestApi {
-  shownFolder(): { path: string; children: string[]; edges: string[] } | undefined;
+  shownFolder(): { path: string; children: string[]; edges: string[]; summary?: string; current?: boolean; ready: boolean } | undefined;
+  summarizeFolder(): Promise<void>;
   previewFolder(path: string): Promise<void>;
   reviewChanges(base: string): Promise<number>;
   reviewItems(): Array<{ qualifiedName: string; path: string; status: string }>;

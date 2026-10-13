@@ -2,6 +2,7 @@ import { estimateTokens } from "../core/fingerprint";
 import type {
   ExplanationFormat,
   FileSummary,
+  FolderSummary,
   FunctionExplanation,
   GenerationResult,
   RepositoryOverview
@@ -9,6 +10,7 @@ import type {
 import type {
   ExplanationPromptInput,
   FileSummaryPromptInput,
+  FolderSummaryPromptInput,
   FormatPromptInput,
   GenerationProvider,
   OverviewReviewPromptInput,
@@ -144,6 +146,17 @@ export class MockProvider implements GenerationProvider {
     signal?: AbortSignal
   ): Promise<GenerationResult<FileSummary>> {
     return this.respond(input.source, { summary: `Mock summary of ${input.path}; the file has not been interpreted.` }, signal);
+  }
+
+  summarizeFolder(
+    input: FolderSummaryPromptInput,
+    signal?: AbortSignal
+  ): Promise<GenerationResult<FolderSummary>> {
+    return this.respond(JSON.stringify(input.parts), {
+      summary: `Mock summary of ${input.path || "the repository"}; its contents have not been interpreted.`,
+      overview: "Mock mode does not describe how the parts fit together. Choose a language model for a real summary.",
+      parts: input.parts.filter((part) => !part.summary).map((part) => ({ name: part.name, summary: `Mock description of ${part.name}.` }))
+    }, signal);
   }
 
   explainFormat(

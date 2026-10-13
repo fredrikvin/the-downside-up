@@ -414,6 +414,27 @@ invisible waypoint in each row so they run between boxes, and orders rows with
 barycenter sweeps to reduce crossings. Arrows are spread along box edges and
 drawn thicker for more imports.
 
+Folder summaries are AI-generated only on an explicit **Summarize this
+folder** (or **Regenerate**) in the folder preview, which may ask for
+code-sharing approval like an explanation and uses an explicit request slot.
+The request (`folderSummaryPrompt`) holds the folder's path, the repository
+overview's purpose as background, and for each listed part (at most 150) its
+saved summary (a file's one-sentence summary or a subfolder's folder summary,
+current or not), or else the names of a file's functions and types from its
+bundled language support (at most 20) or a subfolder's contents (at most 20),
+the import edges between parts by name (at most 200), and the folder's README
+(at most 8 KiB, marked when truncated); never source code, and a restricted
+repository sends nothing. The model returns one sentence on what the folder is
+for, two to four on how its parts fit together and where to start, and one
+sentence for each part without a summary; sentences about parts that were not
+listed, or that have a summary, are dropped, and the preview marks the rest as
+inferred from names. Folder summaries are cached per folder, provider, model,
+and prompt version with a fingerprint of the input (not of the repository's
+purpose), so a changed part, summary, function name, import, or README marks
+the summary outdated; opening a folder preview only reads the cache. A
+subfolder's saved summary feeds its parent's input, so summaries can be built
+bottom-up.
+
 ## Providers and data handling
 
 Mock mode is the default and returns deterministic placeholder content. It is
@@ -592,7 +613,9 @@ follows the cursor, prefetching of a called function in another package,
 saved-explanation hovers that appear only when an explanation is saved and
 never generate, a folder preview of the Go repository root (excluded
 folder left out, import edges), the Explorer command previewing a folder, and
-switching to a file leaving the folder preview, review mode queueing only an edited component and a new
+switching to a file leaving the folder preview, a folder summary generated
+only on request and shown as current when the folder is previewed again,
+review mode queueing only an edited component and a new
 untracked file's component and explaining both, including the one in a file
 that is not shown, JavaScript calls resolved through the built-in TypeScript
 go-to-definition (standard-library calls not followed) and their hovers, a
@@ -627,6 +650,11 @@ files left out), Go, Rust, and TypeScript import edges between a folder's
 children, and the structure layout (importers above imports, shared rows with
 hidden edges, unconnected rows, cycles' upward edges, waypoints for edges that
 skip rows, crossing reduction, and running standalone as in the webview);
+folder summary tests cover the input (names, saved summaries, function names,
+imports, no code), parsing that drops unusable part sentences, and the
+service saving a summary, keeping only sentences for parts without one, and
+marking it outdated when the input changes but not when the repository's
+purpose does;
 review-mode tests cover changed lines from diffs (ranges, removals, deleted
 files, paths with spaces), when a removal counts for a function, base choices
 in a real Git repository (merge base, branch tip, uncommitted only, recent

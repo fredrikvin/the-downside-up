@@ -7,6 +7,8 @@ import type {
   ExplanationFormat,
   ExplanationRecord,
   FileSummaryRecord,
+  FolderSummary,
+  FolderSummaryRecord,
   FunctionExplanation,
   FunctionTarget,
   GenerationResult,
@@ -28,6 +30,7 @@ import {
   EXPLANATION_PROMPT_VERSION,
   explanationPrompt,
   fileSummaryPrompt,
+  folderSummaryPrompt,
   formatPrompt,
   overviewPrompt,
   PROMPT_VERSION,
@@ -36,6 +39,7 @@ import {
 import type {
   ExplanationPromptInput,
   FileSummaryPromptInput,
+  FolderSummaryPromptInput,
   FormatPromptInput,
   GenerationProvider,
   OverviewReviewPromptInput,
@@ -93,6 +97,15 @@ const MAX_FILE_SUMMARY_SOURCE_BYTES = 24 * 1024;
 
 function fileSummaryKey(path: string, descriptor: ProviderDescriptor): string {
   return cacheKey([path, descriptor.kind, descriptor.modelId, EXPLANATION_PROMPT_VERSION]);
+}
+
+function folderSummaryKey(path: string, descriptor: ProviderDescriptor): string {
+  return cacheKey(["folder", path, descriptor.kind, descriptor.modelId, EXPLANATION_PROMPT_VERSION]);
+}
+
+/** What a folder summary depends on; the repository's name and purpose are background, not tracked. */
+function folderInputFingerprint(input: FolderSummaryPromptInput): string {
+  return fingerprint(JSON.stringify([input.path, input.parts, input.imports, input.readme ?? ""]));
 }
 
 /** Whitespace-insensitive, so reformatting alone does not outdate a file summary. */
@@ -705,6 +718,65 @@ export class ExplanationService {
     const record = (await this.options.store.read(root)).fileSummaries?.[fileSummaryKey(path, descriptor)];
     if (!record) return undefined;
     return { summary: record.summary, current: record.fingerprint === fileTextFingerprint(document.getText()) };
+  }
+
+  /** A folder's saved summary sentence for the current model, current or not, as input for its parent folder. */
+  async savedFolderSummary(root: string, path: string): Promise<string | undefined> {
+    return (await this.options.store.read(root)).folderSummaries?.[folderSummaryKey(path, this.options.describeProvider())]?.value.summary;
+  }
+
+  /** Cache-only lookup of a folder's saved summary; `current` is false when its input changed since. */
+  async findFolderSummary(
+    root: string,
+    input: FolderSummaryPromptInput
+  ): Promise<{ value: FolderSummary; current: boolean } | undefined> {
+    const record = (await this.options.store.read(root)).folderSummaries?.[folderSummaryKey(input.path, this.options.describeProvider())];
+    return record ? { value: record.value, current: record.fingerprint === folderInputFingerprint(input) } : undefined;
+  }
+
+  /**
+   * Generates a folder summary on explicit request. The request holds names,
+   * saved summaries, function and type names, import edges, and the folder's
+   * README, never source code; a restricted repository sends nothing.
+   * Descriptions of parts that are not listed, or that already have a
+   * summary, are dropped.
+   */
+  async summarizeFolder(
+    root: string,
+    input: FolderSummaryPromptInput,
+    signal?: AbortSignal
+  ): Promise<{ value: FolderSummary; usage: Usage }> {
+    const startingFence = this.fence(root);
+    const descriptor = this.options.describeProvider();
+    const restricted = await (await currentPolicy()).repositoryRestriction(root);
+    if (restricted) throw new Error(`Nothing was sent because ${restricted}.`);
+    const repositoryPurpose = (await this.options.store.read(root)).overview?.value.purpose;
+    const prompt: FolderSummaryPromptInput = { ...input, ...(repositoryPurpose ? { repositoryPurpose } : {}) };
+    const [system, user] = folderSummaryPrompt(prompt);
+    const requestBytes = Buffer.byteLength(system + user, "utf8");
+    if (requestBytes > MAX_EXPLANATION_BYTES) throw new Error("The folder has too much to summarize in one request; nothing was sent.");
+    assertNotCancelled(signal);
+    if (descriptor.kind !== "mock" && !(await this.options.authorizeExternalData(root, descriptor, requestBytes, signal))) {
+      throw new DOMException("External code sharing was not authorized.", "AbortError");
+    }
+    const generated = await (await this.options.createProvider(descriptor)).summarizeFolder(prompt, signal);
+    assertNotCancelled(signal);
+    const needing = new Set(input.parts.filter((part) => !part.summary).map((part) => part.name));
+    const value: FolderSummary = { ...generated.value, parts: generated.value.parts.filter((part) => needing.has(part.name)) };
+    const record: FolderSummaryRecord = {
+      path: input.path,
+      value,
+      fingerprint: folderInputFingerprint(input),
+      provider: descriptor.kind,
+      model: descriptor.modelId,
+      promptVersion: EXPLANATION_PROMPT_VERSION,
+      savedAt: Date.now()
+    };
+    await this.options.store.update(root, (current) => this.fence(root) !== startingFence ? current : {
+      ...current,
+      folderSummaries: { ...current.folderSummaries, [folderSummaryKey(input.path, descriptor)]: record }
+    });
+    return { value, usage: generated.usage };
   }
 
   /**

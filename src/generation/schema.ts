@@ -2,6 +2,7 @@ import type {
   ExplanationFormat,
   FileSummary,
   Flowchart,
+  FolderSummary,
   FlowNode,
   FunctionExplanation,
   PseudocodeLine,
@@ -96,6 +97,15 @@ export function formatSchemaFor(format: ExplanationFormat): Record<string, unkno
 }
 
 export const fileSummarySchema = objectSchema({ summary: string }, ["summary"]);
+
+export const folderSummarySchema = objectSchema(
+  {
+    summary: string,
+    overview: string,
+    parts: { type: "array", items: objectSchema({ name: string, summary: string }, ["name", "summary"]) }
+  },
+  ["summary", "overview", "parts"]
+);
 
 function record(value: unknown): Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -304,6 +314,23 @@ export function parseFormat(value: unknown, format: ExplanationFormat): Pick<Fun
   return format === "pseudocode"
     ? { pseudocode: parsePseudocode(source.pseudocode) }
     : { flowchart: parseFlowchart(source.flowchart) };
+}
+
+/** A folder summary; parts with blank or unusable text are dropped rather than failing it. */
+export function parseFolderSummary(value: unknown): FolderSummary {
+  const source = record(value);
+  const parts = Array.isArray(source.parts) ? source.parts.slice(0, 200) : [];
+  return {
+    summary: readText(source, "summary", 600).trim(),
+    overview: readText(source, "overview", 2_500).trim(),
+    parts: parts.flatMap((part) => {
+      if (typeof part !== "object" || part === null) return [];
+      const { name, summary } = part as Record<string, unknown>;
+      return typeof name === "string" && typeof summary === "string" && name.trim() && summary.trim() && summary.length <= 400
+        ? [{ name: name.trim(), summary: summary.trim() }]
+        : [];
+    })
+  };
 }
 
 export function parseFileSummary(value: unknown): FileSummary {

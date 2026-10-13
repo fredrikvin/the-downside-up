@@ -73,6 +73,8 @@ export interface FolderChildView {
   readonly countCapped?: boolean;
   /** Saved one-sentence AI summary; `current` is false when the file changed since. */
   readonly summary?: { readonly text: string; readonly current: boolean };
+  /** For a part without a summary of its own: the folder summary's sentence about it, inferred from names. */
+  readonly partSummary?: string;
 }
 
 /** A folder preview: its children and the import structure between them. Local only. */
@@ -87,6 +89,13 @@ export interface FolderView {
     readonly edges: ReadonlyArray<{ readonly from: string; readonly to: string; readonly weight: number }>;
   };
   readonly limitations: readonly string[];
+  /** The folder's saved AI summary; `current` is false when its contents changed since. */
+  readonly ai?: { readonly summary: string; readonly overview: string; readonly current: boolean };
+  /** Whether a summary is being generated. */
+  readonly summarizing: boolean;
+  /** Whether a summary can be requested now (its input is ready). */
+  readonly canSummarize: boolean;
+  readonly summaryError?: string;
 }
 
 export interface PanelState {
@@ -114,6 +123,7 @@ export type PanelAction =
   | { readonly type: "regenerate"; readonly entryId: string }
   | { readonly type: "cancelEntry"; readonly entryId: string }
   | { readonly type: "cancel" }
+  | { readonly type: "summarizeFolder" }
   | { readonly type: "refreshContext" }
   | { readonly type: "clearCache" }
   | { readonly type: "chooseModel" }
@@ -1107,9 +1117,34 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
       return scroll;
     }
 
+    /** The folder's AI summary, or a way to request one. */
+    function renderFolderSummary(folder) {
+      const box = el("div", "folder-ai");
+      if (folder.ai) {
+        const summary = el("p", "summary", folder.ai.summary);
+        summary.title = "AI-generated summary of this folder";
+        box.append(summary);
+        if (folder.ai.overview) box.append(el("p", "", folder.ai.overview));
+      }
+      if (folder.summarizing) {
+        const loading = el("div", "loading");
+        loading.setAttribute("role", "status");
+        loading.append(el("span", "spinner"), el("span", "", "Summarizing this folder…"));
+        box.append(loading);
+      } else if (folder.canSummarize && (!folder.ai || !folder.ai.current)) {
+        const note = el("p", "muted small");
+        if (folder.ai) note.append(document.createTextNode("Outdated: the folder's contents changed since. "));
+        note.append(action(folder.ai ? "Regenerate" : "Summarize this folder", () => post({ type: "summarizeFolder" })));
+        note.append(document.createTextNode(" · sends the names, saved summaries, and function names of its contents, the imports between them, and its README; no code."));
+        box.append(note);
+      }
+      if (folder.summaryError) box.append(el("p", "error", folder.summaryError));
+      return box;
+    }
+
     /** A folder preview: the structure diagram, then subfolders and files with their saved summaries. */
     function renderFolder(folder) {
-      const parts = [];
+      const parts = [renderFolderSummary(folder)];
       const structure = folder.structure;
       if (structure && structure.nodes.length > 1) {
         parts.push(el("h2", "folder-heading", "Structure"));
@@ -1128,7 +1163,11 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
         item.append(el("span", "child-meta muted small", childMeta(child)));
         if (child.summary) {
           const summary = el("p", "child-summary" + (child.summary.current ? "" : " muted"), child.summary.text);
-          summary.title = child.summary.current ? "AI-generated summary of this file" : "AI-generated summary; the file changed since";
+          summary.title = child.summary.current ? "AI-generated summary" : "AI-generated summary; it changed since";
+          item.append(summary);
+        } else if (child.partSummary) {
+          const summary = el("p", "child-summary muted", child.partSummary);
+          summary.title = "From the folder's AI summary, inferred from names only";
           item.append(summary);
         }
         list.append(item);
@@ -1358,7 +1397,7 @@ export class ExplanationPanel {
         const type = fields.type;
         if (type === "ready") {
           this.replay();
-        } else if (type === "cancel" || type === "refreshContext" || type === "clearCache" || type === "chooseModel") {
+        } else if (type === "cancel" || type === "refreshContext" || type === "clearCache" || type === "chooseModel" || type === "summarizeFolder") {
           onAction({ type });
         } else if (type === "expand" || type === "collapse" || type === "regenerate" || type === "cancelEntry") {
           const entryId = stringField("entryId");

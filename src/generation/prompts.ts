@@ -3,6 +3,7 @@ import type { ExplanationFormat } from "../core/types";
 import type {
   ExplanationPromptInput,
   FileSummaryPromptInput,
+  FolderSummaryPromptInput,
   FormatPromptInput,
   OverviewReviewPromptInput,
   RepositoryPromptInput
@@ -108,6 +109,24 @@ export function fileSummaryPrompt(input: FileSummaryPromptInput): [string, strin
       repositoryPurpose: input.repositoryPurpose,
       source: input.source,
       ...(input.truncated ? { note: "The source was truncated to fit the request budget." } : {})
+    })
+  ];
+}
+
+export function folderSummaryPrompt(input: FolderSummaryPromptInput): [string, string] {
+  return [
+    `${plainSystem} Summarize one folder of a code repository from its contents' names, their saved one-sentence summaries, the names of functions and types in files without a summary, the imports between them, and the folder's README when given; the code itself is not included, so say only what this supports. Fill the fields as follows.
+summary: one plain sentence of at most 35 words on what the folder is for${input.path ? "" : " (it is the repository root, so on what the project is for)"}.
+overview: two to four plain sentences on how its parts fit together, such as which part is the entry point, which ones others build on, and where a newcomer should start reading.
+parts: one entry for each listed file or folder that has no summary, with its name exactly as listed and one plain sentence of at most 25 words on what it most likely does; empty when every part has a summary. Do not invent parts.`,
+    JSON.stringify({
+      task: "Summarize a folder in plain language.",
+      repository: input.repositoryName,
+      folder: input.path || "(repository root)",
+      repositoryPurpose: input.repositoryPurpose,
+      parts: input.parts,
+      importsBetweenParts: input.imports,
+      ...(input.readme ? { readme: input.readme } : {})
     })
   ];
 }

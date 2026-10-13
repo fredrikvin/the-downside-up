@@ -112,7 +112,18 @@ that file. The diagram is built locally from imports (Rust, Go, JavaScript,
 and TypeScript, including `tsconfig` path aliases); it does not show other
 connections, such as dependency injection or calls between services, and
 nothing is generated or sent. The folder preview stays until you switch to
-another file. The development fixtures are in `fixtures/rust-app`,
+another file.
+
+A folder (or the whole project) can also get an AI summary: choose
+**Summarize this folder** at the top of its preview. It gives one sentence on
+what the folder is for, a few on how its parts fit together and where to start
+reading, and a sentence for each file or subfolder that has no summary of its
+own (marked as inferred from names). The request holds only names: the
+contents' names and saved summaries, the names of functions and types in
+files without a summary, the imports between them, and the folder's README;
+no code. Summarize subfolders first, and their summaries feed the parent's.
+A saved summary is shown whenever you preview the folder, and marked
+outdated when its contents change; choose **Regenerate** to update it. The development fixtures are in `fixtures/rust-app`,
 `fixtures/go-app`, `fixtures/js-app`, and `fixtures/react-app`.
 
 To install a locally packaged VSIX, run

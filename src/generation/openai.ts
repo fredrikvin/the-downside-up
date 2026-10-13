@@ -1,5 +1,6 @@
 import type {
   FileSummary,
+  FolderSummary,
   FunctionExplanation,
   GenerationResult,
   RepositoryOverview
@@ -9,16 +10,19 @@ import {
   explanationSchemaFor,
   formatSchemaFor,
   fileSummarySchema,
+  folderSummarySchema,
   overviewSchema,
   parseExplanation,
   parseFileSummary,
+  parseFolderSummary,
   parseFormat,
   parseOverview
 } from "./schema";
-import { explanationPrompt, fileSummaryPrompt, formatPrompt, overviewPrompt, reviewPrompt } from "./prompts";
+import { explanationPrompt, fileSummaryPrompt, folderSummaryPrompt, formatPrompt, overviewPrompt, reviewPrompt } from "./prompts";
 import type {
   ExplanationPromptInput,
   FileSummaryPromptInput,
+  FolderSummaryPromptInput,
   FormatPromptInput,
   GenerationProvider,
   OverviewReviewPromptInput,
@@ -74,6 +78,14 @@ export class OpenAIProvider implements GenerationProvider {
   ): Promise<GenerationResult<FileSummary>> {
     const [system, user] = fileSummaryPrompt(input);
     return this.request(system, user, "file_summary", fileSummarySchema, parseFileSummary, signal);
+  }
+
+  async summarizeFolder(
+    input: FolderSummaryPromptInput,
+    signal?: AbortSignal
+  ): Promise<GenerationResult<FolderSummary>> {
+    const [system, user] = folderSummaryPrompt(input);
+    return this.request(system, user, "folder_summary", folderSummarySchema, parseFolderSummary, signal);
   }
 
   async explainFormat(

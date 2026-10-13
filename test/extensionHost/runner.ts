@@ -352,6 +352,13 @@ export async function run(): Promise<void> {
   assert.ok(goFolder.children.includes("folder inventory") && goFolder.children.includes("file main.go"));
   assert.ok(!goFolder.children.some((child) => child.includes("legacy")), "Excluded folders are not listed.");
   assert.ok(goFolder.edges.includes("main.go > inventory") && goFolder.edges.includes("storage > inventory"));
+  await waitFor(async () => api.shownFolder()?.ready ? true : undefined, "the folder summary input");
+  assert.equal(api.shownFolder()?.summary, undefined, "Opening a folder preview generates nothing.");
+  await api.summarizeFolder();
+  assert.match(api.shownFolder()?.summary ?? "", /Mock summary of the repository/);
+  await api.previewFolder("inventory");
+  await api.previewFolder("");
+  await waitFor(async () => api.shownFolder()?.current ? true : undefined, "the saved folder summary to be shown again as current");
   await vscode.commands.executeCommand("downsideUp.showFileOverview", vscode.Uri.file(resolve(goRoot, "inventory")));
   await waitFor(async () => api.shownFolder()?.path === "inventory" ? true : undefined, "the Explorer command to preview a folder");
   // Opened in another editor group, so main.go's editor, used below, stays open.

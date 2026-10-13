@@ -1,6 +1,7 @@
 import type {
   ExplanationFormat,
   FileSummary,
+  FolderSummary,
   FunctionExplanation,
   GenerationResult,
   ProviderKind,
@@ -52,6 +53,28 @@ export interface FileSummaryPromptInput {
   readonly repositoryPurpose?: string;
 }
 
+/** One file or subfolder of a folder being summarized; names and summaries only, never code. */
+export interface FolderPartInput {
+  readonly name: string;
+  readonly kind: "file" | "folder";
+  /** Its saved summary, when there is one. */
+  readonly summary?: string;
+  /** For files without a summary: names of their functions and types. For folders without one: their contents' names. */
+  readonly contents?: readonly string[];
+}
+
+export interface FolderSummaryPromptInput {
+  readonly repositoryName: string;
+  /** Repository-relative folder path, or "" for the repository root. */
+  readonly path: string;
+  readonly repositoryPurpose?: string;
+  readonly parts: readonly FolderPartInput[];
+  /** Import edges between the parts, by name. */
+  readonly imports: ReadonlyArray<{ readonly from: string; readonly to: string }>;
+  /** The folder's README, bounded. */
+  readonly readme?: string;
+}
+
 export interface OverviewReviewPromptInput extends RepositoryPromptInput {
   readonly previous: RepositoryOverview;
   readonly changedPaths: readonly string[];
@@ -76,6 +99,10 @@ export interface GenerationProvider {
     input: FileSummaryPromptInput,
     signal?: AbortSignal
   ): Promise<GenerationResult<FileSummary>>;
+  summarizeFolder(
+    input: FolderSummaryPromptInput,
+    signal?: AbortSignal
+  ): Promise<GenerationResult<FolderSummary>>;
   explainFormat(
     input: FormatPromptInput,
     signal?: AbortSignal

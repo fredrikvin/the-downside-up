@@ -134,6 +134,28 @@ export interface FileSummary {
   readonly summary: string;
 }
 
+/** A plain-language summary of a folder, made from its contents' names and saved summaries. */
+export interface FolderSummary {
+  /** One sentence on what the folder is for. */
+  readonly summary: string;
+  /** A few sentences on how its parts fit together. */
+  readonly overview: string;
+  /** One sentence for each listed file or subfolder that had no summary of its own. */
+  readonly parts: ReadonlyArray<{ readonly name: string; readonly summary: string }>;
+}
+
+export interface FolderSummaryRecord {
+  /** Repository-relative folder path, or "" for the repository root. */
+  readonly path: string;
+  readonly value: FolderSummary;
+  /** Fingerprint of the input it was made from (names, saved summaries, outlines, README, imports). */
+  readonly fingerprint: string;
+  readonly provider: ProviderKind;
+  readonly model: string;
+  readonly promptVersion: string;
+  readonly savedAt: number;
+}
+
 export interface Usage {
   readonly inputTokens: number;
   readonly outputTokens: number;
@@ -197,6 +219,8 @@ export interface RepositoryCache {
   readonly explanations: Record<string, ExplanationRecord>;
   /** AI file summaries keyed by path, provider, model, and prompt version. */
   readonly fileSummaries?: Record<string, FileSummaryRecord>;
+  /** AI folder summaries keyed by path, provider, model, and prompt version. */
+  readonly folderSummaries?: Record<string, FolderSummaryRecord>;
 }
 
 export interface FileSummaryRecord {

@@ -2,14 +2,16 @@ import * as vscode from "vscode";
 import { estimateTokens } from "../core/fingerprint";
 import type {
   FileSummary,
+  FolderSummary,
   FunctionExplanation,
   GenerationResult,
   RepositoryOverview
 } from "../core/types";
-import { explanationPrompt, fileSummaryPrompt, formatPrompt, overviewPrompt, reviewPrompt } from "./prompts";
+import { explanationPrompt, fileSummaryPrompt, folderSummaryPrompt, formatPrompt, overviewPrompt, reviewPrompt } from "./prompts";
 import type {
   ExplanationPromptInput,
   FileSummaryPromptInput,
+  FolderSummaryPromptInput,
   FormatPromptInput,
   GenerationProvider,
   OverviewReviewPromptInput,
@@ -19,9 +21,11 @@ import {
   explanationSchemaFor,
   formatSchemaFor,
   fileSummarySchema,
+  folderSummarySchema,
   overviewSchema,
   parseExplanation,
   parseFileSummary,
+  parseFolderSummary,
   parseFormat,
   parseOverview
 } from "./schema";
@@ -133,6 +137,14 @@ export class LanguageModelProvider implements GenerationProvider {
   ): Promise<GenerationResult<FileSummary>> {
     const [system, user] = fileSummaryPrompt(input);
     return this.request(system, user, fileSummarySchema, parseFileSummary, signal);
+  }
+
+  async summarizeFolder(
+    input: FolderSummaryPromptInput,
+    signal?: AbortSignal
+  ): Promise<GenerationResult<FolderSummary>> {
+    const [system, user] = folderSummaryPrompt(input);
+    return this.request(system, user, folderSummarySchema, parseFolderSummary, signal);
   }
 
   async explainFormat(
