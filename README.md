@@ -134,6 +134,16 @@ The request holds file paths, saved file summaries, function names, and the
 imports between parts, not code, so explaining a few functions first (which
 saves file summaries) gives better flows.
 
+**Summarize with all subfolders** does both for a whole tree in one go. It
+first checks every folder below locally, then says how many requests it will
+send and roughly how many tokens, and sends nothing until you accept. It then
+summarizes each folder without a current summary, deepest first so every
+summary builds on its subfolders' new ones, and finally describes the main
+flows if they are not current. Up to 100 folders are summarized per run (in
+trees of at most 400 folders); for larger trees, start with their subfolders.
+The preview shows the progress, and **Cancel** (or changing the overview
+model) stops the run; finished summaries are kept.
+
 Project-level work (the repository overview and folder summaries) happens
 far less often than explaining functions, so it can use a stronger model:
 run **Downside Up: Choose Overview Model** (or, with OpenAI, set

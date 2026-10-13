@@ -109,6 +109,10 @@ export interface FolderView {
   readonly describingFlows: boolean;
   readonly canDescribeFlows: boolean;
   readonly flowsError?: string;
+  /** Whether the folder and all its subfolders can be summarized in one run. */
+  readonly canSummarizeTree: boolean;
+  /** Progress of a run over the folder tree that covers this folder. */
+  readonly tree?: { readonly name: string; readonly done: number; readonly total: number; readonly running: readonly string[] };
 }
 
 export interface PanelState {
@@ -137,6 +141,7 @@ export type PanelAction =
   | { readonly type: "cancelEntry"; readonly entryId: string }
   | { readonly type: "cancel" }
   | { readonly type: "summarizeFolder" }
+  | { readonly type: "summarizeTree" }
   | { readonly type: "describeFlows" }
   | { readonly type: "refreshContext" }
   | { readonly type: "clearCache" }
@@ -1204,6 +1209,18 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
         box.append(note);
       }
       if (folder.summaryError) box.append(el("p", "error", folder.summaryError));
+      if (folder.tree) {
+        const loading = el("div", "loading");
+        loading.setAttribute("role", "status");
+        const running = folder.tree.running.length ? " · now " + folder.tree.running.join(", ") : "";
+        loading.append(el("span", "spinner"), el("span", "", "Summarizing " + folder.tree.name + " and its subfolders: " + folder.tree.done + " of " + folder.tree.total + " requests done" + running + "…"));
+        box.append(loading);
+      } else if (folder.canSummarizeTree && !folder.summarizing) {
+        const note = el("p", "muted small");
+        note.append(action("Summarize with all subfolders", () => post({ type: "summarizeTree" })));
+        note.append(document.createTextNode(" · summarizes every folder here without a current summary, deepest first, then describes the main flows; shows the number of requests before sending anything."));
+        box.append(note);
+      }
       return box;
     }
 
@@ -1483,7 +1500,7 @@ export class ExplanationPanel {
         const type = fields.type;
         if (type === "ready") {
           this.replay();
-        } else if (type === "cancel" || type === "refreshContext" || type === "clearCache" || type === "chooseModel" || type === "summarizeFolder" || type === "describeFlows") {
+        } else if (type === "cancel" || type === "refreshContext" || type === "clearCache" || type === "chooseModel" || type === "summarizeFolder" || type === "summarizeTree" || type === "describeFlows") {
           onAction({ type });
         } else if (type === "expand" || type === "collapse" || type === "regenerate" || type === "cancelEntry") {
           const entryId = stringField("entryId");

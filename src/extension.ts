@@ -19,7 +19,9 @@ import {
 } from "./context/inventory";
 import { folderStructure, type StructureGraph } from "./context/structure";
 import { folderSummaryInput, projectFlowsInput } from "./context/folderInput";
+import { collectFolderTree, foldersToSummarize, type FolderTree } from "./context/folderTree";
 import type { FolderSummaryPromptInput, ProjectFlowsPromptInput } from "./generation/provider";
+import { folderSummaryPrompt, projectFlowsPrompt } from "./generation/prompts";
 import { findCalledFunctions, type CalledFunction } from "./context/related";
 import { buildFileOverview, type FileOverview, type OutlineEntry } from "./context/fileOverview";
 import type {
@@ -30,7 +32,8 @@ import type {
   FunctionTarget,
   LineLinked,
   ProjectFlow,
-  RepositoryOverview
+  RepositoryOverview,
+  Usage
 } from "./core/types";
 import { MockProvider } from "./generation/mock";
 import { OpenAIProvider } from "./generation/openai";
@@ -121,6 +124,33 @@ interface FolderPreview {
   readonly flowsInput?: ProjectFlowsPromptInput;
   readonly flows?: { flows: readonly ProjectFlow[]; current: boolean };
   readonly flowsError?: string;
+}
+
+const plural = (count: number, word: string): string => `${count} ${word}${count === 1 ? "" : "s"}`;
+
+/** A run that summarizes a folder and every subfolder below it, deepest first, then describes its main flows. */
+interface FolderTreeJob {
+  readonly root: string;
+  readonly path: string;
+  /** Every folder in the tree, so previews inside it show the run's progress. */
+  readonly folders: ReadonlySet<string>;
+  readonly controller: AbortController;
+  readonly total: number;
+  done: number;
+  readonly running: Set<string>;
+  readonly failed: string[];
+  readonly usages: Usage[];
+}
+
+/** A checked and accepted tree run: the folders to summarize, leaves first, and whether flows follow. */
+interface FolderTreePlan {
+  readonly root: string;
+  readonly path: string;
+  readonly tree: FolderTree;
+  readonly todo: ReadonlySet<string>;
+  readonly flowsNeeded: boolean;
+  /** The overview model the reader accepted; the run stops if it changes. */
+  readonly model: ProviderDescriptor;
 }
 
 /** A background job that waits to be woken when a request slot frees or the reader moves. */
@@ -218,9 +248,14 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
    * twice when the reader moves away and back.
    */
   const folderJobs = new Map<string, AbortController>();
-  const folderJobKey = (kind: "summary" | "flows", root: string, path: string): string =>
+  const folderJobKey = (kind: "summary" | "flows" | "tree", root: string, path: string): string =>
     [kind, root, path, describeOverviewProvider().kind, describeOverviewProvider().modelId].join("\0");
   let folderEpoch = 0;
+  let treeJob: FolderTreeJob | undefined;
+  /** Set while a tree run is being checked and confirmed, before it starts. */
+  let planningTree = false;
+  /** Whether a tree run covers this folder, so its own requests wait for the run. */
+  const inTreeJob = (root: string, path: string): boolean => Boolean(treeJob && treeJob.root === root && treeJob.folders.has(path));
   /** Signals of prefetch requests, so the consent check never prompts for them. */
   const prefetchSignals = new WeakSet<AbortSignal>();
   /** One code-sharing prompt per repository and model, shared by parallel requests. */
@@ -776,7 +811,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     limitations: [...shown.limitations, ...(shown.structure?.limitations ?? [])],
     ...(shown.ai ? { ai: { summary: shown.ai.value.summary, overview: shown.ai.value.overview, current: shown.ai.current } } : {}),
     summarizing: folderJobs.has(folderJobKey("summary", shown.root, shown.path)),
-    canSummarize: Boolean(shown.input),
+    canSummarize: Boolean(shown.input) && !inTreeJob(shown.root, shown.path),
     ...(shown.summaryError ? { summaryError: shown.summaryError } : {}),
     ...(shown.flows
       ? {
@@ -794,7 +829,21 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
         }
       : {}),
     describingFlows: folderJobs.has(folderJobKey("flows", shown.root, shown.path)),
-    canDescribeFlows: Boolean(shown.flowsInput && shown.flowsInput.catalog.length),
+    canDescribeFlows: Boolean(shown.flowsInput && shown.flowsInput.catalog.length) && !inTreeJob(shown.root, shown.path),
+    canSummarizeTree: Boolean(shown.input) && !treeJob && !planningTree && folderJobs.size === 0
+      && shown.children.some((child) => child.kind === "folder"),
+    ...(treeJob && inTreeJob(shown.root, shown.path)
+      ? {
+          tree: {
+            name: treeJob.path ? basename(treeJob.path) : basename(treeJob.root),
+            done: treeJob.done,
+            total: treeJob.total,
+            running: [...treeJob.running].map((folder) => treeJob!.path && folder.startsWith(`${treeJob!.path}/`)
+              ? folder.slice(treeJob!.path.length + 1)
+              : folder || basename(treeJob!.root))
+          }
+        }
+      : {}),
     ...(shown.flowsError ? { flowsError: shown.flowsError } : {})
     };
   };
@@ -878,18 +927,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     if (!current() || !structure) return;
     folderPreview = { ...folderPreview!, structure };
     render();
-    // Subfolders' saved summaries count like files' when listing and summarizing.
-    const subfolderSummaries = new Map<string, { summary: string; current: boolean }>();
-    for (const child of children.filter((entry) => entry.kind === "folder")) {
-      const saved = await service.savedFolderSummary(root, child.path).catch(() => undefined);
-      if (saved) subfolderSummaries.set(child.path, { summary: saved, current: true });
-    }
-    const input = await folderSummaryInput(basename(root), path, children, structure, {
-      fileSummary: (file) => summaries.get(file)?.summary,
-      folderSummary: async (folder) => subfolderSummaries.get(folder)?.summary,
-      text: (file) => shareableText(root, file),
-      contents: async (folder) => (await listFolder(root, folder)).children.map((entry) => entry.name + (entry.kind === "folder" ? "/" : ""))
-    }).catch(() => undefined);
+    const { subfolderSummaries, input } = await summaryInputFor(root, path, children, summaries, structure);
     if (!current() || !input) return;
     const saved = await service.findFolderSummary(root, input).catch(() => undefined);
     if (!current()) return;
@@ -903,10 +941,49 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     await loadFlowsInput(root, path, epoch);
   };
 
-  /** Builds what main flows would be made from, and looks up saved ones; local only. */
-  const loadFlowsInput = async (root: string, path: string, epoch: number): Promise<void> => {
-    const current = () => epoch === folderEpoch && folderPreview?.path === path && folderPreview.root === root;
-    if (!current()) return;
+  /**
+   * What a folder summary would be made from: its parts with their saved
+   * summaries (subfolders' summaries count like files'), its imports, and
+   * its README. Local only.
+   */
+  const summaryInputFor = async (
+    root: string,
+    path: string,
+    children: readonly FolderChild[],
+    summaries: ReadonlyMap<string, { summary: string }>,
+    structure: StructureGraph | undefined
+  ): Promise<{ subfolderSummaries: Map<string, { summary: string; current: boolean }>; input?: FolderSummaryPromptInput }> => {
+    const subfolderSummaries = new Map<string, { summary: string; current: boolean }>();
+    for (const child of children.filter((entry) => entry.kind === "folder")) {
+      const saved = await service.savedFolderSummary(root, child.path).catch(() => undefined);
+      if (saved) subfolderSummaries.set(child.path, { summary: saved, current: true });
+    }
+    const input = await folderSummaryInput(basename(root), path, children, structure, {
+      fileSummary: (file) => summaries.get(file)?.summary,
+      folderSummary: async (folder) => subfolderSummaries.get(folder)?.summary,
+      text: (file) => shareableText(root, file),
+      contents: async (folder) => (await listFolder(root, folder)).children.map((entry) => entry.name + (entry.kind === "folder" ? "/" : ""))
+    }).catch(() => undefined);
+    return { subfolderSummaries, ...(input ? { input } : {}) };
+  };
+
+  /** Lists a folder that is not shown and builds its summary input, for runs over many folders. */
+  const prepareFolderSummary = async (root: string, path: string): Promise<{ input: FolderSummaryPromptInput; structure?: StructureGraph } | undefined> => {
+    const { children } = await listFolder(root, path);
+    const files = children.filter((child) => child.kind === "file").map((child) => child.path);
+    const summaries = await service.findFileSummaries(root, files, (file) => repositoryText(root, file)).catch(() => new Map<string, { summary: string; current: boolean }>());
+    const structure = await folderStructure(root, path, children).catch(() => undefined);
+    const { input } = await summaryInputFor(root, path, children, summaries, structure);
+    return input ? { input, ...(structure ? { structure } : {}) } : undefined;
+  };
+
+  /** What main flows under a folder would be made from; local only. */
+  const flowsInputFor = async (
+    root: string,
+    path: string,
+    structure: StructureGraph | undefined,
+    folderSummary: string | undefined
+  ): Promise<ProjectFlowsPromptInput | undefined> => {
     const [{ files }, fileSummaries, overview] = await Promise.all([
       listEligibleFiles(root, path),
       service.savedFileSummaries(root).catch(() => new Map<string, string>()),
@@ -915,25 +992,32 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     for (const language of new Set(files.map((file) => bundledLanguageFor({ path: file })).filter((entry) => entry !== undefined))) {
       await initializeLanguage(language!, context.extensionPath).catch(() => undefined);
     }
-    if (!current()) return;
-    const flowsInput = await projectFlowsInput(basename(root), path, files, folderPreview!.structure, {
+    return projectFlowsInput(basename(root), path, files, structure, {
       ...(overview ? { overview } : {}),
-      ...(folderPreview!.ai ? { folderSummary: folderPreview!.ai.value.summary } : {})
+      ...(folderSummary ? { folderSummary } : {})
     }, {
       fileSummaries,
       text: (file) => shareableText(root, file)
     }).catch(() => undefined);
+  };
+
+  /** Builds what main flows would be made from, and looks up saved ones; local only. */
+  const loadFlowsInput = async (root: string, path: string, epoch: number): Promise<void> => {
+    const current = () => epoch === folderEpoch && folderPreview?.path === path && folderPreview.root === root;
+    if (!current()) return;
+    const flowsInput = await flowsInputFor(root, path, folderPreview!.structure, folderPreview!.ai?.value.summary);
     if (!current() || !flowsInput) return;
     const flows = await service.findProjectFlows(root, flowsInput).catch(() => undefined);
     if (!current()) return;
-    folderPreview = { ...folderPreview!, flowsInput, ...(flows ? { flows } : {}) };
+    const { flows: _previous, ...rest } = folderPreview!;
+    folderPreview = { ...rest, flowsInput, ...(flows ? { flows } : {}) };
     render();
   };
 
   /** Describes the shown folder's main flows on explicit request; it may ask for code-sharing approval. */
   const describeShownFlows = async (): Promise<void> => {
     const shown = folderPreview;
-    if (!shown?.flowsInput) return;
+    if (!shown?.flowsInput || inTreeJob(shown.root, shown.path)) return;
     if (!(await ensureLanguageModelSelected())) return;
     const key = folderJobKey("flows", shown.root, shown.path);
     if (folderJobs.has(key)) return;
@@ -957,7 +1041,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
   /** Generates the shown folder's summary on explicit request; it may ask for code-sharing approval. */
   const summarizeShownFolder = async (): Promise<void> => {
     const shown = folderPreview;
-    if (!shown?.input) return;
+    if (!shown?.input || inTreeJob(shown.root, shown.path)) return;
     if (!(await ensureLanguageModelSelected())) return;
     const key = folderJobKey("summary", shown.root, shown.path);
     if (folderJobs.has(key)) return;
@@ -977,6 +1061,252 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       if (folderJobs.get(key) === controller) folderJobs.delete(key);
     }
     render();
+  };
+
+  const MAX_TREE_FOLDERS = 400;
+  const MAX_TREE_REQUESTS = 100;
+
+  /**
+   * Summarizes the shown folder and every subfolder below it that has no
+   * current summary, deepest first so each folder's request holds its
+   * subfolders' new summaries, then describes the folder's main flows. The
+   * whole tree is checked locally first, and nothing is sent until the reader
+   * accepts the number of requests and the estimated size. Each request may
+   * ask for code-sharing approval like a single folder summary.
+   */
+  const summarizeShownTree = async (confirm = true): Promise<void> => {
+    const shown = folderPreview;
+    if (!shown?.input || treeJob || planningTree || preview) return;
+    // Marked before the first wait, so a second click while checking starts nothing.
+    planningTree = true;
+    render();
+    let plan: FolderTreePlan | undefined;
+    try {
+      plan = await planFolderTree(shown.root, shown.path, confirm);
+    } finally {
+      planningTree = false;
+      render();
+    }
+    if (plan) await runFolderTree(plan);
+  };
+
+  /** The shown folder's name in notices about a tree run. */
+  const treeName = (root: string, path: string): string => path || basename(root);
+
+  /** Notices about a tree run, shown only while the reader looks at a folder in the tree. */
+  const treeNotice = (root: string, folders: ReadonlySet<string> | undefined, path: string, next: PanelNotice | undefined): void => {
+    if (preview || folderPreview?.root !== root || !(folders ? folders.has(folderPreview.path) : folderPreview.path === path)) return;
+    notice = next;
+    render();
+  };
+
+  /** Checks the tree locally and asks before anything is sent; undefined when there is nothing to do. */
+  const planFolderTree = async (root: string, path: string, confirm: boolean): Promise<FolderTreePlan | undefined> => {
+    if (!(await ensureLanguageModelSelected())) return undefined;
+    const name = treeName(root, path);
+    const say = (next: PanelNotice | undefined) => treeNotice(root, undefined, path, next);
+    const busyMessage = `Wait for the folder requests in progress to finish, or cancel them, before summarizing ${name} with its subfolders.`;
+    if (folderJobs.size) {
+      say({ tone: "info", text: busyMessage });
+      return undefined;
+    }
+    const model = describeOverviewProvider();
+    say({ tone: "progress", text: `Checking which folders under ${name} need a summary…` });
+    const tree = await collectFolderTree(
+      path,
+      async (folder) => (await listFolder(root, folder)).children.filter((child) => child.kind === "folder").map((child) => child.path),
+      MAX_TREE_FOLDERS
+    ).catch(() => undefined);
+    if (!tree) {
+      say({ tone: "info", text: `${name} has more than ${MAX_TREE_FOLDERS} folders, or one could not be listed. Summarize smaller folders first.` });
+      return undefined;
+    }
+    const prepared = new Map<string, { input: FolderSummaryPromptInput; structure?: StructureGraph }>();
+    const current = new Set<string>();
+    for (const folder of tree.folders) {
+      const ready = await prepareFolderSummary(root, folder).catch(() => undefined);
+      if (!ready) continue;
+      prepared.set(folder, ready);
+      if ((await service.findFolderSummary(root, ready.input).catch(() => undefined))?.current) current.add(folder);
+    }
+    const todo = new Set([...foldersToSummarize(tree, current)].filter((folder) => prepared.has(folder)));
+    const flowsInput = await flowsInputFor(root, path, prepared.get(path)?.structure, undefined);
+    const flowsNeeded = Boolean(flowsInput?.catalog.length)
+      && !(await service.findProjectFlows(root, flowsInput!).catch(() => undefined))?.current;
+    if (todo.size === 0 && !flowsNeeded) {
+      say({ tone: "info", text: `Every folder under ${name} (${tree.folders.length}) has a current summary${flowsInput?.catalog.length ? ", and its main flows are current" : ""}.` });
+      return undefined;
+    }
+    if (todo.size > MAX_TREE_REQUESTS) {
+      say({ tone: "info", text: `${plural(todo.size, "folder")} under ${name} need a summary, more than ${MAX_TREE_REQUESTS} in one run. Summarize smaller folders first.` });
+      return undefined;
+    }
+    const requests = todo.size + (flowsNeeded ? 1 : 0);
+    if (confirm) {
+      const bytes = [...todo].reduce((total, folder) => total + Buffer.byteLength(folderSummaryPrompt(prepared.get(folder)!.input).join("\n"), "utf8"), 0)
+        + (flowsNeeded ? Buffer.byteLength(projectFlowsPrompt(flowsInput!).join("\n"), "utf8") : 0);
+      const skipped = tree.folders.length - todo.size;
+      const accept = `Send ${plural(requests, "request")}`;
+      const answer = await vscode.window.showInformationMessage(
+        `Summarize ${plural(todo.size, "folder")} under ${name}, deepest first${flowsNeeded ? ", then describe its main flows" : ""}?`,
+        {
+          modal: true,
+          detail: [
+            `${plural(requests, "request")} to ${model.modelId || model.kind}, about ${Math.ceil(bytes / 4).toLocaleString()} input tokens in all (byte-based estimate), plus the answers.`,
+            skipped ? `${plural(skipped, "folder")} already ${skipped === 1 ? "has" : "have"} a current summary and ${skipped === 1 ? "is" : "are"} skipped.` : "",
+            "Requests hold names, saved summaries, function names, imports, and READMEs; no source code."
+          ].filter(Boolean).join("\n\n")
+        },
+        accept
+      );
+      if (answer !== accept) {
+        say(undefined);
+        return undefined;
+      }
+    }
+    const now = describeOverviewProvider();
+    if (now.kind !== model.kind || now.modelId !== model.modelId) {
+      say({ tone: "info", text: `The overview model changed while checking ${name}; nothing was sent.` });
+      return undefined;
+    }
+    if (folderJobs.size) {
+      say({ tone: "info", text: busyMessage });
+      return undefined;
+    }
+    say(undefined);
+    return { root, path, tree, todo, flowsNeeded, model };
+  };
+
+  /** Sends a planned tree run's requests, deepest folders first, then the flows. */
+  const runFolderTree = async (plan: FolderTreePlan): Promise<void> => {
+    const { root, path, tree, todo, flowsNeeded, model } = plan;
+    if (treeJob) return;
+    const controller = new AbortController();
+    const job: FolderTreeJob = {
+      root,
+      path,
+      folders: new Set(tree.folders),
+      controller,
+      total: todo.size + (flowsNeeded ? 1 : 0),
+      done: 0,
+      running: new Set(),
+      failed: [],
+      usages: []
+    };
+    treeJob = job;
+    const treeKey = folderJobKey("tree", root, path);
+    folderJobs.set(treeKey, controller);
+    render();
+    let modelChanged = false;
+    /** Stops the run when the overview model changes, so nothing goes to a model the reader did not accept. */
+    const checkModel = () => {
+      const now = describeOverviewProvider();
+      if (now.kind === model.kind && now.modelId === model.modelId) return;
+      modelChanged = true;
+      controller.abort();
+    };
+    const cancelled = (error: unknown) => controller.signal.aborted || (error instanceof DOMException && error.name === "AbortError");
+    /** Runs one request of the run, shown as running for `folder` and cancellable with the rest. */
+    const step = async (kind: "summary" | "flows", folder: string, request: () => Promise<{ usage: Usage }>): Promise<void> => {
+      checkModel();
+      const key = folderJobKey(kind, root, folder);
+      // Never replace another request's entry, which would make it impossible to cancel.
+      if (controller.signal.aborted || folderJobs.has(key)) {
+        if (!controller.signal.aborted) job.failed.push(`${folder || basename(root)} (another request for it was running)`);
+        job.done++;
+        return;
+      }
+      folderJobs.set(key, controller);
+      job.running.add(folder);
+      render();
+      try {
+        const result = await scheduler.schedule("explicit", () => {
+          checkModel();
+          if (controller.signal.aborted) throw new DOMException("The request was cancelled.", "AbortError");
+          return request();
+        });
+        job.usages.push(result.usage);
+      } catch (error) {
+        // A declined code-sharing prompt stops the whole run.
+        if (cancelled(error)) controller.abort();
+        else job.failed.push(`${folder || basename(root)} (${errorMessage(error)})`);
+      } finally {
+        if (folderJobs.get(key) === controller) folderJobs.delete(key);
+        job.running.delete(folder);
+        job.done++;
+        render();
+      }
+    };
+    try {
+      for (const level of tree.levels) {
+        // Folders of one level only need the levels below, so they run side by side.
+        await Promise.all(level.filter((folder) => todo.has(folder)).map((folder) => step("summary", folder, async () => {
+          const ready = await prepareFolderSummary(root, folder);
+          if (!ready) throw new Error("the folder could not be read");
+          return service.summarizeFolder(root, ready.input, controller.signal);
+        })));
+        if (controller.signal.aborted) break;
+        if (level.some((folder) => todo.has(folder))) await refreshShownFolder(root, job.folders);
+      }
+      if (flowsNeeded && !controller.signal.aborted) {
+        await step("flows", path, async () => {
+          const structure = (await prepareFolderSummary(root, path).catch(() => undefined))?.structure;
+          const input = await flowsInputFor(root, path, structure, await service.savedFolderSummary(root, path).catch(() => undefined));
+          if (!input?.catalog.length) throw new Error("no files with summaries or function names were found");
+          return service.describeProjectFlows(root, input, controller.signal);
+        });
+      }
+    } finally {
+      if (folderJobs.get(treeKey) === controller) folderJobs.delete(treeKey);
+      if (treeJob === job) treeJob = undefined;
+    }
+    await refreshShownFolder(root, job.folders);
+    const usage = job.usages.length
+      ? formatUsage({
+          inputTokens: job.usages.reduce((total, item) => total + item.inputTokens, 0),
+          outputTokens: job.usages.reduce((total, item) => total + item.outputTokens, 0),
+          estimated: job.usages.some((item) => item.estimated)
+        })
+      : "";
+    const name = treeName(root, path);
+    const finished = job.usages.length;
+    const text = modelChanged
+      ? `Summarizing ${name} with its subfolders stopped because the overview model changed, after ${plural(finished, "finished request")}; finished summaries are saved.`
+      : controller.signal.aborted
+        ? `Summarizing ${name} with its subfolders was cancelled after ${plural(finished, "finished request")}; finished summaries are saved.`
+        : `Summarized ${name} with its subfolders: ${plural(finished, "request")} succeeded${job.failed.length ? `, ${job.failed.length} failed: ${job.failed.slice(0, 3).join("; ")}${job.failed.length > 3 ? "; …" : ""}` : ""}.`;
+    treeNotice(root, job.folders, path, {
+      tone: job.failed.length && !controller.signal.aborted ? "error" : "info",
+      text: usage ? `${text} ${usage}` : text
+    });
+    render();
+  };
+
+  /**
+   * Shows newly saved summaries and flows in the shown folder, when it is in
+   * `folders`, without new preview epochs, so a navigation that is still
+   * loading is never undone. Local only.
+   */
+  const refreshShownFolder = async (root: string, folders: ReadonlySet<string>): Promise<void> => {
+    const shown = folderPreview;
+    if (preview || !shown || shown.root !== root || !folders.has(shown.path)) return;
+    const epoch = folderEpoch;
+    const shownEpoch = previewEpoch;
+    const current = () => epoch === folderEpoch && shownEpoch === previewEpoch && !preview
+      && folderPreview?.root === root && folderPreview.path === shown.path;
+    const { subfolderSummaries, input } = await summaryInputFor(root, shown.path, shown.children, shown.summaries, shown.structure);
+    if (!current() || !input) return;
+    const saved = await service.findFolderSummary(root, input).catch(() => undefined);
+    if (!current()) return;
+    const { ai: _previous, ...rest } = folderPreview!;
+    folderPreview = {
+      ...rest,
+      summaries: new Map([...rest.summaries, ...subfolderSummaries]),
+      input,
+      ...(saved ? { ai: saved } : {})
+    };
+    render();
+    await loadFlowsInput(root, shown.path, epoch);
   };
 
   const emptyView = (target: FunctionTarget): StoredView => ({
@@ -2057,6 +2387,9 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       case "summarizeFolder":
         await summarizeShownFolder();
         return;
+      case "summarizeTree":
+        await summarizeShownTree();
+        return;
       case "describeFlows":
         await describeShownFlows();
         return;
@@ -2557,6 +2890,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
         }
       : undefined,
     summarizeFolder: () => summarizeShownFolder(),
+    summarizeTree: () => summarizeShownTree(false),
     describeFlows: () => describeShownFlows(),
     shownFlows: () => (folderPreview && !preview && folderPreview.flows
       ? folderPreview.flows.flows.map((flow) => ({ title: flow.title, refs: flow.refs.map((ref) => ref ? referenceCaption(ref) : null) }))
@@ -2575,6 +2909,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
 export interface DownsideUpTestApi {
   shownFolder(): { path: string; children: string[]; edges: string[]; summary?: string; current?: boolean; ready: boolean; hasOverview: boolean } | undefined;
   summarizeFolder(): Promise<void>;
+  summarizeTree(): Promise<void>;
   describeFlows(): Promise<void>;
   shownFlows(): Array<{ title: string; refs: Array<string | null> }> | undefined;
   flowsReady(): boolean;

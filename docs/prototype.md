@@ -467,6 +467,29 @@ fingerprint of the catalog and imports (not the background), so a changed
 summary, function name, or file marks them outdated; opening a folder preview
 builds the catalog locally and only reads the cache.
 
+**Summarize with all subfolders**, in a folder preview with subfolders, runs
+both for the folder's tree on one explicit request. It walks the folders below
+(`collectFolderTree`, refusing trees of more than 400 folders), builds each
+folder's summary input locally, and marks a folder to summarize when its saved
+summary is missing or not current, or when any folder below it will be
+summarized, since that changes its input (`foldersToSummarize`). The flows
+are described too when they are not current. Nothing is sent until a modal
+dialog, showing the number of requests (at most 100 per run) and a byte-based
+token estimate of their prompts, is accepted. Folders are summarized by
+height, leaves first; the folders of one height run side by side through the
+request scheduler, and each folder's input is rebuilt just before its request
+so it holds its subfolders' new summaries. The flows follow, with the folder's
+new summary as background. A failed folder does not stop the run (its parent
+falls back to names); a declined code-sharing prompt, **Cancel**, or a change
+of the overview model stops it, keeping finished summaries. A run does not
+start while it is being checked or while other folder requests are in
+progress, and it never takes over another request. While it runs, previews of
+folders in the tree show its progress instead of their own summary and flow
+actions, and the shown folder's summaries and flows are reloaded from the
+cache after each height without restarting the preview, so a navigation in
+progress is kept. At the end a notice gives the number of finished and failed
+requests and their token usage.
+
 Folder summary and flow requests are tracked per folder, kind, and model, so
 leaving the folder neither cancels nor duplicates them: Cancel stops all of
 them, returning to the folder shows the request still running, and a result
@@ -668,7 +691,8 @@ folder left out, import edges), the Explorer command previewing a folder, and
 switching to a file leaving the folder preview, a folder summary generated
 only on request and shown as current when the folder is previewed again,
 main flows described only on request with steps linked to the files and
-functions found, and shown again when the folder is previewed again,
+functions found, and shown again when the folder is previewed again, a
+folder tree run summarizing the subfolders and then the project again,
 review mode queueing only an edited component and a new
 untracked file's component and explaining both, including the one in a file
 that is not shown, JavaScript calls resolved through the built-in TypeScript
@@ -705,6 +729,9 @@ refused), Go, Rust, and TypeScript import edges between a folder's
 children, and the structure layout (importers above imports, shared rows with
 hidden edges, unconnected rows, cycles' upward edges, waypoints for edges that
 skip rows, crossing reduction, and running standalone as in the webview);
+folder tree tests cover grouping folders by height, refusing trees over the
+limit, and summarizing stale folders with every folder above them while
+skipping current branches;
 folder summary tests cover the input (names, saved summaries, function names,
 imports, no code), parsing that drops unusable part sentences, and the
 service saving a summary, keeping only sentences for parts without one, and
