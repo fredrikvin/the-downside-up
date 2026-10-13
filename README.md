@@ -123,7 +123,16 @@ contents' names and saved summaries, the names of functions and types in
 files without a summary, the imports between them, and the folder's README;
 no code. Summarize subfolders first, and their summaries feed the parent's.
 A saved summary is shown whenever you preview the folder, and marked
-outdated when its contents change; choose **Regenerate** to update it. The development fixtures are in `fixtures/rust-app`,
+outdated when its contents change; choose **Regenerate** to update it.
+
+Project-level work (the repository overview and folder summaries) happens
+far less often than explaining functions, so it can use a stronger model:
+run **Downside Up: Choose Overview Model** (or, with OpenAI, set
+`downsideUp.openai.overviewModel`). Explanations keep using the regular model.
+Code sharing is approved once per repository and model, so a new overview
+model asks once.
+
+The development fixtures are in `fixtures/rust-app`,
 `fixtures/go-app`, `fixtures/js-app`, and `fixtures/react-app`.
 
 To install a locally packaged VSIX, run

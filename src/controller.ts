@@ -80,6 +80,11 @@ export interface ExplanationResult {
 export interface ExplanationServiceOptions {
   readonly store: RepositoryCacheStore;
   readonly describeProvider: () => ProviderDescriptor;
+  /**
+   * The model for project-level work (the repository overview and folder
+   * summaries); defaults to the explanation model.
+   */
+  readonly describeOverviewProvider?: () => ProviderDescriptor;
   readonly createProvider: (descriptor: ProviderDescriptor) => Promise<GenerationProvider>;
   readonly authorizeExternalData: (
     root: string,
@@ -340,23 +345,28 @@ export class ExplanationService {
       );
     }
 
-    const overviewConfig = `${descriptor.kind}:${descriptor.modelId}:${PROMPT_VERSION}`;
+    const overviewDescriptor = this.overviewDescriptor();
+    const overviewConfig = `${overviewDescriptor.kind}:${overviewDescriptor.modelId}:${PROMPT_VERSION}`;
     const usages: Usage[] = [];
-    let externalSharingAuthorized = false;
-    const providerCallForRequest = async <T>(
+    const authorized = new Set<string>();
+    const providerCallFor = async <T>(
+      using: ProviderDescriptor,
       bytes: number,
       call: (provider: GenerationProvider) => Promise<GenerationResult<T>>
     ) => {
-      if (descriptor.kind !== "mock" && !externalSharingAuthorized) {
-        const accepted = await this.options.authorizeExternalData(root, descriptor, bytes, signal);
+      const id = `${using.kind}\0${using.modelId}`;
+      if (using.kind !== "mock" && !authorized.has(id)) {
+        const accepted = await this.options.authorizeExternalData(root, using, bytes, signal);
         if (!accepted) {
           throw new DOMException("External code sharing was not authorized.", "AbortError");
         }
-        externalSharingAuthorized = true;
+        authorized.add(id);
       }
       assertNotCancelled(signal);
-      return call(await this.options.createProvider(descriptor));
+      return call(await this.options.createProvider(using));
     };
+    const providerCallForRequest = <T>(bytes: number, call: (provider: GenerationProvider) => Promise<GenerationResult<T>>) =>
+      providerCallFor(descriptor, bytes, call);
 
     const settingsHash = fingerprint(EXPLANATION_SETTINGS);
     const key = explanationCacheKey(
@@ -414,7 +424,8 @@ export class ExplanationService {
           if (requestBytes > MAX_PRIMING_BYTES) {
             throw new Error("The complete repository-review request exceeds 96 KiB; no code was sent.");
           }
-          generated = await providerCallForRequest(
+          generated = await providerCallFor(
+            overviewDescriptor,
             requestBytes,
             (provider) => provider.reviewRepository(reviewInput, signal)
           );
@@ -424,7 +435,8 @@ export class ExplanationService {
           if (requestBytes > MAX_PRIMING_BYTES) {
             throw new Error("The complete repository-priming request exceeds 96 KiB; no code was sent.");
           }
-          generated = await providerCallForRequest(
+          generated = await providerCallFor(
+            overviewDescriptor,
             requestBytes,
             (provider) => provider.explainRepository(prompt, signal)
           );
@@ -434,7 +446,7 @@ export class ExplanationService {
           throw new Error("The repository cache was cleared while context was being refreshed.");
         }
         usages.push(generated.usage);
-        const value = normalizedOverview(generated.value, descriptor.kind);
+        const value = normalizedOverview(generated.value, overviewDescriptor.kind);
         const version = overviewFingerprint(value);
         overviewRecord = withOverview(
           value,
@@ -574,13 +586,18 @@ export class ExplanationService {
     return this.exclusive(root, () => this.refreshRepositoryContextNow(root, signal, onProgress));
   }
 
+  /** The model for the repository overview and folder summaries. */
+  private overviewDescriptor(): ProviderDescriptor {
+    return this.options.describeOverviewProvider?.() ?? this.options.describeProvider();
+  }
+
   private async refreshRepositoryContextNow(
     root: string,
     signal?: AbortSignal,
     onProgress?: (progress: ExplanationProgress) => void
   ): Promise<{ overview: RepositoryOverview; usage: Usage }> {
     const startingFence = this.fence(root);
-    const descriptor = this.options.describeProvider();
+    const descriptor = this.overviewDescriptor();
     const restricted = await (await currentPolicy()).repositoryRestriction(root);
     if (restricted) throw new Error(`Nothing was sent because ${restricted}.`);
     const cache = await this.options.store.read(root);
@@ -722,7 +739,7 @@ export class ExplanationService {
 
   /** A folder's saved summary sentence for the current model, current or not, as input for its parent folder. */
   async savedFolderSummary(root: string, path: string): Promise<string | undefined> {
-    return (await this.options.store.read(root)).folderSummaries?.[folderSummaryKey(path, this.options.describeProvider())]?.value.summary;
+    return (await this.options.store.read(root)).folderSummaries?.[folderSummaryKey(path, this.overviewDescriptor())]?.value.summary;
   }
 
   /** Cache-only lookup of a folder's saved summary; `current` is false when its input changed since. */
@@ -730,7 +747,7 @@ export class ExplanationService {
     root: string,
     input: FolderSummaryPromptInput
   ): Promise<{ value: FolderSummary; current: boolean } | undefined> {
-    const record = (await this.options.store.read(root)).folderSummaries?.[folderSummaryKey(input.path, this.options.describeProvider())];
+    const record = (await this.options.store.read(root)).folderSummaries?.[folderSummaryKey(input.path, this.overviewDescriptor())];
     return record ? { value: record.value, current: record.fingerprint === folderInputFingerprint(input) } : undefined;
   }
 
@@ -747,7 +764,7 @@ export class ExplanationService {
     signal?: AbortSignal
   ): Promise<{ value: FolderSummary; usage: Usage }> {
     const startingFence = this.fence(root);
-    const descriptor = this.options.describeProvider();
+    const descriptor = this.overviewDescriptor();
     const restricted = await (await currentPolicy()).repositoryRestriction(root);
     if (restricted) throw new Error(`Nothing was sent because ${restricted}.`);
     const repositoryPurpose = (await this.options.store.read(root)).overview?.value.purpose;

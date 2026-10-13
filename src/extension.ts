@@ -1,6 +1,7 @@
 import { readFile, stat } from "node:fs/promises";
 import { basename, isAbsolute, relative, resolve, sep } from "node:path";
 import * as vscode from "vscode";
+import { hasConsent, withConsent } from "./cache/consent";
 import { FileRepositoryCacheStore } from "./cache/store";
 import {
   ExplanationService,
@@ -226,9 +227,30 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     return { kind: "mock", modelId: mockProvider.modelId };
   };
 
+  /**
+   * The model for project-level work: the repository overview and folder
+   * summaries. Set separately so a stronger model can do this rarer work;
+   * empty settings use the explanation model.
+   */
+  const describeOverviewProvider = (): ProviderDescriptor => {
+    const base = describeProvider();
+    const settings = vscode.workspace.getConfiguration("downsideUp");
+    if (base.kind === "vscode-lm") {
+      const id = settings.get<string>("overviewModel.id", "").trim();
+      const vendor = settings.get<string>("overviewModel.vendor", "").trim() || "copilot";
+      return id ? { kind: "vscode-lm", modelId: languageModelDescriptorId(vendor, id) } : base;
+    }
+    if (base.kind === "openai") {
+      const model = settings.get<string>("openai.overviewModel", "").trim();
+      return model ? { kind: "openai", modelId: model } : base;
+    }
+    return base;
+  };
+
   const service = new ExplanationService({
     store: cacheStore,
     describeProvider,
+    describeOverviewProvider,
     createProvider: async (descriptor) => {
       if (descriptor.kind === "mock") return mockProvider;
       if (descriptor.kind === "vscode-lm") {
@@ -267,8 +289,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
         // Prefetching only uses code-sharing consent that was already given; it never asks.
         if (descriptor.kind === "mock") return true;
         if (!vscode.workspace.isTrusted) return false;
-        const saved = (await cacheStore.read(root)).consent;
-        return saved?.provider === descriptor.kind && saved.model === descriptor.modelId;
+        return hasConsent(await cacheStore.read(root), descriptor.kind, descriptor.modelId);
       }
       if (descriptor.kind === "mock") return true;
       if (!vscode.workspace.isTrusted) {
@@ -277,13 +298,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
         );
         return false;
       }
-      const cache = await cacheStore.read(root);
-      if (
-        cache.consent?.provider === descriptor.kind &&
-        cache.consent.model === descriptor.modelId
-      ) {
-        return true;
-      }
+      if (hasConsent(await cacheStore.read(root), descriptor.kind, descriptor.modelId)) return true;
       const provider = descriptor.kind;
       // Parallel requests share one prompt for the same repository and model.
       return singleFlight(consentPrompts, `${root}\0${descriptor.kind}\0${descriptor.modelId}`, async () => {
@@ -304,14 +319,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
           accept
         );
         if (action !== accept) return false;
-        await cacheStore.update(root, (current) => ({
-          ...current,
-          consent: {
-            provider,
-            model: descriptor.modelId,
-            acceptedAt: Date.now()
-          }
-        }));
+        await cacheStore.update(root, (current) => withConsent(current, provider, descriptor.modelId, Date.now()));
         return true;
       });
     }
@@ -371,6 +379,41 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       `Downside Up will use ${picked.model.name} (${picked.model.vendor}) through VS Code. Explain a function to use it; you will be asked before any code is shared.`
     );
     return true;
+  };
+
+  /** Picks the language model for the repository overview and folder summaries, or the explanation model. */
+  const chooseOverviewModel = async (): Promise<void> => {
+    if (describeProvider().kind !== "vscode-lm") {
+      await vscode.window.showInformationMessage(
+        describeProvider().kind === "openai"
+          ? "With OpenAI, set the overview model in the setting downsideUp.openai.overviewModel."
+          : "Choose a language model with “Downside Up: Choose Language Model” first; the overview model applies to VS Code language models."
+      );
+      return;
+    }
+    let models: readonly vscode.LanguageModelChat[];
+    try {
+      models = (await vscode.lm.selectChatModels()).filter((model) => isUsableLanguageModelVendor(model.vendor));
+    } catch {
+      models = [];
+    }
+    const current = parseLanguageModelDescriptorId(describeOverviewProvider().modelId);
+    const same = { label: "Same as explanations", description: "use the explanation model for project-level work too", model: undefined as vscode.LanguageModelChat | undefined };
+    const picked = await vscode.window.showQuickPick(
+      [same, ...models.map((model) => ({
+        label: model.name,
+        description: `${model.vendor} · ${model.id}${current?.vendor === model.vendor && current.id === model.id ? " · current" : ""}`,
+        model
+      }))],
+      {
+        title: "Choose the model for project overviews",
+        placeHolder: "Used for the repository overview and folder summaries, which are rarer and benefit from a stronger model. It asks once before sharing code."
+      }
+    );
+    if (!picked) return;
+    const settings = vscode.workspace.getConfiguration("downsideUp");
+    await settings.update("overviewModel.vendor", picked.model?.vendor, vscode.ConfigurationTarget.Global);
+    await settings.update("overviewModel.id", picked.model?.id, vscode.ConfigurationTarget.Global);
   };
 
   const ensureLanguageModelSelected = async (): Promise<boolean> => {
@@ -1319,8 +1362,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       const reference = parseLanguageModelDescriptorId(descriptor.modelId);
       if (!reference || !isUsableLanguageModelVendor(reference.vendor)) return false;
     }
-    const consent = (await cacheStore.read(root)).consent;
-    return consent?.provider === descriptor.kind && consent.model === descriptor.modelId;
+    return hasConsent(await cacheStore.read(root), descriptor.kind, descriptor.modelId);
   };
 
   /**
@@ -2252,6 +2294,10 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
   });
 
   const onConfigChange = vscode.workspace.onDidChangeConfiguration((event) => {
+    if (event.affectsConfiguration("downsideUp.overviewModel") || event.affectsConfiguration("downsideUp.openai.overviewModel")) {
+      // Folder summaries are saved per model, so look again for the shown folder.
+      if (panel && folderPreview && !preview) void showFolder(folderPreview.root, folderPreview.path);
+    }
     if (event.affectsConfiguration("downsideUp.exclusion")) {
       clearPolicyCache();
       // The shown file may now be excluded, or allowed again.
@@ -2294,6 +2340,10 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
   context.subscriptions.push(
     vscode.commands.registerCommand("downsideUp.showFileOverview", openPreviewCommand),
     vscode.commands.registerCommand("downsideUp.previewProject", previewProjectCommand),
+    vscode.commands.registerCommand("downsideUp.selectOverviewModel", async () => {
+      await chooseOverviewModel();
+      render();
+    }),
     vscode.commands.registerCommand("downsideUp.reviewChanges", reviewChangesCommand),
     vscode.commands.registerCommand("downsideUp.showChangedFunctions", showChangedFunctionsCommand),
     reviewStatus,

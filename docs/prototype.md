@@ -471,7 +471,21 @@ fallback to another provider.
 Before an external request, the extension asks for explicit consent for the
 repository, provider, and model. It sends the selected function and relevant snippets,
 repository overview, and bounded priming/review input as needed. Changing
-provider or model requires renewed consent. External sharing is disabled in
+provider or model requires renewed consent. Each approval is kept per
+repository and model (`consents` in the cache, with `consent` as the latest),
+so switching back to an approved model, or using a separate overview model,
+does not ask again; prefetching only uses approvals already given.
+
+An optional overview model does project-level work: the repository overview
+(priming, review, and **Refresh Repository Context**) and folder summaries.
+For VS Code language models it is chosen with **Choose Overview Model**
+(`downsideUp.overviewModel.vendor` and `.id`); with OpenAI it is
+`downsideUp.openai.overviewModel`; empty settings use the explanation model,
+and the mock provider ignores it. Explanations, pseudocode and flowchart
+views, and file summaries always use the explanation model. The overview and
+folder summaries are cached per overview model, so changing it means the next
+explanation reviews or primes the overview with the new model and folder
+previews look up that model's summaries. External sharing is disabled in
 untrusted workspaces. For OpenAI, `store:false` is not a guarantee of zero
 provider-side retention; review the provider's current data controls before use.
 GitHub Copilot content exclusion configured by administrators on GitHub is
@@ -655,6 +669,10 @@ imports, no code), parsing that drops unusable part sentences, and the
 service saving a summary, keeping only sentences for parts without one, and
 marking it outdated when the input changes but not when the repository's
 purpose does;
+overview-model tests cover keeping one approval per model and reading older
+single approvals, and the service priming with the overview model while
+explaining with the explanation model, and summarizing folders with the
+overview model;
 review-mode tests cover changed lines from diffs (ranges, removals, deleted
 files, paths with spaces), when a removal counts for a function, base choices
 in a real Git repository (merge base, branch tip, uncommitted only, recent

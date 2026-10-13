@@ -26,6 +26,11 @@
         "icon": "$(project)"
       },
       {
+        "command": "downsideUp.selectOverviewModel",
+        "title": "Choose Overview Model",
+        "category": "Downside Up"
+      },
+      {
         "command": "downsideUp.reviewChanges",
         "title": "Review Changes…",
         "category": "Downside Up"
@@ -205,6 +210,21 @@
           "scope": "application",
           "markdownDescription": "For the function you are reading, how many of the functions and methods it calls in other files are prefetched (in languages other than Rust and Go, calls are found with the editor's go-to-definition), right after the function itself. Only the first calls in order of use are considered, and ones already explained count toward the number. `0` prefetches none. Requires `#downsideUp.prefetch.enabled#`."
         },
+        "downsideUp.overviewModel.vendor": {
+          "type": "string",
+          "default": "",
+          "description": "Vendor of the VS Code language model for project-level work (the repository overview and folder summaries). Set by “Downside Up: Choose Overview Model”; empty uses the vendor of the explanation model's choice, normally copilot."
+        },
+        "downsideUp.overviewModel.id": {
+          "type": "string",
+          "default": "",
+          "description": "ID of the VS Code language model for project-level work (the repository overview and folder summaries), which is rarer than explaining functions and benefits from a stronger model. Set by “Downside Up: Choose Overview Model”; empty uses the explanation model. A new model asks once before code is shared."
+        },
+        "downsideUp.openai.overviewModel": {
+          "type": "string",
+          "default": "",
+          "description": "OpenAI model for project-level work (the repository overview and folder summaries) when the provider is openai; empty uses downsideUp.openai.model. A new model asks once before code is shared."
+        },
         "downsideUp.exclusion.blockedFilePatternsFile": {
           "type": "string",
           "default": "",
@@ -263,6 +283,7 @@
     "onCommand:downsideUp.showFileOverview",
     "onCommand:downsideUp.reviewChanges",
     "onCommand:downsideUp.previewProject",
+    "onCommand:downsideUp.selectOverviewModel",
     "onCommand:downsideUp.refreshRepositoryContext",
     "onCommand:downsideUp.clearCache",
     "onCommand:downsideUp.cancelExplanation",

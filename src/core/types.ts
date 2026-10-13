@@ -215,6 +215,12 @@ export interface RepositoryCache {
     readonly model: string;
     readonly acceptedAt: number;
   } | null;
+  /** Every approval for this repository, one per model; `consent` is the latest. */
+  readonly consents?: ReadonlyArray<{
+    readonly provider: ExternalProviderKind;
+    readonly model: string;
+    readonly acceptedAt: number;
+  }>;
   readonly overview: OverviewRecord | null;
   readonly explanations: Record<string, ExplanationRecord>;
   /** AI file summaries keyed by path, provider, model, and prompt version. */
