@@ -396,7 +396,10 @@ files are not listed) and shows subfolders that hold eligible files, with
 their counts (the walk stops after 20,000 folder entries and says so), then
 files with their language and their saved one-sentence summary, read from the
 cache with the same freshness check as the file preview (a changed file's
-summary is shown as outdated). Nothing is generated.
+summary is shown as outdated). Nothing is generated. A folder is refused, with
+a notice, when its real path leaves the repository (a symlinked folder) or it
+sits in a hidden, dependency, build, policy-blocked, or ignored folder; ignore
+patterns that only match folders (such as `generated/`) apply to folders.
 
 The structure diagram is computed locally. Every eligible file under the
 folder (at most 1,500 files and 24 MiB, skipping files over 256 KiB) is parsed
@@ -439,7 +442,8 @@ and prompt version with a fingerprint of the input (not of the repository's
 purpose), so a changed part, summary, function name, import, or README marks
 the summary outdated; opening a folder preview only reads the cache. A
 subfolder's saved summary feeds its parent's input, so summaries can be built
-bottom-up.
+bottom-up. Every text sent (saved summaries' files and the README) passes the
+same sharing exclusion as an explained file.
 
 Main flows are AI-generated only on an explicit **Describe the main flows**
 (or **Regenerate**) in a folder preview, with the overview model. The request
@@ -462,6 +466,12 @@ are cached per folder, provider, overview model, and prompt version with a
 fingerprint of the catalog and imports (not the background), so a changed
 summary, function name, or file marks them outdated; opening a folder preview
 builds the catalog locally and only reads the cache.
+
+Folder summary and flow requests are tracked per folder, kind, and model, so
+leaving the folder neither cancels nor duplicates them: Cancel stops all of
+them, returning to the folder shows the request still running, and a result
+is shown only while the same folder and model are previewed (it is saved
+either way).
 
 ## Providers and data handling
 
@@ -690,7 +700,8 @@ allowed-repository listing, workspace values being ignored, and
 `.copilotignore` files above the repository; a settings test keeps the policy
 settings user-level;
 folder tests cover listings (subfolder counts, hidden, excluded, and non-text
-files left out), Go, Rust, and TypeScript import edges between a folder's
+files left out, and symlinked, hidden, dependency, or ignored folders
+refused), Go, Rust, and TypeScript import edges between a folder's
 children, and the structure layout (importers above imports, shared rows with
 hidden edges, unconnected rows, cycles' upward edges, waypoints for edges that
 skip rows, crossing reduction, and running standalone as in the webview);

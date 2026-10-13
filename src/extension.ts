@@ -116,12 +116,10 @@ interface FolderPreview {
   /** What a folder summary would be made from, once the structure is known. */
   readonly input?: FolderSummaryPromptInput;
   readonly ai?: { value: FolderSummary; current: boolean };
-  readonly summaryJob?: AbortController;
   readonly summaryError?: string;
   /** What main flows would be made from, built after the structure. */
   readonly flowsInput?: ProjectFlowsPromptInput;
   readonly flows?: { flows: readonly ProjectFlow[]; current: boolean };
-  readonly flowsJob?: AbortController;
   readonly flowsError?: string;
 }
 
@@ -214,6 +212,14 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
   let reviewSession: ReviewSession | undefined;
   /** The folder shown instead of a file, until the active editor changes. */
   let folderPreview: FolderPreview | undefined;
+  /**
+   * Folder summary and flow requests in progress, by kind, repository,
+   * folder, and overview model, so they stay cancellable and are not started
+   * twice when the reader moves away and back.
+   */
+  const folderJobs = new Map<string, AbortController>();
+  const folderJobKey = (kind: "summary" | "flows", root: string, path: string): string =>
+    [kind, root, path, describeOverviewProvider().kind, describeOverviewProvider().modelId].join("\0");
   let folderEpoch = 0;
   /** Signals of prefetch requests, so the consent check never prompts for them. */
   const prefetchSignals = new WeakSet<AbortSignal>();
@@ -721,7 +727,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       formats: formatSettings(),
       ...(shownContext ? { overview: shownContext.overview } : {}),
       ...(notice ? { notice } : {}),
-      busy: Boolean(repositoryJob || folderPreview?.summaryJob || folderPreview?.flowsJob),
+      busy: Boolean(repositoryJob || folderJobs.size),
       hasRepository: Boolean(preview || folderPreview)
     });
     syncStepHighlight();
@@ -769,7 +775,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     ...(shown.structure ? { structure: { nodes: shown.structure.nodes, edges: shown.structure.edges } } : {}),
     limitations: [...shown.limitations, ...(shown.structure?.limitations ?? [])],
     ...(shown.ai ? { ai: { summary: shown.ai.value.summary, overview: shown.ai.value.overview, current: shown.ai.current } } : {}),
-    summarizing: Boolean(shown.summaryJob),
+    summarizing: folderJobs.has(folderJobKey("summary", shown.root, shown.path)),
     canSummarize: Boolean(shown.input),
     ...(shown.summaryError ? { summaryError: shown.summaryError } : {}),
     ...(shown.flows
@@ -787,7 +793,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
           }
         }
       : {}),
-    describingFlows: Boolean(shown.flowsJob),
+    describingFlows: folderJobs.has(folderJobKey("flows", shown.root, shown.path)),
     canDescribeFlows: Boolean(shown.flowsInput && shown.flowsInput.catalog.length),
     ...(shown.flowsError ? { flowsError: shown.flowsError } : {})
     };
@@ -817,6 +823,10 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     await previewDocument(document);
   };
 
+  /** A file's text for a request to a model: only for files that pass the per-file sharing check. */
+  const shareableText = async (root: string, path: string): Promise<string | undefined> =>
+    (await sharingExclusion(root, resolve(root, path)).catch(() => "unreadable")) ? undefined : repositoryText(root, path).catch(() => undefined);
+
   /** Reads a repository file's current text, preferring an open buffer; small files only. */
   const repositoryText = async (root: string, path: string): Promise<string | undefined> => {
     const absolute = resolve(root, path);
@@ -836,7 +846,17 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     ensurePanel();
     const epoch = ++folderEpoch;
     previewEpoch++;
-    const { children, limitations } = await listFolder(root, path);
+    let listing: Awaited<ReturnType<typeof listFolder>>;
+    try {
+      listing = await listFolder(root, path);
+    } catch (error) {
+      if (epoch === folderEpoch && panel) {
+        notice = { tone: "info", text: errorMessage(error) };
+        render();
+      }
+      return;
+    }
+    const { children, limitations } = listing;
     const files = children.filter((child) => child.kind === "file").map((child) => child.path);
     const summaries = await service.findFileSummaries(root, files, (file) => repositoryText(root, file)).catch(() => new Map());
     if (epoch !== folderEpoch || !panel) return;
@@ -867,7 +887,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     const input = await folderSummaryInput(basename(root), path, children, structure, {
       fileSummary: (file) => summaries.get(file)?.summary,
       folderSummary: async (folder) => subfolderSummaries.get(folder)?.summary,
-      text: (file) => repositoryText(root, file).catch(() => undefined),
+      text: (file) => shareableText(root, file),
       contents: async (folder) => (await listFolder(root, folder)).children.map((entry) => entry.name + (entry.kind === "folder" ? "/" : ""))
     }).catch(() => undefined);
     if (!current() || !input) return;
@@ -901,7 +921,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       ...(folderPreview!.ai ? { folderSummary: folderPreview!.ai.value.summary } : {})
     }, {
       fileSummaries,
-      text: (file) => repositoryText(root, file).catch(() => undefined)
+      text: (file) => shareableText(root, file)
     }).catch(() => undefined);
     if (!current() || !flowsInput) return;
     const flows = await service.findProjectFlows(root, flowsInput).catch(() => undefined);
@@ -913,25 +933,23 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
   /** Describes the shown folder's main flows on explicit request; it may ask for code-sharing approval. */
   const describeShownFlows = async (): Promise<void> => {
     const shown = folderPreview;
-    if (!shown?.flowsInput || shown.flowsJob) return;
+    if (!shown?.flowsInput) return;
     if (!(await ensureLanguageModelSelected())) return;
+    const key = folderJobKey("flows", shown.root, shown.path);
+    if (folderJobs.has(key)) return;
     const controller = new AbortController();
-    const same = () => folderPreview?.root === shown.root && folderPreview.path === shown.path;
-    if (!same()) return;
-    folderPreview = { ...folderPreview!, flowsJob: controller, flowsError: undefined };
+    folderJobs.set(key, controller);
+    const same = () => folderPreview?.root === shown.root && folderPreview.path === shown.path && folderJobKey("flows", shown.root, shown.path) === key;
+    if (same()) folderPreview = { ...folderPreview!, flowsError: undefined };
     render();
     try {
       const result = await scheduler.schedule("explicit", () => service.describeProjectFlows(shown.root, shown.flowsInput!, controller.signal));
-      if (same()) folderPreview = { ...folderPreview!, flows: { flows: result.flows, current: true }, flowsJob: undefined };
+      if (same()) folderPreview = { ...folderPreview!, flows: { flows: result.flows, current: true } };
     } catch (error) {
-      if (same()) {
-        const cancelled = controller.signal.aborted || (error instanceof DOMException && error.name === "AbortError");
-        folderPreview = {
-          ...folderPreview!,
-          flowsJob: undefined,
-          ...(cancelled ? {} : { flowsError: `Could not describe the main flows: ${errorMessage(error)}` })
-        };
-      }
+      const cancelled = controller.signal.aborted || (error instanceof DOMException && error.name === "AbortError");
+      if (same() && !cancelled) folderPreview = { ...folderPreview!, flowsError: `Could not describe the main flows: ${errorMessage(error)}` };
+    } finally {
+      if (folderJobs.get(key) === controller) folderJobs.delete(key);
     }
     render();
   };
@@ -939,25 +957,24 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
   /** Generates the shown folder's summary on explicit request; it may ask for code-sharing approval. */
   const summarizeShownFolder = async (): Promise<void> => {
     const shown = folderPreview;
-    if (!shown?.input || shown.summaryJob) return;
+    if (!shown?.input) return;
     if (!(await ensureLanguageModelSelected())) return;
+    const key = folderJobKey("summary", shown.root, shown.path);
+    if (folderJobs.has(key)) return;
     const controller = new AbortController();
-    const same = () => folderPreview?.root === shown.root && folderPreview.path === shown.path;
-    if (!same()) return;
-    folderPreview = { ...folderPreview!, summaryJob: controller, summaryError: undefined };
+    folderJobs.set(key, controller);
+    // A result applies only to the same folder, still shown, with the same overview model.
+    const same = () => folderPreview?.root === shown.root && folderPreview.path === shown.path && folderJobKey("summary", shown.root, shown.path) === key;
+    if (same()) folderPreview = { ...folderPreview!, summaryError: undefined };
     render();
     try {
       const result = await scheduler.schedule("explicit", () => service.summarizeFolder(shown.root, shown.input!, controller.signal));
-      if (same()) folderPreview = { ...folderPreview!, ai: { value: result.value, current: true }, summaryJob: undefined };
+      if (same()) folderPreview = { ...folderPreview!, ai: { value: result.value, current: true } };
     } catch (error) {
-      if (same()) {
-        const cancelled = controller.signal.aborted || (error instanceof DOMException && error.name === "AbortError");
-        folderPreview = {
-          ...folderPreview!,
-          summaryJob: undefined,
-          ...(cancelled ? {} : { summaryError: `Could not summarize this folder: ${errorMessage(error)}` })
-        };
-      }
+      const cancelled = controller.signal.aborted || (error instanceof DOMException && error.name === "AbortError");
+      if (same() && !cancelled) folderPreview = { ...folderPreview!, summaryError: `Could not summarize this folder: ${errorMessage(error)}` };
+    } finally {
+      if (folderJobs.get(key) === controller) folderJobs.delete(key);
     }
     render();
   };
@@ -2035,8 +2052,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
         return;
       case "cancel":
         repositoryJob?.abort();
-        folderPreview?.summaryJob?.abort();
-        folderPreview?.flowsJob?.abort();
+        for (const job of folderJobs.values()) job.abort();
         return;
       case "summarizeFolder":
         await summarizeShownFolder();
@@ -2314,8 +2330,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
   };
 
   const cancelExplanations = (): void => {
-    folderPreview?.summaryJob?.abort();
-    folderPreview?.flowsJob?.abort();
+    for (const job of folderJobs.values()) job.abort();
     stopPrefetch();
     stopReview();
     repositoryJob?.abort();

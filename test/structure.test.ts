@@ -1,6 +1,8 @@
+import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
-import { listFolder } from "../src/context/inventory";
+import { folderExclusion, listEligibleFiles, listFolder } from "../src/context/inventory";
 import { folderStructure } from "../src/context/structure";
 import { initializeGoParserAt } from "../src/languages/go/syntax";
 import { initializeJavaScriptParsersAt } from "../src/languages/javascript/syntax";
@@ -68,5 +70,30 @@ describe("folder listings and structure", () => {
       "src/useCart.ts > src/types.ts x1"
     ]);
     expect(limitations).toEqual([]);
+  });
+
+  it("refuses to preview or walk folders the scanner would skip, including links out of the repository", async () => {
+    const base = await realpath(await mkdtemp(resolve(tmpdir(), "downside-up-folders-")));
+    const repo = resolve(base, "repo");
+    try {
+      for (const dir of ["src", "node_modules/pkg", ".hidden", "generated"]) await mkdir(resolve(repo, dir), { recursive: true });
+      await mkdir(resolve(base, "elsewhere"));
+      await writeFile(resolve(base, "elsewhere/secret.ts"), "export const x = 1;\n");
+      await writeFile(resolve(repo, "node_modules/pkg/index.js"), "module.exports = 1;\n");
+      await writeFile(resolve(repo, "generated/out.ts"), "export const y = 1;\n");
+      await writeFile(resolve(repo, ".gitignore"), "generated/\n");
+      await symlink(resolve(base, "elsewhere"), resolve(repo, "linked"));
+      expect(await folderExclusion(repo, "src")).toBeUndefined();
+      expect(await folderExclusion(repo, "")).toBeUndefined();
+      expect(await folderExclusion(repo, "linked")).toBe("it is a link to another location");
+      expect(await folderExclusion(repo, "node_modules/pkg")).toMatch(/dependency, build, or vendored/);
+      expect(await folderExclusion(repo, ".hidden")).toMatch(/hidden/);
+      expect(await folderExclusion(repo, "generated")).toMatch(/\.gitignore or \.copilotignore/);
+      expect(await folderExclusion(repo, "../elsewhere")).toBe("it is outside the repository");
+      await expect(listFolder(repo, "linked")).rejects.toThrow(/link to another location/);
+      expect(await listEligibleFiles(repo, "node_modules/pkg")).toEqual({ files: [], complete: true });
+    } finally {
+      await rm(base, { recursive: true, force: true });
+    }
   });
 });

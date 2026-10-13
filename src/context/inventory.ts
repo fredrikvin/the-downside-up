@@ -207,15 +207,17 @@ function ancestorCopilotIgnores(root: string): Promise<Array<{ directory: string
   return value;
 }
 
-async function isIgnored(root: string, relativePath: string): Promise<boolean> {
+/** Whether ignore files exclude a path; `isDirectory` lets folder-only patterns such as `build/` match it. */
+async function isIgnored(root: string, relativePath: string, isDirectory = false): Promise<boolean> {
+  const suffix = isDirectory ? "/" : "";
   for (const { directory, rules } of await ancestorCopilotIgnores(root)) {
-    if (rules.ignores(relative(directory, resolve(root, relativePath)).split(sep).join("/"))) return true;
+    if (rules.ignores(relative(directory, resolve(root, relativePath)).split(sep).join("/") + suffix)) return true;
   }
   const segments = relativePath.split("/");
   let parent = root;
   for (let index = 0; index < segments.length; index++) {
     const rules = await readIgnoreRules(parent);
-    const candidate = segments.slice(index).join("/");
+    const candidate = segments.slice(index).join("/") + suffix;
     if (rules?.ignores(candidate)) return true;
     parent = resolve(parent, segments[index]!);
   }
@@ -294,7 +296,7 @@ export async function gatherInventory(
       if (entry.isDirectory()) {
         if (entry.name.startsWith(".") || ALWAYS_SKIP_DIRS.has(entry.name)) continue;
         const rel = canonicalRelative(relative(root, absolutePath));
-        if (policy.blockedBy(rel) || await isIgnored(root, rel)) continue;
+        if (policy.blockedBy(rel) || await isIgnored(root, rel, true)) continue;
         await visit(absolutePath);
         continue;
       }
@@ -429,7 +431,7 @@ async function walkEligible(
       const absolutePath = resolve(directory, entry.name);
       const rel = canonicalRelative(relative(root, absolutePath));
       if (entry.isDirectory()) {
-        if (entry.name.startsWith(".") || ALWAYS_SKIP_DIRS.has(entry.name) || policy.blockedBy(rel) || await isIgnored(root, rel)) continue;
+        if (entry.name.startsWith(".") || ALWAYS_SKIP_DIRS.has(entry.name) || policy.blockedBy(rel) || await isIgnored(root, rel, true)) continue;
         if (!await visit(absolutePath)) return false;
       } else if (
         entry.isFile() &&
@@ -447,6 +449,36 @@ async function walkEligible(
   return visit(resolve(root, relativeFolder));
 }
 
+/**
+ * Why a folder may not be previewed or walked, or undefined when it may:
+ * its real path must stay in the repository (no symlinks out), and no folder
+ * on its path may be hidden, a dependency or build folder, blocked by the
+ * organization policy, or ignored.
+ */
+export async function folderExclusion(root: string, relativeFolder: string): Promise<string | undefined> {
+  const folder = resolve(root, relativeFolder);
+  if (!isWithin(root, folder)) return "it is outside the repository";
+  let real: string;
+  try {
+    real = await realpath(folder);
+  } catch {
+    return "it cannot be read";
+  }
+  if (!isWithin(root, real) || canonicalRelative(relative(root, real)) !== canonicalRelative(relative(root, folder))) {
+    return "it is a link to another location";
+  }
+  const policy = await currentPolicy();
+  const segments = relativeFolder ? relativeFolder.split("/") : [];
+  for (let index = 0; index < segments.length; index++) {
+    const name = segments[index]!;
+    const path = segments.slice(0, index + 1).join("/");
+    if (name.startsWith(".") || ALWAYS_SKIP_DIRS.has(name)) return "it is a hidden, dependency, build, or vendored folder";
+    if (policy.blockedBy(path)) return "your organization's exclusion policy blocks it";
+    if (await isIgnored(root, path, true)) return "a .gitignore or .copilotignore file excludes it";
+  }
+  return undefined;
+}
+
 /** Eligible files under a folder, at any depth, in path order; `complete` is false when the walk was cut short. */
 export async function listEligibleFiles(
   rootPath: string,
@@ -454,6 +486,7 @@ export async function listEligibleFiles(
   maxEntries = MAX_WALK_ENTRIES
 ): Promise<{ files: string[]; complete: boolean }> {
   const root = await realpath(rootPath);
+  if (await folderExclusion(root, relativeFolder)) return { files: [], complete: true };
   const files: string[] = [];
   const complete = await walkEligible(root, relativeFolder, (path) => files.push(path), { entries: maxEntries }, await currentPolicy());
   return { files, complete };
@@ -466,7 +499,8 @@ export async function listEligibleFiles(
 export async function listFolder(rootPath: string, relativeFolder: string): Promise<{ children: FolderChild[]; limitations: string[] }> {
   const root = await realpath(rootPath);
   const folder = resolve(root, relativeFolder);
-  if (!isWithin(root, folder)) throw new Error("The folder is outside the repository.");
+  const excluded = await folderExclusion(root, relativeFolder);
+  if (excluded) throw new Error(`This folder is not previewed because ${excluded}.`);
   const policy = await currentPolicy();
   const budget = { entries: MAX_WALK_ENTRIES };
   const folders: FolderChild[] = [];
@@ -476,7 +510,7 @@ export async function listFolder(rootPath: string, relativeFolder: string): Prom
     if (entry.isSymbolicLink()) continue;
     const rel = canonicalRelative(relative(root, resolve(folder, entry.name)));
     if (entry.isDirectory()) {
-      if (entry.name.startsWith(".") || ALWAYS_SKIP_DIRS.has(entry.name) || policy.blockedBy(rel) || await isIgnored(root, rel)) continue;
+      if (entry.name.startsWith(".") || ALWAYS_SKIP_DIRS.has(entry.name) || policy.blockedBy(rel) || await isIgnored(root, rel, true)) continue;
       let count = 0;
       const complete = await walkEligible(root, rel, () => count++, budget, policy);
       if (!complete) capped = true;
