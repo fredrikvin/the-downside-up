@@ -349,6 +349,7 @@ export async function run(): Promise<void> {
     "the Go repository's folder preview with its import structure"
   );
   assert.equal(goFolder.path, "");
+  assert.ok(goFolder.hasOverview, "The project preview shows the saved repository overview.");
   assert.ok(goFolder.children.includes("folder inventory") && goFolder.children.includes("file main.go"));
   assert.ok(!goFolder.children.some((child) => child.includes("legacy")), "Excluded folders are not listed.");
   assert.ok(goFolder.edges.includes("main.go > inventory") && goFolder.edges.includes("storage > inventory"));

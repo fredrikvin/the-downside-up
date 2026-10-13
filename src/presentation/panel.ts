@@ -1207,9 +1207,29 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
       return box;
     }
 
+    /** For the project (repository root) preview: the repository overview, open near the top. */
+    function renderAbout(overview) {
+      const box = el("section", "project-about");
+      box.append(el("h2", "folder-heading", "About this project"));
+      if (!overview) {
+        box.append(el("p", "muted", "No repository overview is saved yet. It is made with the first explanation in this repository, or with Refresh repository context."));
+        return box;
+      }
+      for (const [key, title] of [
+        ["purpose", "Purpose"], ["components", "Components"], ["flows", "Entry points and flows"],
+        ["conventions", "Conventions"], ["uncertainties", "Uncertainties and gaps"]
+      ]) {
+        if (overview[key]) box.append(el("h5", "", title), el("p", "", overview[key]));
+      }
+      box.append(el("p", "muted small", "The repository overview used as background for explanations; AI-generated."));
+      return box;
+    }
+
     /** A folder preview: the structure diagram, then subfolders and files with their saved summaries. */
-    function renderFolder(folder) {
-      const parts = [renderFolderSummary(folder), renderFolderFlows(folder)];
+    function renderFolder(folder, overview) {
+      const parts = [renderFolderSummary(folder)];
+      if (!folder.path) parts.push(renderAbout(overview));
+      parts.push(renderFolderFlows(folder));
       const structure = folder.structure;
       if (structure && structure.nodes.length > 1) {
         parts.push(el("h2", "folder-heading", "Structure"));
@@ -1272,12 +1292,13 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
       purpose.hidden = !localPurpose;
       purpose.textContent = localPurpose;
       const views = new Map((next.explanations || []).map((view) => [view.entryId, view]));
-      byId("entries").replaceChildren(...(file ? file.entries.map((entry) => renderEntry(entry, views)) : folder ? renderFolder(folder) : []));
+      byId("entries").replaceChildren(...(file ? file.entries.map((entry) => renderEntry(entry, views)) : folder ? renderFolder(folder, next.overview) : []));
       const empty = byId("empty");
       empty.hidden = Boolean((file && file.entries.length) || (folder && folder.children.length));
       empty.textContent = file ? "Nothing to describe in this file." : folder ? "Nothing to describe in this folder." : "Open a source file to see its description here.";
       byId("limitations").textContent = file ? file.limitations.join("\\n") : folder ? folder.limitations.join("\\n") : "";
-      renderOverview(next.overview);
+      // The project preview shows the overview near the top instead.
+      renderOverview(folder && !folder.path ? undefined : next.overview);
       highlight(currentEntry);
       highlightSteps(activeSteps);
       updateStuck();

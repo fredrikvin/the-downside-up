@@ -112,7 +112,8 @@ that file. The diagram is built locally from imports (Rust, Go, JavaScript,
 and TypeScript, including `tsconfig` path aliases); it does not show other
 connections, such as dependency injection or calls between services, and
 nothing is generated or sent. The folder preview stays until you switch to
-another file.
+another file. The project (repository root) preview also shows the saved
+repository overview under **About this project**.
 
 A folder (or the whole project) can also get an AI summary: choose
 **Summarize this folder** at the top of its preview. It gives one sentence on

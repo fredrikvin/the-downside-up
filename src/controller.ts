@@ -780,6 +780,11 @@ export class ExplanationService {
       .map((record) => [record.path, record.summary]));
   }
 
+  /** The saved repository overview, from the cache only. */
+  async savedOverview(root: string): Promise<RepositoryOverview | undefined> {
+    return (await this.options.store.read(root)).overview?.value;
+  }
+
   /** The repository overview's purpose, components, and flows, as background for project flows. */
   async overviewBackground(root: string): Promise<ProjectFlowsPromptInput["overview"]> {
     const overview = (await this.options.store.read(root)).overview?.value;

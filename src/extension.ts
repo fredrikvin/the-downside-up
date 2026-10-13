@@ -846,6 +846,11 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     notice = undefined;
     folderPreview = { root, path, children, summaries, limitations };
     panel.panel.title = `Downside Up: ${path ? basename(path) : basename(root)}`;
+    // The project preview shows the saved repository overview near the top.
+    if (!path && repositoryContext?.root !== root) {
+      const overview = await service.savedOverview(root).catch(() => undefined);
+      if (overview && epoch === folderEpoch) repositoryContext = { root, overview };
+    }
     panel.setFileReferenceHandlers(new Map());
     render();
     const structure = await folderStructure(root, path, children).catch(() => undefined);
@@ -2532,7 +2537,8 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
           children: folderPreview.children.map((child) => `${child.kind} ${child.path}`),
           edges: (folderPreview.structure?.edges ?? []).map((edge) => `${edge.from} > ${edge.to}`).sort(),
           ...(folderPreview.ai ? { summary: folderPreview.ai.value.summary, current: folderPreview.ai.current } : {}),
-          ready: Boolean(folderPreview.input)
+          ready: Boolean(folderPreview.input),
+          hasOverview: repositoryContext?.root === folderPreview.root
         }
       : undefined,
     summarizeFolder: () => summarizeShownFolder(),
@@ -2552,7 +2558,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
 }
 
 export interface DownsideUpTestApi {
-  shownFolder(): { path: string; children: string[]; edges: string[]; summary?: string; current?: boolean; ready: boolean } | undefined;
+  shownFolder(): { path: string; children: string[]; edges: string[]; summary?: string; current?: boolean; ready: boolean; hasOverview: boolean } | undefined;
   summarizeFolder(): Promise<void>;
   describeFlows(): Promise<void>;
   shownFlows(): Array<{ title: string; refs: Array<string | null> }> | undefined;

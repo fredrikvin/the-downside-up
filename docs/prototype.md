@@ -383,6 +383,12 @@ opened from it; opening a file there also previews it even when its editor
 was already active. Links and boxes use navigation ids that the extension
 resolves, so the webview never names paths.
 
+The project preview (the repository root) also shows the saved repository
+overview (purpose, components, entry points and flows, conventions, and
+uncertainties) under **About this project**, read from the cache, instead of
+in the collapsed repository-context section at the end; without one it says
+how one is made.
+
 The listing applies the scanner's rules (hidden, dependency, and build
 folders, `.gitignore` and `.copilotignore`, VS Code exclusions, the
 organization policy, secret-like names, and non-text files are skipped; hidden
