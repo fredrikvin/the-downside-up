@@ -435,6 +435,28 @@ the summary outdated; opening a folder preview only reads the cache. A
 subfolder's saved summary feeds its parent's input, so summaries can be built
 bottom-up.
 
+Main flows are AI-generated only on an explicit **Describe the main flows**
+(or **Regenerate**) in a folder preview, with the overview model. The request
+(`projectFlowsPrompt`) holds a catalog of the eligible files under the folder
+(at most 300, in path order, leaving out files with neither a saved summary
+nor function names, and stopping at 36 KiB, which is stated in the request),
+each with its saved one-sentence summary (current or not) and up to 25
+qualified function names from its bundled language support, the import edges
+between the folder's children, and as background the repository overview's
+purpose, components, and flows and the folder's saved summary; never source
+code, and a restricted repository sends nothing. The model returns up to three
+flows, each a title, a summary, and a flowchart of at most 16 nodes in the
+flowchart format (no nesting, no source lines) whose nodes name a catalog file
+and function. Each flow is checked like a function's flowchart, and a
+malformed one is dropped. A node keeps its file only when it is in the
+catalog, and its function only when that file lists it, so links go only to
+places the extension found itself; clicking a linked node opens the file at
+that function (found again with the language support) and previews it. Flows
+are cached per folder, provider, overview model, and prompt version with a
+fingerprint of the catalog and imports (not the background), so a changed
+summary, function name, or file marks them outdated; opening a folder preview
+builds the catalog locally and only reads the cache.
+
 ## Providers and data handling
 
 Mock mode is the default and returns deterministic placeholder content. It is
@@ -629,6 +651,8 @@ never generate, a folder preview of the Go repository root (excluded
 folder left out, import edges), the Explorer command previewing a folder, and
 switching to a file leaving the folder preview, a folder summary generated
 only on request and shown as current when the folder is previewed again,
+main flows described only on request with steps linked to the files and
+functions found, and shown again when the folder is previewed again,
 review mode queueing only an edited component and a new
 untracked file's component and explaining both, including the one in a file
 that is not shown, JavaScript calls resolved through the built-in TypeScript
@@ -673,6 +697,10 @@ overview-model tests cover keeping one approval per model and reading older
 single approvals, and the service priming with the overview model while
 explaining with the explanation model, and summarizing folders with the
 overview model;
+project flow tests cover the catalog (files with summaries or functions, no
+code), dropping malformed flows, keeping only confirmed file and function
+references, and saving flows with the overview model, outdated when the
+catalog changes but not when the background does;
 review-mode tests cover changed lines from diffs (ranges, removals, deleted
 files, paths with spaces), when a removal counts for a function, base choices
 in a real Git repository (merge base, branch tip, uncommitted only, recent

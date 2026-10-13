@@ -1,6 +1,6 @@
 import * as vscode from "vscode";
 import { randomBytes } from "node:crypto";
-import type { ExplanationFormat, FunctionExplanation, RepositoryOverview } from "../core/types";
+import type { ExplanationFormat, Flowchart, FunctionExplanation, RepositoryOverview } from "../core/types";
 import type { SourceReference } from "../context/related";
 import type { FileOverview } from "../context/fileOverview";
 import { lineForOffset, monotonicAnchors, offsetForLine } from "./scrollSync";
@@ -96,6 +96,19 @@ export interface FolderView {
   /** Whether a summary can be requested now (its input is ready). */
   readonly canSummarize: boolean;
   readonly summaryError?: string;
+  /** Saved main flows; each node's link opens the code its step points to. */
+  readonly flows?: {
+    readonly current: boolean;
+    readonly items: ReadonlyArray<{
+      readonly title: string;
+      readonly summary: string;
+      readonly chart: Flowchart;
+      readonly links: ReadonlyArray<{ readonly target: string; readonly caption: string } | null>;
+    }>;
+  };
+  readonly describingFlows: boolean;
+  readonly canDescribeFlows: boolean;
+  readonly flowsError?: string;
 }
 
 export interface PanelState {
@@ -124,6 +137,7 @@ export type PanelAction =
   | { readonly type: "cancelEntry"; readonly entryId: string }
   | { readonly type: "cancel" }
   | { readonly type: "summarizeFolder" }
+  | { readonly type: "describeFlows" }
   | { readonly type: "refreshContext" }
   | { readonly type: "clearCache" }
   | { readonly type: "chooseModel" }
@@ -268,6 +282,8 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
     .structure.has-loops { padding-left: 48px; }
     .structure-row { display: flex; justify-content: center; gap: 24px; }
     .structure-row.unconnected, .structure-row.shared { flex-wrap: wrap; gap: 10px 16px; max-width: 760px; }
+    .flow-ref { margin-top: 3px; font-size: .78em; color: var(--vscode-textLink-foreground); overflow-wrap: anywhere; }
+    .flow-title { margin: 14px 0 2px; font-size: 1em; }
     .structure-waypoint { width: 10px; height: 2px; align-self: center; }
     .structure-row { align-items: center; }
     .structure-caption { font-size: .8em; color: var(--vscode-descriptionForeground); margin-bottom: -26px; }
@@ -554,9 +570,10 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
     /**
      * Draws the flowchart. A show node with nodes inside it (the logic that
      * decides what appears within it) holds its own small flow, laid out and
-     * connected like the top level.
+     * connected like the top level. With links (project flows), a node opens
+     * the code its step points to instead of selecting source lines.
      */
-    function renderFlowchart(chart, view) {
+    function renderFlowchart(chart, view, links) {
       const scroll = el("div", "flow-scroll");
       const levels = [];
       const build = (parentId) => {
@@ -581,7 +598,9 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
             box.style.gridRow = String(rowIndex + 1);
             box.style.gridColumn = String(columnIndex + 1);
             if (tall) box.style.alignSelf = "start";
-            linkItem(box, view, "node", chart.nodes.indexOf(node), "node");
+            const index = chart.nodes.indexOf(node);
+            if (links) linkFlowNode(box, links[index]);
+            else linkItem(box, view, "node", index, "node");
             boxes.set(node.id, box);
             level.append(box);
           });
@@ -1117,6 +1136,52 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
       return scroll;
     }
 
+    /** Makes a project flow's node open the code its step points to, and names that place under its label. */
+    function linkFlowNode(box, link) {
+      if (!link) return;
+      box.append(el("div", "flow-ref", link.caption));
+      box.classList.add("linked");
+      box.tabIndex = 0;
+      box.title = "Open " + link.caption;
+      box.dataset.flowLink = "1";
+      const open = (target) => {
+        if (target && target.closest && target.closest("[data-flow-link]") !== box) return;
+        post({ type: "navigate", referenceId: link.target });
+      };
+      box.addEventListener("click", (clicked) => open(clicked.target));
+      box.addEventListener("keydown", (pressed) => {
+        const name = pressed["key"];
+        if (pressed.target !== box) return;
+        if (name === "Enter" || name === " ") { pressed.preventDefault(); open(undefined); }
+      });
+    }
+
+    /** The folder's main flows, each a flowchart whose steps open their code, or a way to request them. */
+    function renderFolderFlows(folder) {
+      const box = el("div", "folder-flows");
+      if (!folder.flows && !folder.describingFlows && !folder.canDescribeFlows && !folder.flowsError) return box;
+      box.append(el("h2", "folder-heading", "Main flows"));
+      for (const [index, flow] of ((folder.flows && folder.flows.items) || []).entries()) {
+        box.append(el("h3", "flow-title", flow.title));
+        if (flow.summary) box.append(el("p", "", flow.summary));
+        box.append(renderFlowchart(flow.chart, { entryId: "project-flow-" + index }, flow.links));
+      }
+      if (folder.describingFlows) {
+        const loading = el("div", "loading");
+        loading.setAttribute("role", "status");
+        loading.append(el("span", "spinner"), el("span", "", "Describing the main flows…"));
+        box.append(loading);
+      } else if (folder.canDescribeFlows && (!folder.flows || !folder.flows.current)) {
+        const note = el("p", "muted small");
+        if (folder.flows) note.append(document.createTextNode("Outdated: the files, summaries, or function names changed since. "));
+        note.append(action(folder.flows ? "Regenerate" : "Describe the main flows", () => post({ type: "describeFlows" })));
+        note.append(document.createTextNode(" · sends file paths, saved summaries, function names, and imports; no code. Steps link to the files and functions they name."));
+        box.append(note);
+      }
+      if (folder.flowsError) box.append(el("p", "error", folder.flowsError));
+      return box;
+    }
+
     /** The folder's AI summary, or a way to request one. */
     function renderFolderSummary(folder) {
       const box = el("div", "folder-ai");
@@ -1144,7 +1209,7 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
 
     /** A folder preview: the structure diagram, then subfolders and files with their saved summaries. */
     function renderFolder(folder) {
-      const parts = [renderFolderSummary(folder)];
+      const parts = [renderFolderSummary(folder), renderFolderFlows(folder)];
       const structure = folder.structure;
       if (structure && structure.nodes.length > 1) {
         parts.push(el("h2", "folder-heading", "Structure"));
@@ -1397,7 +1462,7 @@ export class ExplanationPanel {
         const type = fields.type;
         if (type === "ready") {
           this.replay();
-        } else if (type === "cancel" || type === "refreshContext" || type === "clearCache" || type === "chooseModel" || type === "summarizeFolder") {
+        } else if (type === "cancel" || type === "refreshContext" || type === "clearCache" || type === "chooseModel" || type === "summarizeFolder" || type === "describeFlows") {
           onAction({ type });
         } else if (type === "expand" || type === "collapse" || type === "regenerate" || type === "cancelEntry") {
           const entryId = stringField("entryId");

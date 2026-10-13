@@ -1,5 +1,5 @@
 import { basename } from "node:path";
-import type { FolderPartInput, FolderSummaryPromptInput } from "../generation/provider";
+import type { FlowCatalogEntry, FolderPartInput, FolderSummaryPromptInput, ProjectFlowsPromptInput } from "../generation/provider";
 import { bundledLanguageFor } from "../languages/registry";
 import type { FolderChild } from "./inventory";
 import type { StructureGraph } from "./structure";
@@ -70,4 +70,63 @@ export async function folderSummaryInput(
       ? `${Buffer.from(readmeText, "utf8").subarray(0, MAX_README_BYTES).toString("utf8")}\n[README truncated]`
       : readmeText;
   return { repositoryName, path, parts, imports, ...(readme ? { readme } : {}) };
+}
+
+const MAX_CATALOG_FILES = 300;
+const MAX_CATALOG_FUNCTIONS = 25;
+const MAX_CATALOG_BYTES = 36 * 1024;
+
+export interface FlowInputSources {
+  /** Saved one-sentence file summaries, by repository-relative path. */
+  readonly fileSummaries: ReadonlyMap<string, string>;
+  readonly text: (path: string) => Promise<string | undefined>;
+}
+
+/**
+ * What project flows are made from: a catalog of the eligible files under
+ * the folder (at most 300) with their saved summaries and function names,
+ * leaving out files with neither and stopping at a size budget, plus the
+ * import edges between the folder's parts and background. No source code.
+ */
+export async function projectFlowsInput(
+  repositoryName: string,
+  path: string,
+  files: readonly string[],
+  structure: StructureGraph | undefined,
+  background: { overview?: ProjectFlowsPromptInput["overview"]; folderSummary?: string },
+  sources: FlowInputSources
+): Promise<ProjectFlowsPromptInput> {
+  const catalog: FlowCatalogEntry[] = [];
+  let bytes = 0;
+  let truncated = files.length > MAX_CATALOG_FILES;
+  for (const file of files.slice(0, MAX_CATALOG_FILES)) {
+    const language = bundledLanguageFor({ path: file });
+    const text = language?.listFunctions ? await sources.text(file) : undefined;
+    const functions = text !== undefined && language?.listFunctions
+      ? [...new Set((await language.listFunctions(text, file).catch(() => [])).map((entry) => entry.qualifiedName))].slice(0, MAX_CATALOG_FUNCTIONS)
+      : [];
+    const summary = sources.fileSummaries.get(file);
+    if (!summary && functions.length === 0) continue;
+    const entry: FlowCatalogEntry = { path: file, ...(summary ? { summary } : {}), functions };
+    const size = Buffer.byteLength(JSON.stringify(entry), "utf8");
+    if (bytes + size > MAX_CATALOG_BYTES) {
+      truncated = true;
+      break;
+    }
+    bytes += size;
+    catalog.push(entry);
+  }
+  const imports = (structure?.edges ?? [])
+    .map((edge) => ({ from: edge.from, to: edge.to }))
+    .sort((left, right) => left.from.localeCompare(right.from) || left.to.localeCompare(right.to))
+    .slice(0, MAX_IMPORTS);
+  return {
+    repositoryName,
+    path,
+    ...(background.overview ? { overview: background.overview } : {}),
+    ...(background.folderSummary ? { folderSummary: background.folderSummary } : {}),
+    catalog,
+    imports,
+    truncated
+  };
 }

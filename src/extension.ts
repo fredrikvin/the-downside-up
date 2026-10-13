@@ -8,13 +8,30 @@ import {
   type ExplanationResult,
   type ProviderDescriptor
 } from "./controller";
-import { findRepositoryRoot, gatherInventory, listFolder, sharingExclusion, type FolderChild, type RepositoryInventory } from "./context/inventory";
+import {
+  findRepositoryRoot,
+  gatherInventory,
+  listEligibleFiles,
+  listFolder,
+  sharingExclusion,
+  type FolderChild,
+  type RepositoryInventory
+} from "./context/inventory";
 import { folderStructure, type StructureGraph } from "./context/structure";
-import { folderSummaryInput } from "./context/folderInput";
-import type { FolderSummaryPromptInput } from "./generation/provider";
+import { folderSummaryInput, projectFlowsInput } from "./context/folderInput";
+import type { FolderSummaryPromptInput, ProjectFlowsPromptInput } from "./generation/provider";
 import { findCalledFunctions, type CalledFunction } from "./context/related";
 import { buildFileOverview, type FileOverview, type OutlineEntry } from "./context/fileOverview";
-import type { ExplanationFormat, FolderSummary, FunctionExplanation, FunctionTarget, LineLinked, RepositoryOverview } from "./core/types";
+import type {
+  ExplanationFormat,
+  FlowReference,
+  FolderSummary,
+  FunctionExplanation,
+  FunctionTarget,
+  LineLinked,
+  ProjectFlow,
+  RepositoryOverview
+} from "./core/types";
 import { MockProvider } from "./generation/mock";
 import { OpenAIProvider } from "./generation/openai";
 import {
@@ -101,6 +118,11 @@ interface FolderPreview {
   readonly ai?: { value: FolderSummary; current: boolean };
   readonly summaryJob?: AbortController;
   readonly summaryError?: string;
+  /** What main flows would be made from, built after the structure. */
+  readonly flowsInput?: ProjectFlowsPromptInput;
+  readonly flows?: { flows: readonly ProjectFlow[]; current: boolean };
+  readonly flowsJob?: AbortController;
+  readonly flowsError?: string;
 }
 
 /** A background job that waits to be woken when a request slot frees or the reader moves. */
@@ -699,7 +721,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       formats: formatSettings(),
       ...(shownContext ? { overview: shownContext.overview } : {}),
       ...(notice ? { notice } : {}),
-      busy: Boolean(repositoryJob || folderPreview?.summaryJob),
+      busy: Boolean(repositoryJob || folderPreview?.summaryJob || folderPreview?.flowsJob),
       hasRepository: Boolean(preview || folderPreview)
     });
     syncStepHighlight();
@@ -749,8 +771,50 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     ...(shown.ai ? { ai: { summary: shown.ai.value.summary, overview: shown.ai.value.overview, current: shown.ai.current } } : {}),
     summarizing: Boolean(shown.summaryJob),
     canSummarize: Boolean(shown.input),
-    ...(shown.summaryError ? { summaryError: shown.summaryError } : {})
+    ...(shown.summaryError ? { summaryError: shown.summaryError } : {}),
+    ...(shown.flows
+      ? {
+          flows: {
+            current: shown.flows.current,
+            items: shown.flows.flows.map((flow) => ({
+              title: flow.title,
+              summary: flow.summary,
+              chart: flow.chart,
+              links: flow.refs.map((ref) => ref
+                ? { target: target(() => openReference(shown.root, ref)), caption: referenceCaption(ref) }
+                : null)
+            }))
+          }
+        }
+      : {}),
+    describingFlows: Boolean(shown.flowsJob),
+    canDescribeFlows: Boolean(shown.flowsInput && shown.flowsInput.catalog.length),
+    ...(shown.flowsError ? { flowsError: shown.flowsError } : {})
     };
+  };
+
+  const referenceCaption = (ref: FlowReference): string =>
+    ref.function ? `${basename(ref.path)} › ${ref.function}` : basename(ref.path);
+
+  /** Opens the file a flow step points to, at its function when one is named; the preview follows. */
+  const openReference = async (root: string, ref: FlowReference): Promise<void> => {
+    const absolute = resolve(root, ref.path);
+    if (!isWithin(root, absolute)) return;
+    const document = await vscode.workspace.openTextDocument(vscode.Uri.file(absolute));
+    let line = 0;
+    const language = ref.function ? bundledLanguageFor({ languageId: document.languageId, path: document.uri.path }) : undefined;
+    if (ref.function && language?.listFunctions) {
+      await initializeLanguage(language, context.extensionPath).catch(() => undefined);
+      const found = (await language.listFunctions(document.getText(), ref.path).catch(() => []))
+        .find((entry) => entry.qualifiedName === ref.function);
+      if (found) line = found.startLine;
+    }
+    const position = new vscode.Position(line, 0);
+    await vscode.window.showTextDocument(document, {
+      viewColumn: lastTextEditor?.viewColumn ?? vscode.ViewColumn.One,
+      selection: new vscode.Range(position, position)
+    });
+    await previewDocument(document);
   };
 
   /** Reads a repository file's current text, preferring an open buffer; small files only. */
@@ -810,6 +874,60 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       input,
       ...(saved ? { ai: saved } : {})
     };
+    render();
+    await loadFlowsInput(root, path, epoch);
+  };
+
+  /** Builds what main flows would be made from, and looks up saved ones; local only. */
+  const loadFlowsInput = async (root: string, path: string, epoch: number): Promise<void> => {
+    const current = () => epoch === folderEpoch && folderPreview?.path === path && folderPreview.root === root;
+    if (!current()) return;
+    const [{ files }, fileSummaries, overview] = await Promise.all([
+      listEligibleFiles(root, path),
+      service.savedFileSummaries(root).catch(() => new Map<string, string>()),
+      service.overviewBackground(root).catch(() => undefined)
+    ]);
+    for (const language of new Set(files.map((file) => bundledLanguageFor({ path: file })).filter((entry) => entry !== undefined))) {
+      await initializeLanguage(language!, context.extensionPath).catch(() => undefined);
+    }
+    if (!current()) return;
+    const flowsInput = await projectFlowsInput(basename(root), path, files, folderPreview!.structure, {
+      ...(overview ? { overview } : {}),
+      ...(folderPreview!.ai ? { folderSummary: folderPreview!.ai.value.summary } : {})
+    }, {
+      fileSummaries,
+      text: (file) => repositoryText(root, file).catch(() => undefined)
+    }).catch(() => undefined);
+    if (!current() || !flowsInput) return;
+    const flows = await service.findProjectFlows(root, flowsInput).catch(() => undefined);
+    if (!current()) return;
+    folderPreview = { ...folderPreview!, flowsInput, ...(flows ? { flows } : {}) };
+    render();
+  };
+
+  /** Describes the shown folder's main flows on explicit request; it may ask for code-sharing approval. */
+  const describeShownFlows = async (): Promise<void> => {
+    const shown = folderPreview;
+    if (!shown?.flowsInput || shown.flowsJob) return;
+    if (!(await ensureLanguageModelSelected())) return;
+    const controller = new AbortController();
+    const same = () => folderPreview?.root === shown.root && folderPreview.path === shown.path;
+    if (!same()) return;
+    folderPreview = { ...folderPreview!, flowsJob: controller, flowsError: undefined };
+    render();
+    try {
+      const result = await scheduler.schedule("explicit", () => service.describeProjectFlows(shown.root, shown.flowsInput!, controller.signal));
+      if (same()) folderPreview = { ...folderPreview!, flows: { flows: result.flows, current: true }, flowsJob: undefined };
+    } catch (error) {
+      if (same()) {
+        const cancelled = controller.signal.aborted || (error instanceof DOMException && error.name === "AbortError");
+        folderPreview = {
+          ...folderPreview!,
+          flowsJob: undefined,
+          ...(cancelled ? {} : { flowsError: `Could not describe the main flows: ${errorMessage(error)}` })
+        };
+      }
+    }
     render();
   };
 
@@ -1913,9 +2031,13 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       case "cancel":
         repositoryJob?.abort();
         folderPreview?.summaryJob?.abort();
+        folderPreview?.flowsJob?.abort();
         return;
       case "summarizeFolder":
         await summarizeShownFolder();
+        return;
+      case "describeFlows":
+        await describeShownFlows();
         return;
       case "refreshContext":
         await refreshRepositoryContext();
@@ -2188,6 +2310,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
 
   const cancelExplanations = (): void => {
     folderPreview?.summaryJob?.abort();
+    folderPreview?.flowsJob?.abort();
     stopPrefetch();
     stopReview();
     repositoryJob?.abort();
@@ -2413,6 +2536,11 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
         }
       : undefined,
     summarizeFolder: () => summarizeShownFolder(),
+    describeFlows: () => describeShownFlows(),
+    shownFlows: () => (folderPreview && !preview && folderPreview.flows
+      ? folderPreview.flows.flows.map((flow) => ({ title: flow.title, refs: flow.refs.map((ref) => ref ? referenceCaption(ref) : null) }))
+      : undefined),
+    flowsReady: () => Boolean(folderPreview?.flowsInput),
     previewFolder: (path: string) => preview ? showFolder(preview.root, path) : folderPreview ? showFolder(folderPreview.root, path) : Promise.resolve(),
     allExplanations: () => [...functions.values()].map((state) => ({
       functionName: state.view.functionName,
@@ -2426,6 +2554,9 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
 export interface DownsideUpTestApi {
   shownFolder(): { path: string; children: string[]; edges: string[]; summary?: string; current?: boolean; ready: boolean } | undefined;
   summarizeFolder(): Promise<void>;
+  describeFlows(): Promise<void>;
+  shownFlows(): Array<{ title: string; refs: Array<string | null> }> | undefined;
+  flowsReady(): boolean;
   previewFolder(path: string): Promise<void>;
   reviewChanges(base: string): Promise<number>;
   reviewItems(): Array<{ qualifiedName: string; path: string; status: string }>;

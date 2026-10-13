@@ -4,14 +4,16 @@ import type {
   FileSummary,
   FolderSummary,
   FunctionExplanation,
+  ProjectFlowsDraft,
   GenerationResult,
   RepositoryOverview
 } from "../core/types";
-import { explanationPrompt, fileSummaryPrompt, folderSummaryPrompt, formatPrompt, overviewPrompt, reviewPrompt } from "./prompts";
+import { explanationPrompt, fileSummaryPrompt, folderSummaryPrompt, formatPrompt, projectFlowsPrompt, overviewPrompt, reviewPrompt } from "./prompts";
 import type {
   ExplanationPromptInput,
   FileSummaryPromptInput,
   FolderSummaryPromptInput,
+  ProjectFlowsPromptInput,
   FormatPromptInput,
   GenerationProvider,
   OverviewReviewPromptInput,
@@ -22,10 +24,12 @@ import {
   formatSchemaFor,
   fileSummarySchema,
   folderSummarySchema,
+  projectFlowsSchema,
   overviewSchema,
   parseExplanation,
   parseFileSummary,
   parseFolderSummary,
+  parseProjectFlows,
   parseFormat,
   parseOverview
 } from "./schema";
@@ -145,6 +149,14 @@ export class LanguageModelProvider implements GenerationProvider {
   ): Promise<GenerationResult<FolderSummary>> {
     const [system, user] = folderSummaryPrompt(input);
     return this.request(system, user, folderSummarySchema, parseFolderSummary, signal);
+  }
+
+  async describeFlows(
+    input: ProjectFlowsPromptInput,
+    signal?: AbortSignal
+  ): Promise<GenerationResult<ProjectFlowsDraft>> {
+    const [system, user] = projectFlowsPrompt(input);
+    return this.request(system, user, projectFlowsSchema, parseProjectFlows, signal);
   }
 
   async explainFormat(

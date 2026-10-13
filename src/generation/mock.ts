@@ -4,6 +4,7 @@ import type {
   FileSummary,
   FolderSummary,
   FunctionExplanation,
+  ProjectFlowsDraft,
   GenerationResult,
   RepositoryOverview
 } from "../core/types";
@@ -11,6 +12,7 @@ import type {
   ExplanationPromptInput,
   FileSummaryPromptInput,
   FolderSummaryPromptInput,
+  ProjectFlowsPromptInput,
   FormatPromptInput,
   GenerationProvider,
   OverviewReviewPromptInput,
@@ -156,6 +158,30 @@ export class MockProvider implements GenerationProvider {
       summary: `Mock summary of ${input.path || "the repository"}; its contents have not been interpreted.`,
       overview: "Mock mode does not describe how the parts fit together. Choose a language model for a real summary.",
       parts: input.parts.filter((part) => !part.summary).map((part) => ({ name: part.name, summary: `Mock description of ${part.name}.` }))
+    }, signal);
+  }
+
+  describeFlows(
+    input: ProjectFlowsPromptInput,
+    signal?: AbortSignal
+  ): Promise<GenerationResult<ProjectFlowsDraft>> {
+    const steps = input.catalog.slice(0, 2);
+    const nodes = [
+      { id: "start", kind: "start" as const, label: "Start", startLine: 0, endLine: 0 },
+      ...steps.map((entry, index) => ({ id: `step${index}`, kind: "action" as const, label: `Mock step in ${entry.path}`, startLine: 0, endLine: 0 })),
+      { id: "end", kind: "end" as const, label: "Done", startLine: 0, endLine: 0 }
+    ];
+    return this.respond(JSON.stringify(input.catalog), {
+      flows: [{
+        title: "Mock flow",
+        summary: "Mock mode does not describe flows. Choose a language model for real ones.",
+        chart: { nodes, edges: nodes.slice(1).map((node, index) => ({ from: nodes[index]!.id, to: node.id, label: "" })) },
+        refs: [
+          { file: "", function: "" },
+          ...steps.map((entry) => ({ file: entry.path, function: entry.functions[0] ?? "" })),
+          { file: "", function: "" }
+        ]
+      }]
     }, signal);
   }
 

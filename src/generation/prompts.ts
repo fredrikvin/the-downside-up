@@ -4,6 +4,7 @@ import type {
   ExplanationPromptInput,
   FileSummaryPromptInput,
   FolderSummaryPromptInput,
+  ProjectFlowsPromptInput,
   FormatPromptInput,
   OverviewReviewPromptInput,
   RepositoryPromptInput
@@ -127,6 +128,25 @@ parts: one entry for each listed file or folder that has no summary, with its na
       parts: input.parts,
       importsBetweenParts: input.imports,
       ...(input.readme ? { readme: input.readme } : {})
+    })
+  ];
+}
+
+export function projectFlowsPrompt(input: ProjectFlowsPromptInput): [string, string] {
+  return [
+    `${plainSystem} Describe the one to three most important flows through ${input.path ? "one folder of a code repository" : "a code repository"}, such as handling a request, what happens at startup, or how data is saved, from a catalog of its files with their saved one-sentence summaries and the names of their functions, the imports between its parts, and background on the project; the code itself is not included, so describe only what this supports and say so in the summary when a step is a guess. Fill the fields as follows.
+flows: one to three flows, the most important first. Each has a title of two to six plain words, such as "Checking out a book"; a summary of one or two plain sentences; nodes; and edges.
+nodes: at most 16 per flow. Each has a short unique id, a kind (start, action, decision, end, or show), a label of a few plain words (a decision is a short yes/no question), file, and function. Use exactly one start node, make every way the flow finishes an end node (or show, when it ends by showing something on screen). file is the exact path of the catalog file where the step happens, or an empty string; function is the exact name, as listed for that file, of the function that does it, or an empty string. Never invent files or functions.
+edges: each has from and to node ids and a label such as "yes", "no", or "error", or an empty label for plain sequence.`,
+    JSON.stringify({
+      task: "Describe the main flows in plain language, pointing to files and functions from the catalog.",
+      repository: input.repositoryName,
+      folder: input.path || "(repository root)",
+      ...(input.overview ? { projectBackground: input.overview } : {}),
+      ...(input.folderSummary ? { folderSummary: input.folderSummary } : {}),
+      catalog: input.catalog,
+      importsBetweenParts: input.imports,
+      ...(input.truncated ? { note: "The catalog was shortened to fit the request; some files are missing." } : {})
     })
   ];
 }

@@ -125,6 +125,14 @@ no code. Summarize subfolders first, and their summaries feed the parent's.
 A saved summary is shown whenever you preview the folder, and marked
 outdated when its contents change; choose **Regenerate** to update it.
 
+**Describe the main flows** in a folder (or project) preview draws one to
+three flowcharts of what happens, such as handling a request or starting up.
+Each step names the file and function where it happens, and clicking it opens
+that place; the extension only links to files and functions it found itself.
+The request holds file paths, saved file summaries, function names, and the
+imports between parts, not code, so explaining a few functions first (which
+saves file summaries) gives better flows.
+
 Project-level work (the repository overview and folder summaries) happens
 far less often than explaining functions, so it can use a stronger model:
 run **Downside Up: Choose Overview Model** (or, with OpenAI, set

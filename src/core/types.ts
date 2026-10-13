@@ -144,6 +144,45 @@ export interface FolderSummary {
   readonly parts: ReadonlyArray<{ readonly name: string; readonly summary: string }>;
 }
 
+/** Where a project flow's step happens: a repository file and, optionally, a function in it. */
+export interface FlowReference {
+  /** Repository-relative path. */
+  readonly path: string;
+  /** Qualified function name as the extension lists it. */
+  readonly function?: string;
+}
+
+/** A main flow through a folder or project, drawn as a flowchart whose steps point to code. */
+export interface ProjectFlow {
+  /** Such as "Checking out a book". */
+  readonly title: string;
+  readonly summary: string;
+  readonly chart: Flowchart;
+  /** For each node of `chart`, by index: where its step happens, when the extension could confirm it. */
+  readonly refs: ReadonlyArray<FlowReference | null>;
+}
+
+/** Flows as a model returns them, before the extension checks their references. */
+export interface ProjectFlowsDraft {
+  readonly flows: ReadonlyArray<{
+    readonly title: string;
+    readonly summary: string;
+    readonly chart: Flowchart;
+    /** For each node, the file and function the model named; empty strings when none. */
+    readonly refs: ReadonlyArray<{ readonly file: string; readonly function: string }>;
+  }>;
+}
+
+export interface ProjectFlowsRecord {
+  readonly path: string;
+  readonly flows: readonly ProjectFlow[];
+  readonly fingerprint: string;
+  readonly provider: ProviderKind;
+  readonly model: string;
+  readonly promptVersion: string;
+  readonly savedAt: number;
+}
+
 export interface FolderSummaryRecord {
   /** Repository-relative folder path, or "" for the repository root. */
   readonly path: string;
@@ -227,6 +266,8 @@ export interface RepositoryCache {
   readonly fileSummaries?: Record<string, FileSummaryRecord>;
   /** AI folder summaries keyed by path, provider, model, and prompt version. */
   readonly folderSummaries?: Record<string, FolderSummaryRecord>;
+  /** AI project flows keyed by folder path, provider, model, and prompt version. */
+  readonly projectFlows?: Record<string, ProjectFlowsRecord>;
 }
 
 export interface FileSummaryRecord {

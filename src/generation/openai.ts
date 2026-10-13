@@ -2,6 +2,7 @@ import type {
   FileSummary,
   FolderSummary,
   FunctionExplanation,
+  ProjectFlowsDraft,
   GenerationResult,
   RepositoryOverview
 } from "../core/types";
@@ -11,18 +12,21 @@ import {
   formatSchemaFor,
   fileSummarySchema,
   folderSummarySchema,
+  projectFlowsSchema,
   overviewSchema,
   parseExplanation,
   parseFileSummary,
   parseFolderSummary,
+  parseProjectFlows,
   parseFormat,
   parseOverview
 } from "./schema";
-import { explanationPrompt, fileSummaryPrompt, folderSummaryPrompt, formatPrompt, overviewPrompt, reviewPrompt } from "./prompts";
+import { explanationPrompt, fileSummaryPrompt, folderSummaryPrompt, formatPrompt, projectFlowsPrompt, overviewPrompt, reviewPrompt } from "./prompts";
 import type {
   ExplanationPromptInput,
   FileSummaryPromptInput,
   FolderSummaryPromptInput,
+  ProjectFlowsPromptInput,
   FormatPromptInput,
   GenerationProvider,
   OverviewReviewPromptInput,
@@ -86,6 +90,14 @@ export class OpenAIProvider implements GenerationProvider {
   ): Promise<GenerationResult<FolderSummary>> {
     const [system, user] = folderSummaryPrompt(input);
     return this.request(system, user, "folder_summary", folderSummarySchema, parseFolderSummary, signal);
+  }
+
+  async describeFlows(
+    input: ProjectFlowsPromptInput,
+    signal?: AbortSignal
+  ): Promise<GenerationResult<ProjectFlowsDraft>> {
+    const [system, user] = projectFlowsPrompt(input);
+    return this.request(system, user, "project_flows", projectFlowsSchema, parseProjectFlows, signal);
   }
 
   async explainFormat(

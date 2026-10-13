@@ -359,6 +359,15 @@ export async function run(): Promise<void> {
   await api.previewFolder("inventory");
   await api.previewFolder("");
   await waitFor(async () => api.shownFolder()?.current ? true : undefined, "the saved folder summary to be shown again as current");
+  await waitFor(async () => api.flowsReady() ? true : undefined, "the project flow catalog");
+  assert.equal(api.shownFlows(), undefined, "Opening a folder preview describes no flows.");
+  await api.describeFlows();
+  const flows = api.shownFlows();
+  assert.equal(flows?.length, 1, "The mock model's flow is shown.");
+  assert.ok(flows![0]!.refs.some((ref) => ref?.startsWith("inventory.go")), "Flow steps link to files and functions the extension found.");
+  await api.previewFolder("inventory");
+  await api.previewFolder("");
+  await waitFor(async () => api.shownFlows()?.length === 1 ? true : undefined, "the saved flows to be shown again");
   await vscode.commands.executeCommand("downsideUp.showFileOverview", vscode.Uri.file(resolve(goRoot, "inventory")));
   await waitFor(async () => api.shownFolder()?.path === "inventory" ? true : undefined, "the Explorer command to preview a folder");
   // Opened in another editor group, so main.go's editor, used below, stays open.

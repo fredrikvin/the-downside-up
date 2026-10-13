@@ -3,6 +3,7 @@ import type {
   FileSummary,
   Flowchart,
   FolderSummary,
+  ProjectFlowsDraft,
   FlowNode,
   FunctionExplanation,
   PseudocodeLine,
@@ -97,6 +98,35 @@ export function formatSchemaFor(format: ExplanationFormat): Record<string, unkno
 }
 
 export const fileSummarySchema = objectSchema({ summary: string }, ["summary"]);
+
+const flowNodeSchema = objectSchema(
+  {
+    id: string,
+    kind: { type: "string", enum: ["start", "action", "decision", "end", "show"] },
+    label: string,
+    file: string,
+    function: string
+  },
+  ["id", "kind", "label", "file", "function"]
+);
+
+export const projectFlowsSchema = objectSchema(
+  {
+    flows: {
+      type: "array",
+      items: objectSchema(
+        {
+          title: string,
+          summary: string,
+          nodes: { type: "array", items: flowNodeSchema },
+          edges: { type: "array", items: objectSchema({ from: string, to: string, label: string }, ["from", "to", "label"]) }
+        },
+        ["title", "summary", "nodes", "edges"]
+      )
+    }
+  },
+  ["flows"]
+);
 
 export const folderSummarySchema = objectSchema(
   {
@@ -314,6 +344,41 @@ export function parseFormat(value: unknown, format: ExplanationFormat): Pick<Fun
   return format === "pseudocode"
     ? { pseudocode: parsePseudocode(source.pseudocode) }
     : { flowchart: parseFlowchart(source.flowchart) };
+}
+
+const MAX_PROJECT_FLOWS = 3;
+
+/**
+ * Project flows, each checked like a function's flowchart (bounded size,
+ * unique ids, edges between known nodes); a malformed flow is dropped
+ * rather than failing the others. References are read as given and checked
+ * against the repository by the caller.
+ */
+export function parseProjectFlows(value: unknown): ProjectFlowsDraft {
+  const source = record(value);
+  if (!Array.isArray(source.flows)) throw new Error("The provider response contains invalid flows.");
+  const flows: ProjectFlowsDraft["flows"][number][] = [];
+  for (const item of source.flows.slice(0, MAX_PROJECT_FLOWS)) {
+    try {
+      const flow = record(item);
+      const rawNodes = Array.isArray(flow.nodes) ? flow.nodes : [];
+      const chart = parseFlowchart({
+        nodes: rawNodes.map((node) => ({ ...record(node), parent: "", startLine: 0, endLine: 0 })),
+        edges: flow.edges
+      });
+      const refs = rawNodes.map((node) => {
+        const { file, function: name } = record(node);
+        return {
+          file: typeof file === "string" ? file.trim().replace(/^\.\//, "") : "",
+          function: typeof name === "string" ? name.trim() : ""
+        };
+      });
+      flows.push({ title: readText(flow, "title", 120).trim(), summary: readText(flow, "summary", 600).trim(), chart, refs });
+    } catch {
+      // A malformed flow is left out.
+    }
+  }
+  return { flows };
 }
 
 /** A folder summary; parts with blank or unusable text are dropped rather than failing it. */

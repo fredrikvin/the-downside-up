@@ -3,6 +3,7 @@ import type {
   FileSummary,
   FolderSummary,
   FunctionExplanation,
+  ProjectFlowsDraft,
   GenerationResult,
   ProviderKind,
   RepositoryOverview,
@@ -75,6 +76,28 @@ export interface FolderSummaryPromptInput {
   readonly readme?: string;
 }
 
+/** A file the flows may point to: its path, saved summary, and function names; never code. */
+export interface FlowCatalogEntry {
+  readonly path: string;
+  readonly summary?: string;
+  readonly functions: readonly string[];
+}
+
+export interface ProjectFlowsPromptInput {
+  readonly repositoryName: string;
+  /** Repository-relative folder path, or "" for the repository root. */
+  readonly path: string;
+  /** Background from the repository overview, when there is one. */
+  readonly overview?: { readonly purpose: string; readonly components: string; readonly flows: string };
+  /** The folder's saved summary, when there is one. */
+  readonly folderSummary?: string;
+  readonly catalog: readonly FlowCatalogEntry[];
+  /** Import edges between the folder's parts, by path. */
+  readonly imports: ReadonlyArray<{ readonly from: string; readonly to: string }>;
+  /** True when the catalog had to be shortened to fit the request. */
+  readonly truncated: boolean;
+}
+
 export interface OverviewReviewPromptInput extends RepositoryPromptInput {
   readonly previous: RepositoryOverview;
   readonly changedPaths: readonly string[];
@@ -103,6 +126,10 @@ export interface GenerationProvider {
     input: FolderSummaryPromptInput,
     signal?: AbortSignal
   ): Promise<GenerationResult<FolderSummary>>;
+  describeFlows(
+    input: ProjectFlowsPromptInput,
+    signal?: AbortSignal
+  ): Promise<GenerationResult<ProjectFlowsDraft>>;
   explainFormat(
     input: FormatPromptInput,
     signal?: AbortSignal

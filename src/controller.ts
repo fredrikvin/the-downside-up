@@ -9,6 +9,9 @@ import type {
   FileSummaryRecord,
   FolderSummary,
   FolderSummaryRecord,
+  ProjectFlow,
+  ProjectFlowsDraft,
+  ProjectFlowsRecord,
   FunctionExplanation,
   FunctionTarget,
   GenerationResult,
@@ -31,6 +34,7 @@ import {
   explanationPrompt,
   fileSummaryPrompt,
   folderSummaryPrompt,
+  projectFlowsPrompt,
   formatPrompt,
   overviewPrompt,
   PROMPT_VERSION,
@@ -39,7 +43,9 @@ import {
 import type {
   ExplanationPromptInput,
   FileSummaryPromptInput,
+  FlowCatalogEntry,
   FolderSummaryPromptInput,
+  ProjectFlowsPromptInput,
   FormatPromptInput,
   GenerationProvider,
   OverviewReviewPromptInput,
@@ -106,6 +112,34 @@ function fileSummaryKey(path: string, descriptor: ProviderDescriptor): string {
 
 function folderSummaryKey(path: string, descriptor: ProviderDescriptor): string {
   return cacheKey(["folder", path, descriptor.kind, descriptor.modelId, EXPLANATION_PROMPT_VERSION]);
+}
+
+function projectFlowsKey(path: string, descriptor: ProviderDescriptor): string {
+  return cacheKey(["flows", path, descriptor.kind, descriptor.modelId, EXPLANATION_PROMPT_VERSION]);
+}
+
+/** What project flows depend on; the repository overview and folder summary are background, not tracked. */
+function flowsInputFingerprint(input: ProjectFlowsPromptInput): string {
+  return fingerprint(JSON.stringify([input.path, input.catalog, input.imports, input.truncated]));
+}
+
+/**
+ * Keeps a flow step's reference only when it names a catalog file, and its
+ * function only when that file lists it, so navigation never goes to a place
+ * the extension did not find itself.
+ */
+export function checkedFlowReferences(draft: ProjectFlowsDraft, catalog: readonly FlowCatalogEntry[]): ProjectFlow[] {
+  const functions = new Map(catalog.map((entry) => [entry.path, new Set(entry.functions)]));
+  return draft.flows.map((flow) => ({
+    title: flow.title,
+    summary: flow.summary,
+    chart: flow.chart,
+    refs: flow.chart.nodes.map((_, index) => {
+      const ref = flow.refs[index];
+      if (!ref?.file || !functions.has(ref.file)) return null;
+      return functions.get(ref.file)!.has(ref.function) ? { path: ref.file, function: ref.function } : { path: ref.file };
+    })
+  }));
 }
 
 /** What a folder summary depends on; the repository's name and purpose are background, not tracked. */
@@ -735,6 +769,72 @@ export class ExplanationService {
     const record = (await this.options.store.read(root)).fileSummaries?.[fileSummaryKey(path, descriptor)];
     if (!record) return undefined;
     return { summary: record.summary, current: record.fingerprint === fileTextFingerprint(document.getText()) };
+  }
+
+  /** Saved one-sentence file summaries for the explanation model, current or not, by path. */
+  async savedFileSummaries(root: string): Promise<Map<string, string>> {
+    const descriptor = this.options.describeProvider();
+    const saved = (await this.options.store.read(root)).fileSummaries ?? {};
+    return new Map(Object.values(saved)
+      .filter((record) => record.provider === descriptor.kind && record.model === descriptor.modelId && record.promptVersion === EXPLANATION_PROMPT_VERSION)
+      .map((record) => [record.path, record.summary]));
+  }
+
+  /** The repository overview's purpose, components, and flows, as background for project flows. */
+  async overviewBackground(root: string): Promise<ProjectFlowsPromptInput["overview"]> {
+    const overview = (await this.options.store.read(root)).overview?.value;
+    return overview ? { purpose: overview.purpose, components: overview.components, flows: overview.flows } : undefined;
+  }
+
+  /** Cache-only lookup of a folder's saved project flows; `current` is false when their input changed since. */
+  async findProjectFlows(
+    root: string,
+    input: ProjectFlowsPromptInput
+  ): Promise<{ flows: readonly ProjectFlow[]; current: boolean } | undefined> {
+    const record = (await this.options.store.read(root)).projectFlows?.[projectFlowsKey(input.path, this.overviewDescriptor())];
+    return record ? { flows: record.flows, current: record.fingerprint === flowsInputFingerprint(input) } : undefined;
+  }
+
+  /**
+   * Describes a folder's main flows on explicit request with the overview
+   * model. The request holds file paths, saved summaries, function names,
+   * import edges, and background, never code; references the extension
+   * cannot confirm are dropped before saving.
+   */
+  async describeProjectFlows(
+    root: string,
+    input: ProjectFlowsPromptInput,
+    signal?: AbortSignal
+  ): Promise<{ flows: readonly ProjectFlow[]; usage: Usage }> {
+    const startingFence = this.fence(root);
+    const descriptor = this.overviewDescriptor();
+    const restricted = await (await currentPolicy()).repositoryRestriction(root);
+    if (restricted) throw new Error(`Nothing was sent because ${restricted}.`);
+    const [system, user] = projectFlowsPrompt(input);
+    const requestBytes = Buffer.byteLength(system + user, "utf8");
+    if (requestBytes > MAX_EXPLANATION_BYTES) throw new Error("The folder has too much to describe in one request; nothing was sent.");
+    assertNotCancelled(signal);
+    if (descriptor.kind !== "mock" && !(await this.options.authorizeExternalData(root, descriptor, requestBytes, signal))) {
+      throw new DOMException("External code sharing was not authorized.", "AbortError");
+    }
+    const generated = await (await this.options.createProvider(descriptor)).describeFlows(input, signal);
+    assertNotCancelled(signal);
+    const flows = checkedFlowReferences(generated.value, input.catalog);
+    if (flows.length === 0) throw new Error("The model returned no usable flows.");
+    const record: ProjectFlowsRecord = {
+      path: input.path,
+      flows,
+      fingerprint: flowsInputFingerprint(input),
+      provider: descriptor.kind,
+      model: descriptor.modelId,
+      promptVersion: EXPLANATION_PROMPT_VERSION,
+      savedAt: Date.now()
+    };
+    await this.options.store.update(root, (current) => this.fence(root) !== startingFence ? current : {
+      ...current,
+      projectFlows: { ...current.projectFlows, [projectFlowsKey(input.path, descriptor)]: record }
+    });
+    return { flows, usage: generated.usage };
   }
 
   /** A folder's saved summary sentence for the current model, current or not, as input for its parent folder. */
