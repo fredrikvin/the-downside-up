@@ -4,6 +4,7 @@ import type { ExplanationFormat, FunctionExplanation, RepositoryOverview } from 
 import type { SourceReference } from "../context/related";
 import type { FileOverview } from "../context/fileOverview";
 import { lineForOffset, monotonicAnchors, offsetForLine } from "./scrollSync";
+import { structureLayout } from "./structureLayout";
 
 export type ExplanationStatus = "loading" | "current" | "outdated" | "cancelled" | "failed";
 
@@ -54,10 +55,47 @@ export interface PanelNotice {
   readonly text: string;
 }
 
+/** One step of the breadcrumb trail above a preview; `target` is a navigation id when it can be opened. */
+export interface Crumb {
+  readonly name: string;
+  readonly target?: string;
+}
+
+/** A file or subfolder listed in a folder preview. */
+export interface FolderChildView {
+  readonly kind: "folder" | "file";
+  readonly name: string;
+  readonly path: string;
+  /** Navigation id that opens it. */
+  readonly target: string;
+  readonly languageId?: string;
+  readonly fileCount?: number;
+  readonly countCapped?: boolean;
+  /** Saved one-sentence AI summary; `current` is false when the file changed since. */
+  readonly summary?: { readonly text: string; readonly current: boolean };
+}
+
+/** A folder preview: its children and the import structure between them. Local only. */
+export interface FolderView {
+  readonly name: string;
+  /** Repository-relative path, or "" for the repository root. */
+  readonly path: string;
+  readonly fileCount: number;
+  readonly children: readonly FolderChildView[];
+  readonly structure?: {
+    readonly nodes: ReadonlyArray<{ readonly id: string; readonly kind: "folder" | "file"; readonly name: string }>;
+    readonly edges: ReadonlyArray<{ readonly from: string; readonly to: string; readonly weight: number }>;
+  };
+  readonly limitations: readonly string[];
+}
+
 export interface PanelState {
   readonly provider: string;
   readonly model: string;
   readonly document?: FileOverview;
+  /** Shown instead of a file when a folder is previewed. */
+  readonly folder?: FolderView;
+  readonly breadcrumbs?: readonly Crumb[];
   readonly explanations: readonly ExplanationView[];
   readonly overview?: RepositoryOverview;
   /** AI summary of the shown file; `current` is false when the file changed since. */
@@ -207,6 +245,27 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
     .pseudo-line.gap { margin-top: 1.1em; }
     .pseudo-line.linked { cursor: pointer; }
     .pseudo-line.linked:hover { background: var(--vscode-list-hoverBackground, rgba(128, 128, 128, .12)); }
+    .crumbs { display: flex; flex-wrap: wrap; gap: 2px 6px; margin: 0 0 4px; }
+    .crumbs a { cursor: pointer; }
+    .crumbs .sep { opacity: .6; }
+    .folder-list { list-style: none; padding: 0; margin: 4px 0 16px; }
+    .folder-list li { padding: 6px 0; border-bottom: 1px solid var(--vscode-panel-border, var(--separator)); }
+    .folder-list .child-name { font-weight: 600; }
+    .folder-list .child-meta { margin-left: 8px; }
+    .folder-list .child-summary { margin: 2px 0 0; }
+    .structure-scroll { overflow-x: auto; margin: 6px 0 16px; }
+    .structure { position: relative; display: inline-flex; flex-direction: column; align-items: center; gap: 34px; min-width: 100%; padding: 4px 4px 8px; box-sizing: border-box; }
+    .structure.has-loops { padding-left: 48px; }
+    .structure-row { display: flex; justify-content: center; gap: 24px; }
+    .structure-row.unconnected, .structure-row.shared { flex-wrap: wrap; gap: 10px 16px; max-width: 760px; }
+    .structure-waypoint { width: 10px; height: 2px; align-self: center; }
+    .structure-row { align-items: center; }
+    .structure-caption { font-size: .8em; color: var(--vscode-descriptionForeground); margin-bottom: -26px; }
+    .structure-node { cursor: pointer; text-align: center; max-width: 190px; font: inherit; color: inherit; }
+    .structure-node .node-name { font-weight: 600; overflow-wrap: anywhere; }
+    .structure-node .node-meta { font-size: .78em; color: var(--vscode-descriptionForeground); }
+    .structure-node.kind-folder { border-width: 2px; }
+    .structure-node:hover, .structure-node:focus-visible { border-color: var(--vscode-focusBorder); }
     .flow-scroll { overflow-x: auto; margin: 6px 0 12px; }
     .flow { position: relative; display: inline-grid; grid-auto-columns: max-content; column-gap: 32px; row-gap: 34px; align-items: center; padding: 4px 16px 8px 4px; }
     .flow.has-loops { padding-left: 56px; }
@@ -267,6 +326,7 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
   </nav>
   <p id="notice" class="notice" role="status" aria-live="polite"></p>
   <main id="doc">
+    <nav id="crumbs" class="crumbs muted small" aria-label="Location" hidden></nav>
     <h1 id="title">Downside Up</h1>
     <p id="facts" class="muted small"></p>
     <p id="summary" class="summary" hidden></p>
@@ -286,6 +346,7 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
     const offsetForLine = (${offsetForLine.toString()});
     const lineForOffset = (${lineForOffset.toString()});
     const monotonicAnchors = (${monotonicAnchors.toString()});
+    const structureLayout = (${structureLayout.toString()});
     const vscode = acquireVsCodeApi();
     const byId = (id) => document.getElementById(id);
     const HEADING_KINDS = new Set(["function", "type", "impl", "module", "macro"]);
@@ -852,12 +913,239 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
       }
     }
 
+    /** The breadcrumb trail; every step but the last opens that folder. */
+    function renderCrumbs(crumbs) {
+      const nav = byId("crumbs");
+      nav.hidden = !(crumbs && crumbs.length > 1);
+      nav.replaceChildren();
+      (crumbs || []).forEach((crumb, index) => {
+        if (index > 0) nav.append(el("span", "sep", "›"));
+        if (crumb.target && index < crumbs.length - 1) {
+          nav.append(action(crumb.name, () => post({ type: "navigate", referenceId: crumb.target })));
+        } else {
+          nav.append(el("span", "", crumb.name));
+        }
+      });
+    }
+
+    function plural(count, word) {
+      return count + " " + word + (count === 1 ? "" : "s");
+    }
+
+    function childMeta(child) {
+      if (child.kind === "folder") return child.countCapped ? "at least " + plural(child.fileCount, "file") : plural(child.fileCount || 0, "file");
+      return child.languageId || "file";
+    }
+
+    /**
+     * Draws the import structure between a folder's children: importers above
+     * what they import, shared folders in a bottom row, cycles' closing edges
+     * up the left. Boxes open their folder or file.
+     */
+    function renderStructure(structure, children) {
+      const layout = structureLayout(structure);
+      const byPath = new Map(children.map((child) => [child.path, child]));
+      const scroll = el("div", "structure-scroll");
+      const chart = el("div", "structure");
+      chart.setAttribute("role", "group");
+      chart.setAttribute("aria-label", "Structure diagram: what imports what");
+      if (layout.back.length) chart.classList.add("has-loops");
+      scroll.append(chart);
+      const boxes = new Map();
+      const waypoints = new Map();
+      layout.rows.forEach((row, index) => {
+        const kind = layout.rowKinds[index];
+        if (kind === "shared") chart.append(el("div", "structure-caption", "Used by most of the others"));
+        if (kind === "unconnected") chart.append(el("div", "structure-caption", "No imports to or from the others"));
+        const line = el("div", "structure-row " + kind);
+        for (const id of row) {
+          if (id.startsWith("\\u0001")) {
+            // A waypoint keeps a lane free for an edge passing this row.
+            const spacer = el("span", "structure-waypoint");
+            waypoints.set(id, spacer);
+            line.append(spacer);
+            continue;
+          }
+          const child = byPath.get(id);
+          if (!child) continue;
+          const box = el("button", "flow-node structure-node kind-" + child.kind);
+          box.type = "button";
+          box.title = (child.kind === "folder" ? "Preview " : "Open ") + child.path;
+          box.append(el("div", "node-name", child.name + (child.kind === "folder" ? "/" : "")));
+          const meta = layout.usedBy[id] ? "used by " + layout.usedBy[id] + " · " + childMeta(child) : childMeta(child);
+          box.append(el("div", "node-meta", meta));
+          box.addEventListener("click", () => post({ type: "navigate", referenceId: child.target }));
+          boxes.set(id, box);
+          line.append(box);
+        }
+        chart.append(line);
+      });
+      const hidden = new Set(layout.hidden);
+      const back = new Set(layout.back);
+      const fit = () => {
+        chart.style.transform = "";
+        chart.style.marginRight = "";
+        chart.style.marginBottom = "";
+        const natural = chart.offsetWidth;
+        const available = scroll.clientWidth;
+        const scale = natural > available && available > 0 ? Math.max(0.6, available / natural) : 1;
+        if (scale < 1) {
+          chart.style.transformOrigin = "0 0";
+          chart.style.transform = "scale(" + scale + ")";
+          chart.style.marginRight = -Math.ceil(natural * (1 - scale)) + "px";
+          chart.style.marginBottom = -Math.ceil(chart.offsetHeight * (1 - scale)) + "px";
+        }
+        return scale;
+      };
+      const draw = () => {
+        for (const old of chart.querySelectorAll(":scope > .flow-edges")) old.remove();
+        const scale = fit();
+        const base = chart.getBoundingClientRect();
+        if (!base.width) return;
+        const svg = document.createElementNS(SVG, "svg");
+        svg.setAttribute("class", "flow-edges");
+        svg.setAttribute("width", String(chart.scrollWidth));
+        svg.setAttribute("height", String(chart.scrollHeight));
+        const defs = document.createElementNS(SVG, "defs");
+        const marker = document.createElementNS(SVG, "marker");
+        const markerId = "structure-arrow";
+        marker.setAttribute("id", markerId);
+        marker.setAttribute("viewBox", "0 0 8 8");
+        marker.setAttribute("refX", "7");
+        marker.setAttribute("refY", "4");
+        marker.setAttribute("markerWidth", "7");
+        marker.setAttribute("markerHeight", "7");
+        marker.setAttribute("orient", "auto-start-reverse");
+        const tip = document.createElementNS(SVG, "path");
+        tip.setAttribute("d", "M0,0 L8,4 L0,8 z");
+        tip.setAttribute("class", "flow-arrow");
+        marker.append(tip);
+        defs.append(marker);
+        svg.append(defs);
+        const rect = (id) => {
+          const r = (boxes.get(id) || waypoints.get(id)).getBoundingClientRect();
+          const left = (r.left - base.left) / scale;
+          const top = (r.top - base.top) / scale;
+          const right = (r.right - base.left) / scale;
+          const bottom = (r.bottom - base.top) / scale;
+          return { left, right, top, bottom, x: (left + right) / 2, y: (top + bottom) / 2 };
+        };
+        const leftEdge = boxes.size ? Math.min(...[...boxes.keys()].map((id) => rect(id).left)) : 0;
+        const shown = structure.edges.filter((edge) => {
+          const key = edge.from + "\\u0000" + edge.to;
+          return !hidden.has(key) && boxes.has(edge.from) && boxes.has(edge.to);
+        });
+        const keyOf = (edge) => edge.from + "\\u0000" + edge.to;
+        const downward = shown.filter((edge) => !back.has(keyOf(edge)) && rect(edge.to).top >= rect(edge.from).bottom);
+        // The first point after a box and the last before one, to spread arrows along its edges.
+        const firstAfter = (edge) => rect((layout.routes[keyOf(edge)] || [])[0] || edge.to).x;
+        const lastBefore = (edge) => rect((layout.routes[keyOf(edge)] || []).slice(-1)[0] || edge.from).x;
+        const ports = new Map();
+        const spread = (edges, sideOf, xOf, end) => {
+          const groups = new Map();
+          for (const edge of edges) {
+            const id = sideOf(edge);
+            if (!groups.has(id)) groups.set(id, []);
+            groups.get(id).push(edge);
+          }
+          for (const [id, group] of groups) {
+            const box = rect(id);
+            const inset = Math.min(18, (box.right - box.left) / 4);
+            group.sort((left, right) => xOf(left) - xOf(right));
+            group.forEach((edge, index) => {
+              const x = group.length === 1 ? box.x : box.left + inset + (box.right - box.left - 2 * inset) * index / (group.length - 1);
+              ports.set(keyOf(edge) + end, x);
+            });
+          }
+        };
+        spread(downward, (edge) => edge.from, firstAfter, ":out");
+        spread(downward, (edge) => edge.to, lastBefore, ":in");
+        let lane = 0;
+        for (const edge of shown) {
+          const key = keyOf(edge);
+          const from = rect(edge.from);
+          const to = rect(edge.to);
+          let d;
+          if (!downward.includes(edge)) {
+            const x = Math.max(4, leftEdge - 14 - 10 * lane++);
+            d = "M" + from.left + "," + from.y + " H" + x + " V" + to.y + " H" + to.left;
+          } else {
+            const points = [
+              { x: ports.get(key + ":out"), y: from.bottom },
+              ...(layout.routes[key] || []).map((id) => ({ x: rect(id).x, y: rect(id).y })),
+              { x: ports.get(key + ":in"), y: to.top }
+            ];
+            d = "M" + points[0].x + "," + points[0].y;
+            for (let index = 1; index < points.length; index++) {
+              const previous = points[index - 1];
+              const next = points[index];
+              const middle = (previous.y + next.y) / 2;
+              d += " C" + previous.x + "," + middle + " " + next.x + "," + middle + " " + next.x + "," + next.y;
+            }
+          }
+          const path = document.createElementNS(SVG, "path");
+          path.setAttribute("d", d);
+          path.setAttribute("class", "flow-edge");
+          path.setAttribute("stroke-width", String(1.2 + Math.min(2.4, Math.log2(edge.weight))));
+          path.setAttribute("marker-end", "url(#" + markerId + ")");
+          const title = document.createElementNS(SVG, "title");
+          title.textContent = plural(edge.weight, "import");
+          path.append(title);
+          svg.append(path);
+        }
+        chart.prepend(svg);
+      };
+      requestAnimationFrame(draw);
+      if (typeof ResizeObserver === "function") {
+        let lastWidth = 0;
+        new ResizeObserver(() => {
+          if (scroll.clientWidth === lastWidth) return;
+          lastWidth = scroll.clientWidth;
+          requestAnimationFrame(draw);
+        }).observe(scroll);
+      }
+      return scroll;
+    }
+
+    /** A folder preview: the structure diagram, then subfolders and files with their saved summaries. */
+    function renderFolder(folder) {
+      const parts = [];
+      const structure = folder.structure;
+      if (structure && structure.nodes.length > 1) {
+        parts.push(el("h2", "folder-heading", "Structure"));
+        if (structure.edges.length) {
+          parts.push(el("p", "muted small", "Arrows point from a file or folder to what it imports. Only imports are shown; other connections, such as calls between services, are not."));
+          parts.push(renderStructure(structure, folder.children));
+        } else {
+          parts.push(el("p", "muted", "No imports between these were found."));
+        }
+      }
+      parts.push(el("h2", "folder-heading", "Contents"));
+      const list = el("ul", "folder-list");
+      for (const child of folder.children) {
+        const item = el("li");
+        item.append(action(child.name + (child.kind === "folder" ? "/" : ""), () => post({ type: "navigate", referenceId: child.target }), "child-name"));
+        item.append(el("span", "child-meta muted small", childMeta(child)));
+        if (child.summary) {
+          const summary = el("p", "child-summary" + (child.summary.current ? "" : " muted"), child.summary.text);
+          summary.title = child.summary.current ? "AI-generated summary of this file" : "AI-generated summary; the file changed since";
+          item.append(summary);
+        }
+        list.append(item);
+      }
+      parts.push(list);
+      return parts;
+    }
+
+
     function render(next) {
       const previousScroll = window.scrollY;
       const focusedEntry = document.activeElement && document.activeElement.closest ? document.activeElement.closest(".entry") : null;
       const focusedClass = document.activeElement ? document.activeElement.className : "";
       state = next;
       const file = next.document;
+      const folder = file ? undefined : next.folder;
+      renderCrumbs(next.breadcrumbs);
       byId("model").textContent = next.provider === "mock" ? "Mock mode (placeholder output)" : "AI: " + next.model;
       byId("cancel").hidden = !next.busy;
       byId("refreshContext").hidden = !next.hasRepository;
@@ -865,8 +1153,10 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
       const notice = byId("notice");
       notice.textContent = next.notice ? next.notice.text : "";
       notice.className = "notice" + (next.notice && next.notice.tone === "error" ? " error" : "");
-      byId("title").textContent = file ? file.fileName : "Downside Up";
-      byId("facts").textContent = file ? [file.path, file.languageId, file.lineCount + " lines"].join(" · ") : "";
+      byId("title").textContent = file ? file.fileName : folder ? folder.name : "Downside Up";
+      byId("facts").textContent = file
+        ? [file.path, file.languageId, file.lineCount + " lines"].join(" · ")
+        : folder ? [folder.path || "repository root", plural(folder.fileCount, "file")].join(" · ") : "";
       const summary = byId("summary");
       const aiSummary = file ? next.summary : undefined;
       summary.hidden = !aiSummary;
@@ -878,11 +1168,11 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
       purpose.hidden = !localPurpose;
       purpose.textContent = localPurpose;
       const views = new Map((next.explanations || []).map((view) => [view.entryId, view]));
-      byId("entries").replaceChildren(...(file ? file.entries.map((entry) => renderEntry(entry, views)) : []));
+      byId("entries").replaceChildren(...(file ? file.entries.map((entry) => renderEntry(entry, views)) : folder ? renderFolder(folder) : []));
       const empty = byId("empty");
-      empty.hidden = Boolean(file && file.entries.length);
-      empty.textContent = file ? "Nothing to describe in this file." : "Open a source file to see its description here.";
-      byId("limitations").textContent = file ? file.limitations.join("\\n") : "";
+      empty.hidden = Boolean((file && file.entries.length) || (folder && folder.children.length));
+      empty.textContent = file ? "Nothing to describe in this file." : folder ? "Nothing to describe in this folder." : "Open a source file to see its description here.";
+      byId("limitations").textContent = file ? file.limitations.join("\\n") : folder ? folder.limitations.join("\\n") : "";
       renderOverview(next.overview);
       highlight(currentEntry);
       highlightSteps(activeSteps);
@@ -893,10 +1183,11 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
         const target = document.querySelector("#" + CSS.escape(focusedEntry.id) + " " + selector);
         if (target) target.focus({ preventScroll: true });
       }
-      const fileKey = file ? file.path : "";
+      const fileKey = file ? file.path : folder ? "folder:" + folder.path : "";
       if (fileKey !== renderedFile) {
         renderedFile = fileKey;
-        scrollToLine(sourceLine);
+        if (folder) window.scrollTo(0, 0);
+        else scrollToLine(sourceLine);
       } else {
         // Re-rendering the same file keeps the reader's place.
         ignoreScrollUntil = performance.now() + 100;

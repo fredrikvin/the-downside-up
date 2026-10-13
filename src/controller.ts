@@ -708,6 +708,28 @@ export class ExplanationService {
   }
 
   /**
+   * Cache-only lookup of the saved summaries of several files at once, for a
+   * folder preview; `text` reads a file's current text, or undefined when it
+   * cannot be read (its summary is then shown as not current).
+   */
+  async findFileSummaries(
+    root: string,
+    paths: readonly string[],
+    text: (path: string) => Promise<string | undefined>
+  ): Promise<Map<string, { summary: string; current: boolean }>> {
+    const descriptor = this.options.describeProvider();
+    const saved = (await this.options.store.read(root)).fileSummaries ?? {};
+    const found = new Map<string, { summary: string; current: boolean }>();
+    for (const path of paths) {
+      const record = saved[fileSummaryKey(path, descriptor)];
+      if (!record) continue;
+      const current = await text(path).catch(() => undefined);
+      found.set(path, { summary: record.summary, current: current !== undefined && record.fingerprint === fileTextFingerprint(current) });
+    }
+    return found;
+  }
+
+  /**
    * Generates a one-sentence summary of a file unless a current one is saved.
    * Called only after a function in the file was explained, so code sharing
    * for the repository and model is already approved. Excluded files and

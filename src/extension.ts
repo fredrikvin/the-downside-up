@@ -1,4 +1,5 @@
-import { isAbsolute, relative, resolve, sep } from "node:path";
+import { readFile, stat } from "node:fs/promises";
+import { basename, isAbsolute, relative, resolve, sep } from "node:path";
 import * as vscode from "vscode";
 import { FileRepositoryCacheStore } from "./cache/store";
 import {
@@ -6,7 +7,8 @@ import {
   type ExplanationResult,
   type ProviderDescriptor
 } from "./controller";
-import { findRepositoryRoot, gatherInventory, sharingExclusion, type RepositoryInventory } from "./context/inventory";
+import { findRepositoryRoot, gatherInventory, listFolder, sharingExclusion, type FolderChild, type RepositoryInventory } from "./context/inventory";
+import { folderStructure, type StructureGraph } from "./context/structure";
 import { findCalledFunctions, type CalledFunction } from "./context/related";
 import { buildFileOverview, type FileOverview, type OutlineEntry } from "./context/fileOverview";
 import type { ExplanationFormat, FunctionExplanation, FunctionTarget, LineLinked, RepositoryOverview } from "./core/types";
@@ -29,6 +31,8 @@ import { findFunctionWithEditorTools } from "./languages/editor/symbols";
 import { bundledLanguageFor, initializeLanguage } from "./languages/registry";
 import {
   ExplanationPanel,
+  type Crumb,
+  type FolderView,
   type ExplanationView,
   type PanelAction,
   type FormatSettings,
@@ -77,6 +81,17 @@ interface PrefetchSession {
   /** Set when the session was woken while not waiting, so the wake is not lost. */
   woken: boolean;
   wake?: () => void;
+}
+
+/** A folder previewed like a file: its children, saved file summaries, and import structure. */
+interface FolderPreview {
+  readonly root: string;
+  /** Repository-relative path, or "" for the repository root. */
+  readonly path: string;
+  readonly children: readonly FolderChild[];
+  readonly summaries: ReadonlyMap<string, { summary: string; current: boolean }>;
+  readonly structure?: StructureGraph;
+  readonly limitations: readonly string[];
 }
 
 /** A background job that waits to be woken when a request slot frees or the reader moves. */
@@ -166,6 +181,9 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
   const savedLookupDone = new Set<string>();
   let prefetchSession: PrefetchSession | undefined;
   let reviewSession: ReviewSession | undefined;
+  /** The folder shown instead of a file, until the active editor changes. */
+  let folderPreview: FolderPreview | undefined;
+  let folderEpoch = 0;
   /** Signals of prefetch requests, so the consent check never prompts for them. */
   const prefetchSignals = new WeakSet<AbortSignal>();
   /** One code-sharing prompt per repository and model, shared by parallel requests. */
@@ -604,13 +622,26 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
         }
       }
     }
-    const shownContext = preview && repositoryContext?.root === preview.root ? repositoryContext : undefined;
+    // Breadcrumbs and folder contents open folders and files through ids the host resolves.
+    const target = (open: () => Promise<void>): string => {
+      const id = `go-${handlers.size}`;
+      handlers.set(id, open);
+      return id;
+    };
+    const shownRoot = preview?.root ?? folderPreview?.root;
+    const breadcrumbs = shownRoot === undefined
+      ? undefined
+      : crumbsFor(shownRoot, preview ? filePath(shownRoot, preview.document.uri) : folderPreview!.path, Boolean(preview), target);
+    const folder = folderPreview && !preview ? folderView(folderPreview, target) : undefined;
+    const shownContext = shownRoot !== undefined && repositoryContext?.root === shownRoot ? repositoryContext : undefined;
     panel.setReferenceHandlers(handlers);
     const summary = preview && fileSummary?.uri === preview.document.uri.toString() ? fileSummary : undefined;
     panel.update({
       provider: descriptor.kind,
       model: descriptor.modelId || "no model selected",
       ...(preview ? { document: { ...preview.overview, entries: shownEntries() } } : {}),
+      ...(folder ? { folder } : {}),
+      ...(breadcrumbs ? { breadcrumbs } : {}),
       explanations,
       ...(summary ? { summary: { text: summary.text, current: summary.current } } : {}),
       showDetails: vscode.workspace.getConfiguration("downsideUp").get<boolean>("explanations.showDetails", false) === true,
@@ -618,9 +649,86 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       ...(shownContext ? { overview: shownContext.overview } : {}),
       ...(notice ? { notice } : {}),
       busy: Boolean(repositoryJob),
-      hasRepository: Boolean(preview)
+      hasRepository: Boolean(preview || folderPreview)
     });
     syncStepHighlight();
+  };
+
+  /** Opens a repository file in the editor; the preview follows it. */
+  const openRepositoryFile = async (root: string, path: string): Promise<void> => {
+    const absolute = resolve(root, path);
+    if (!isWithin(root, absolute)) return;
+    const document = await vscode.workspace.openTextDocument(vscode.Uri.file(absolute));
+    const column = lastTextEditor?.viewColumn ?? vscode.ViewColumn.One;
+    await vscode.window.showTextDocument(document, { viewColumn: column, preview: true });
+    // The editor may already have been active, which changes nothing; show the file anyway.
+    await previewDocument(document);
+  };
+
+  /** `project › folder › … › file`: every step but the last opens that folder. */
+  const crumbsFor = (root: string, path: string, isFile: boolean, target: (open: () => Promise<void>) => string): Crumb[] => {
+    const segments = path ? path.split("/") : [];
+    const crumbs: Crumb[] = [{ name: basename(root), target: target(() => showFolder(root, "")) }];
+    segments.forEach((segment, index) => {
+      const folderPath = segments.slice(0, index + 1).join("/");
+      crumbs.push(isFile && index === segments.length - 1
+        ? { name: segment }
+        : { name: segment, target: target(() => showFolder(root, folderPath)) });
+    });
+    return crumbs;
+  };
+
+  const folderView = (shown: FolderPreview, target: (open: () => Promise<void>) => string): FolderView => ({
+    name: shown.path ? basename(shown.path) : basename(shown.root),
+    path: shown.path,
+    fileCount: shown.children.reduce((total, child) => total + (child.kind === "folder" ? child.fileCount ?? 0 : 1), 0),
+    children: shown.children.map((child) => {
+      const summary = shown.summaries.get(child.path);
+      return {
+        ...child,
+        target: target(() => child.kind === "folder" ? showFolder(shown.root, child.path) : openRepositoryFile(shown.root, child.path)),
+        ...(summary ? { summary: { text: summary.summary, current: summary.current } } : {})
+      };
+    }),
+    ...(shown.structure ? { structure: { nodes: shown.structure.nodes, edges: shown.structure.edges } } : {}),
+    limitations: [...shown.limitations, ...(shown.structure?.limitations ?? [])]
+  });
+
+  /** Reads a repository file's current text, preferring an open buffer; small files only. */
+  const repositoryText = async (root: string, path: string): Promise<string | undefined> => {
+    const absolute = resolve(root, path);
+    if (!isWithin(root, absolute)) return undefined;
+    const open = vscode.workspace.textDocuments.find((document) => document.uri.scheme === "file" && resolve(document.uri.fsPath) === absolute);
+    if (open) return open.getText();
+    if ((await stat(absolute)).size > 256 * 1024) return undefined;
+    return readFile(absolute, "utf8");
+  };
+
+  /**
+   * Previews a folder (or, with "", the repository root): its subfolders and
+   * files with their saved summaries, and the import structure between them,
+   * which is filled in when found. Local only; nothing is generated.
+   */
+  const showFolder = async (root: string, path: string): Promise<void> => {
+    ensurePanel();
+    const epoch = ++folderEpoch;
+    previewEpoch++;
+    const { children, limitations } = await listFolder(root, path);
+    const files = children.filter((child) => child.kind === "file").map((child) => child.path);
+    const summaries = await service.findFileSummaries(root, files, (file) => repositoryText(root, file)).catch(() => new Map());
+    if (epoch !== folderEpoch || !panel) return;
+    stopPrefetch();
+    clearReveal();
+    preview = undefined;
+    notice = undefined;
+    folderPreview = { root, path, children, summaries, limitations };
+    panel.panel.title = `Downside Up: ${path ? basename(path) : basename(root)}`;
+    panel.setFileReferenceHandlers(new Map());
+    render();
+    const structure = await folderStructure(root, path, children).catch(() => undefined);
+    if (epoch !== folderEpoch || !folderPreview || folderPreview.path !== path || folderPreview.root !== root || !structure) return;
+    folderPreview = { ...folderPreview, structure };
+    render();
   };
 
   const emptyView = (target: FunctionTarget): StoredView => ({
@@ -774,6 +882,9 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     const exclusion = await sharingExclusion(root, document.uri.fsPath).catch(() => undefined);
     if (epoch !== previewEpoch || !panel) return;
     const fileChanged = !preview || !sameUri(preview.document.uri, document.uri);
+    // Opening a file leaves the folder preview.
+    folderPreview = undefined;
+    folderEpoch++;
     preview = { document, root, overview, ...(exclusion ? { exclusion } : {}) };
     panel.panel.title = `Downside Up: ${overview.fileName}`;
     const handlers = new Map<string, () => Promise<void>>();
@@ -1742,11 +1853,12 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
         repositoryJob?.abort();
         repositoryJob = undefined;
         preview = undefined;
+        folderPreview = undefined;
         notice = undefined;
         panel = undefined;
       },
       (visible) => {
-        if (visible && lastTextEditor) void previewDocument(lastTextEditor.document);
+        if (visible && lastTextEditor && !folderPreview) void previewDocument(lastTextEditor.document);
       }
     );
     panel = created;
@@ -1788,6 +1900,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
 
   const rootForCommand = async (): Promise<string | undefined> => {
     if (preview) return preview.root;
+    if (folderPreview) return folderPreview.root;
     const editor = vscode.window.activeTextEditor;
     if (editor?.document.uri.scheme === "file") {
       try {
@@ -1894,6 +2007,36 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     }
   };
 
+  /** Previews a folder chosen in the Explorer, relative to the repository that holds it. */
+  const openFolderPreview = async (folder: vscode.Uri): Promise<void> => {
+    const workspaceFolder = vscode.workspace.getWorkspaceFolder(folder);
+    if (!workspaceFolder) {
+      await vscode.window.showWarningMessage("Open the folder inside a workspace folder to preview it.");
+      return;
+    }
+    let root = await findRepositoryRoot(workspaceFolder.uri.fsPath);
+    if (!isWithin(root, resolve(folder.fsPath))) root = await findRepositoryRoot(folder.fsPath);
+    const existing = panel;
+    ensurePanel();
+    if (existing) existing.panel.reveal(undefined, true);
+    await showFolder(root, relative(root, resolve(folder.fsPath)).split(sep).join("/"));
+  };
+
+  /** Previews the repository of the active file, or of the only workspace folder, at its root. */
+  const previewProjectCommand = async (): Promise<void> => {
+    const root = await rootForCommand() ?? (vscode.workspace.workspaceFolders?.length === 1
+      ? await findRepositoryRoot(vscode.workspace.workspaceFolders[0]!.uri.fsPath).catch(() => undefined)
+      : undefined);
+    if (!root) {
+      await vscode.window.showInformationMessage("Open a source file in the repository to preview first.");
+      return;
+    }
+    const existing = panel;
+    ensurePanel();
+    if (existing) existing.panel.reveal(undefined, true);
+    await showFolder(root, "");
+  };
+
   /**
    * Opens or reveals the preview of the active file (or the given one); it
    * follows the editor's position. With a text selection inside a function,
@@ -1902,6 +2045,10 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
    */
   const openPreviewCommand = async (resource?: vscode.Uri): Promise<void> => {
     let document: vscode.TextDocument | undefined;
+    if (resource instanceof vscode.Uri && resource.scheme === "file" && (await stat(resource.fsPath).catch(() => undefined))?.isDirectory()) {
+      await openFolderPreview(resource);
+      return;
+    }
     if (resource instanceof vscode.Uri && resource.scheme === "file") {
       document = await vscode.workspace.openTextDocument(resource);
     } else {
@@ -2076,6 +2223,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
 
   context.subscriptions.push(
     vscode.commands.registerCommand("downsideUp.showFileOverview", openPreviewCommand),
+    vscode.commands.registerCommand("downsideUp.previewProject", previewProjectCommand),
     vscode.commands.registerCommand("downsideUp.reviewChanges", reviewChangesCommand),
     vscode.commands.registerCommand("downsideUp.showChangedFunctions", showChangedFunctionsCommand),
     reviewStatus,
@@ -2135,6 +2283,14 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     },
     reviewItems: () => (reviewSession?.items ?? []).map((item) => ({ qualifiedName: item.qualifiedName, path: item.path, status: item.status })),
     stopReview: () => dismissReview(),
+    shownFolder: () => folderPreview && !preview
+      ? {
+          path: folderPreview.path,
+          children: folderPreview.children.map((child) => `${child.kind} ${child.path}`),
+          edges: (folderPreview.structure?.edges ?? []).map((edge) => `${edge.from} > ${edge.to}`).sort()
+        }
+      : undefined,
+    previewFolder: (path: string) => preview ? showFolder(preview.root, path) : folderPreview ? showFolder(folderPreview.root, path) : Promise.resolve(),
     allExplanations: () => [...functions.values()].map((state) => ({
       functionName: state.view.functionName,
       status: state.view.status,
@@ -2145,6 +2301,8 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
 }
 
 export interface DownsideUpTestApi {
+  shownFolder(): { path: string; children: string[]; edges: string[] } | undefined;
+  previewFolder(path: string): Promise<void>;
   reviewChanges(base: string): Promise<number>;
   reviewItems(): Array<{ qualifiedName: string; path: string; status: string }>;
   stopReview(): void;

@@ -343,6 +343,31 @@ export async function run(): Promise<void> {
   );
   console.log("Downside Up integration tests: Go explanation from a selection completed.");
 
+  await api.previewFolder("");
+  const goFolder = await waitFor(
+    async () => api.shownFolder()?.edges.length ? api.shownFolder() : undefined,
+    "the Go repository's folder preview with its import structure"
+  );
+  assert.equal(goFolder.path, "");
+  assert.ok(goFolder.children.includes("folder inventory") && goFolder.children.includes("file main.go"));
+  assert.ok(!goFolder.children.some((child) => child.includes("legacy")), "Excluded folders are not listed.");
+  assert.ok(goFolder.edges.includes("main.go > inventory") && goFolder.edges.includes("storage > inventory"));
+  await vscode.commands.executeCommand("downsideUp.showFileOverview", vscode.Uri.file(resolve(goRoot, "inventory")));
+  await waitFor(async () => api.shownFolder()?.path === "inventory" ? true : undefined, "the Explorer command to preview a folder");
+  // Opened in another editor group, so main.go's editor, used below, stays open.
+  await vscode.window.showTextDocument(lookupDocument, { viewColumn: vscode.ViewColumn.Three, preview: false });
+  await waitFor(
+    async () => api.shownFolder() === undefined && api.shownOutline().some((entry) => entry.name === "FindAvailable") ? true : undefined,
+    "opening a file to leave the folder preview"
+  );
+  await vscode.commands.executeCommand("workbench.action.closeActiveEditor");
+  await vscode.window.showTextDocument(goDocument, goEditor.viewColumn);
+  await waitFor(
+    async () => api.previewExplanations().some((view) => view.functionName === "checkout") ? true : undefined,
+    "the preview to show main.go again"
+  );
+  console.log("Downside Up integration tests: folder previews list contents and import structure.");
+
   const checkoutBody = goDocument.positionAt(goDocument.getText().indexOf("catalog.MarkUnavailable(book.Title)"));
   goEditor.selection = new vscode.Selection(checkoutBody, checkoutBody);
   await waitFor(

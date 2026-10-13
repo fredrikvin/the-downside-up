@@ -37,6 +37,21 @@ export interface LanguageSupport {
    * explanations stay tied to their tracked inputs.
    */
   explanationGuidance?(request: GuidanceRequest): Promise<string | undefined>;
+  /**
+   * Repository-relative files or folders a file imports, for structure
+   * diagrams. Local and syntactic only; unresolvable imports are left out.
+   */
+  fileImports?(request: ImportRequest): Promise<string[]>;
+}
+
+export interface ImportRequest {
+  /** Repository-relative path and current text of the file. */
+  readonly path: string;
+  readonly text: string;
+  /** Whether an eligible repository file exists at a repository-relative path. */
+  readonly hasFile: (path: string) => boolean;
+  /** Reads a small repository file such as a manifest; undefined when it is missing or excluded. */
+  readonly readFile: (path: string) => Promise<string | undefined>;
 }
 
 export interface GuidanceRequest {

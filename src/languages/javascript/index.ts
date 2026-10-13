@@ -1,4 +1,5 @@
 import type { LanguageSupport } from "../support";
+import { javascriptFileImports } from "./imports";
 import { namedChildren } from "../treeSitter";
 import { findJavaScriptDependencies } from "./dependencies";
 import { javascriptGuidance } from "./guidance";
@@ -33,5 +34,6 @@ export const javascriptSupport: LanguageSupport = {
       .join("\n"))) ?? "";
   },
   findDependencies: findJavaScriptDependencies,
-  explanationGuidance: javascriptGuidance
+  explanationGuidance: javascriptGuidance,
+  fileImports: javascriptFileImports
 };

@@ -153,7 +153,7 @@ function fileItems(root: SyntaxNode): ParsedFile {
   return { packageName, items };
 }
 
-function importsOf(root: SyntaxNode): { imports: ImportSpec[]; preamble: string } {
+export function importsOf(root: SyntaxNode): { imports: ImportSpec[]; preamble: string } {
   const imports: ImportSpec[] = [];
   const parts: string[] = [];
   for (const node of namedChildren(root)) {

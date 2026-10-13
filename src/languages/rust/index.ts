@@ -5,6 +5,7 @@ import {
   type LanguageSupport
 } from "../support";
 import { findRustDependencies } from "./dependencies";
+import { rustFileImports } from "./imports";
 import { describeRustSource } from "./outline";
 import { findRustDeclarations, findRustFunction, initializeRustParserAt, listRustFunctions } from "./syntax";
 
@@ -79,5 +80,6 @@ export const rustSupport: LanguageSupport = {
     const found = await findRustDependencies(request)
       .catch(() => ({ dependencies: [], limitations: [UNRESOLVED_DEPENDENCIES] }));
     return { ...found, local };
-  }
+  },
+  fileImports: rustFileImports
 };

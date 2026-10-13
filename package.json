@@ -20,6 +20,12 @@
         "icon": "$(open-preview)"
       },
       {
+        "command": "downsideUp.previewProject",
+        "title": "Preview Project",
+        "category": "Downside Up",
+        "icon": "$(project)"
+      },
+      {
         "command": "downsideUp.reviewChanges",
         "title": "Review Changes…",
         "category": "Downside Up"
@@ -231,6 +237,13 @@
           "when": "downsideUp.hasReview"
         }
       ],
+      "explorer/context": [
+        {
+          "command": "downsideUp.showFileOverview",
+          "when": "resourceScheme == file",
+          "group": "navigation@90"
+        }
+      ],
       "editor/title": [
         {
           "command": "downsideUp.showFileOverview",
@@ -249,6 +262,7 @@
   "activationEvents": [
     "onCommand:downsideUp.showFileOverview",
     "onCommand:downsideUp.reviewChanges",
+    "onCommand:downsideUp.previewProject",
     "onCommand:downsideUp.refreshRepositoryContext",
     "onCommand:downsideUp.clearCache",
     "onCommand:downsideUp.cancelExplanation",

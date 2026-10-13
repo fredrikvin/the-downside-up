@@ -371,6 +371,49 @@ summary marked outdated until a function in the file is explained again.
 Opening a file only reads the cache. When an AI summary is shown, it replaces
 the file's leading doc comment at the top of the preview.
 
+## Folder and project previews
+
+A folder (or, with **Preview Project**, the repository root) is previewed one
+zoom level above files. It is opened from the Explorer's context menu ("Open
+Preview to the Side" on a folder), the **Preview Project** command, or the
+breadcrumb trail shown at the top of file and folder previews, whose steps
+(every folder from the repository root down) open folder previews. The
+preview stays on the folder until the active editor changes or a file is
+opened from it; opening a file there also previews it even when its editor
+was already active. Links and boxes use navigation ids that the extension
+resolves, so the webview never names paths.
+
+The listing applies the scanner's rules (hidden, dependency, and build
+folders, `.gitignore` and `.copilotignore`, VS Code exclusions, the
+organization policy, secret-like names, and non-text files are skipped; hidden
+files are not listed) and shows subfolders that hold eligible files, with
+their counts (the walk stops after 20,000 folder entries and says so), then
+files with their language and their saved one-sentence summary, read from the
+cache with the same freshness check as the file preview (a changed file's
+summary is shown as outdated). Nothing is generated.
+
+The structure diagram is computed locally. Every eligible file under the
+folder (at most 1,500 files and 24 MiB, skipping files over 256 KiB) is parsed
+by its language support's optional `fileImports`, which returns the
+repository files or folders it imports: JavaScript and TypeScript relative
+specifiers in imports, re-exports, `require`, and `import()`, with `.js` to
+`.ts` mapping, `index` files, and `paths` from the nearest `tsconfig.json` or
+`jsconfig.json`; Go imports inside the module named by the nearest `go.mod`
+(package folders); Rust `mod` declarations and `crate::` paths (module files).
+Other languages contribute no edges and the preview says so. Results are
+cached per file by modification time and size. Imports are counted per
+importing file and target and summed into edges between the folder's direct
+children; imports within one child, or leaving the folder, are left out. The
+layout (`structureLayout`, a self-contained function also run in tests) puts
+importers above what they import by longest path, moves a child imported by at
+least half of the others (with five or more children) to a bottom "shared"
+row without drawing its edges (it shows "used by N"), puts children with no
+drawn edges in a row of their own, breaks cycles by depth-first search and
+routes their closing edges up the left, gives edges that skip rows an
+invisible waypoint in each row so they run between boxes, and orders rows with
+barycenter sweeps to reduce crossings. Arrows are spread along box edges and
+drawn thicker for more imports.
+
 ## Providers and data handling
 
 Mock mode is the default and returns deterministic placeholder content. It is
@@ -547,7 +590,9 @@ preview, steps that follow the cursor and select their lines when clicked, a flo
 added on request whose nodes follow the cursor and select their lines, prefetching that starts at the cursor, stays within its window, and
 follows the cursor, prefetching of a called function in another package,
 saved-explanation hovers that appear only when an explanation is saved and
-never generate, review mode queueing only an edited component and a new
+never generate, a folder preview of the Go repository root (excluded
+folder left out, import edges), the Explorer command previewing a folder, and
+switching to a file leaving the folder preview, review mode queueing only an edited component and a new
 untracked file's component and explaining both, including the one in a file
 that is not shown, JavaScript calls resolved through the built-in TypeScript
 go-to-definition (standard-library calls not followed) and their hovers, a
@@ -577,6 +622,11 @@ scan until they opt in with `.allowed-services`, `.copilotignore`, or an
 allowed-repository listing, workspace values being ignored, and
 `.copilotignore` files above the repository; a settings test keeps the policy
 settings user-level;
+folder tests cover listings (subfolder counts, hidden, excluded, and non-text
+files left out), Go, Rust, and TypeScript import edges between a folder's
+children, and the structure layout (importers above imports, shared rows with
+hidden edges, unconnected rows, cycles' upward edges, waypoints for edges that
+skip rows, crossing reduction, and running standalone as in the webview);
 review-mode tests cover changed lines from diffs (ranges, removals, deleted
 files, paths with spaces), when a removal counts for a function, base choices
 in a real Git repository (merge base, branch tip, uncommitted only, recent
@@ -628,6 +678,11 @@ webview's content-security policy.
   file's own module (not `go.work` workspaces, `replace` targets, or
   `vendor/`), and package files outside the inventory's read budget are
   skipped with a stated limitation.
+- Structure diagrams show imports only: dependency injection, plugin
+  registries, message queues, HTTP calls between services, Rust `super::`
+  and `self::` paths, Go imports of other modules, TypeScript `baseUrl`
+  imports without `paths`, and languages other than Rust, Go, JavaScript, and
+  TypeScript are not drawn. A child folder counts as one box, however large.
 - Callers are tracked only when VS Code tooling reports them. In languages
   other than Rust, Go, JavaScript, and TypeScript, only called functions are tracked (not the types,
   constants, or variables a function uses), and only when the installed

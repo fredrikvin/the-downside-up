@@ -96,7 +96,23 @@ editor's position. If text is selected inside a function, it also opens that
 function's explanation, generating or regenerating it when none is current, so
 selecting a function's name and opening the preview explains it. With a plain
 cursor it only opens the preview. The repository context used for explanations is shown at the
-end of the preview. The development fixtures are in `fixtures/rust-app`,
+end of the preview.
+
+**Folder and project previews.** A folder can be previewed like a file: run
+**Open Preview to the Side** on a folder in the Explorer, run **Downside Up:
+Preview Project** for the repository root, or click a step of the breadcrumb
+trail (`project › folder › file`) at the top of any preview. A folder preview
+lists its subfolders (with how many files they hold) and files, with each
+file's saved one-sentence AI summary, and draws a **structure diagram** of
+which of them import which: importers above what they import, so entry points
+sit on top and foundations below; folders that most of the others use sit in
+a bottom row without arrows, and items with no imports to or from the others
+in a row of their own. Click a box or name to preview that folder or open
+that file. The diagram is built locally from imports (Rust, Go, JavaScript,
+and TypeScript, including `tsconfig` path aliases); it does not show other
+connections, such as dependency injection or calls between services, and
+nothing is generated or sent. The folder preview stays until you switch to
+another file. The development fixtures are in `fixtures/rust-app`,
 `fixtures/go-app`, `fixtures/js-app`, and `fixtures/react-app`.
 
 To install a locally packaged VSIX, run

@@ -387,6 +387,119 @@ export async function gatherInventory(
   };
 }
 
+/** A file or subfolder shown in a folder preview. */
+export interface FolderChild {
+  readonly kind: "folder" | "file";
+  readonly name: string;
+  /** Repository-relative path. */
+  readonly path: string;
+  readonly languageId?: string;
+  /** For folders: eligible files inside, at any depth. */
+  readonly fileCount?: number;
+  /** For folders: true when counting stopped at the walk's limit. */
+  readonly countCapped?: boolean;
+}
+
+const MAX_WALK_ENTRIES = 20_000;
+
+/**
+ * Walks the eligible files under a folder with the scanner's rules (hidden,
+ * dependency, and build folders, ignore files, VS Code exclusions, the
+ * organization policy, secret-like names, and non-text files are skipped),
+ * visiting at most `budget.entries` directory entries.
+ */
+async function walkEligible(
+  root: string,
+  relativeFolder: string,
+  onFile: (path: string) => void,
+  budget: { entries: number },
+  policy: Awaited<ReturnType<typeof currentPolicy>>
+): Promise<boolean> {
+  const visit = async (directory: string): Promise<boolean> => {
+    let entries;
+    try {
+      entries = await readdir(directory, { withFileTypes: true });
+    } catch {
+      return true;
+    }
+    entries.sort((a, b) => a.name.localeCompare(b.name));
+    for (const entry of entries) {
+      if (--budget.entries < 0) return false;
+      if (entry.isSymbolicLink()) continue;
+      const absolutePath = resolve(directory, entry.name);
+      const rel = canonicalRelative(relative(root, absolutePath));
+      if (entry.isDirectory()) {
+        if (entry.name.startsWith(".") || ALWAYS_SKIP_DIRS.has(entry.name) || policy.blockedBy(rel) || await isIgnored(root, rel)) continue;
+        if (!await visit(absolutePath)) return false;
+      } else if (
+        entry.isFile() &&
+        !isSecretOrGenerated(rel) &&
+        !policy.blockedBy(rel) &&
+        !isEditorExcluded(root, rel) &&
+        eligiblePath(rel) &&
+        !await isIgnored(root, rel)
+      ) {
+        onFile(rel);
+      }
+    }
+    return true;
+  };
+  return visit(resolve(root, relativeFolder));
+}
+
+/** Eligible files under a folder, at any depth, in path order; `complete` is false when the walk was cut short. */
+export async function listEligibleFiles(
+  rootPath: string,
+  relativeFolder: string,
+  maxEntries = MAX_WALK_ENTRIES
+): Promise<{ files: string[]; complete: boolean }> {
+  const root = await realpath(rootPath);
+  const files: string[] = [];
+  const complete = await walkEligible(root, relativeFolder, (path) => files.push(path), { entries: maxEntries }, await currentPolicy());
+  return { files, complete };
+}
+
+/**
+ * The direct children of a folder shown in its preview: subfolders that
+ * hold eligible files, with how many, then eligible files. Local only.
+ */
+export async function listFolder(rootPath: string, relativeFolder: string): Promise<{ children: FolderChild[]; limitations: string[] }> {
+  const root = await realpath(rootPath);
+  const folder = resolve(root, relativeFolder);
+  if (!isWithin(root, folder)) throw new Error("The folder is outside the repository.");
+  const policy = await currentPolicy();
+  const budget = { entries: MAX_WALK_ENTRIES };
+  const folders: FolderChild[] = [];
+  const files: FolderChild[] = [];
+  let capped = false;
+  for (const entry of (await readdir(folder, { withFileTypes: true })).sort((a, b) => a.name.localeCompare(b.name))) {
+    if (entry.isSymbolicLink()) continue;
+    const rel = canonicalRelative(relative(root, resolve(folder, entry.name)));
+    if (entry.isDirectory()) {
+      if (entry.name.startsWith(".") || ALWAYS_SKIP_DIRS.has(entry.name) || policy.blockedBy(rel) || await isIgnored(root, rel)) continue;
+      let count = 0;
+      const complete = await walkEligible(root, rel, () => count++, budget, policy);
+      if (!complete) capped = true;
+      if (count > 0 || !complete) folders.push({ kind: "folder", name: entry.name, path: rel, fileCount: count, ...(complete ? {} : { countCapped: true }) });
+    } else if (
+      entry.isFile() &&
+      !entry.name.startsWith(".") &&
+      !isSecretOrGenerated(rel) &&
+      !policy.blockedBy(rel) &&
+      !isEditorExcluded(root, rel) &&
+      eligiblePath(rel) &&
+      !await isIgnored(root, rel)
+    ) {
+      const languageId = vscodeLanguage(rel);
+      files.push({ kind: "file", name: entry.name, path: rel, ...(languageId ? { languageId } : {}) });
+    }
+  }
+  return {
+    children: [...folders, ...files],
+    limitations: capped ? [`File counts stopped after ${MAX_WALK_ENTRIES.toLocaleString("en")} folder entries; some folders show at least that many files.`] : []
+  };
+}
+
 export function byteHash(text: string): string {
   return createHash("sha256").update(text, "utf8").digest("hex");
 }
