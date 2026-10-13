@@ -127,7 +127,7 @@ outdated when its contents change; choose **Regenerate** to update it. The devel
 `fixtures/go-app`, `fixtures/js-app`, and `fixtures/react-app`.
 
 To install a locally packaged VSIX, run
-`code --install-extension the-downside-up-0.16.0.vsix`.
+`code --install-extension the-downside-up-0.17.0.vsix`.
 
 ## Provider setup
 
