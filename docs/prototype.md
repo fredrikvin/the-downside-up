@@ -540,8 +540,11 @@ does not ask again; prefetching only uses approvals already given.
 An optional overview model does project-level work: the repository overview
 (priming, review, and **Refresh Repository Context**) and folder summaries.
 For VS Code language models it is chosen with **Choose Overview Model**
-(`downsideUp.overviewModel.vendor` and `.id`); with OpenAI it is
-`downsideUp.openai.overviewModel`; empty settings use the explanation model,
+(`downsideUp.languageModel.overviewVendor` and `.overviewModel`, next to the
+explanation model's `.vendor` and `.model`); with OpenAI it is
+`downsideUp.openai.overviewModel`, next to `downsideUp.openai.model`. The
+settings are grouped in sections per provider. Empty settings use the
+explanation model (an empty overview vendor uses the explanation model's),
 and the mock provider ignores it. Explanations, pseudocode and flowchart
 views, and file summaries always use the explanation model. The overview and
 folder summaries are cached per overview model, so changing it means the next

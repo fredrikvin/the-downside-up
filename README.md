@@ -146,7 +146,8 @@ model) stops the run; finished summaries are kept.
 
 Project-level work (the repository overview and folder summaries) happens
 far less often than explaining functions, so it can use a stronger model:
-run **Downside Up: Choose Overview Model** (or, with OpenAI, set
+run **Downside Up: Choose Overview Model**, which sets
+`downsideUp.languageModel.overviewModel` (or, with OpenAI, set
 `downsideUp.openai.overviewModel`). Explanations keep using the regular model.
 Code sharing is approved once per repository and model, so a new overview
 model asks once.
@@ -161,14 +162,17 @@ To install a locally packaged VSIX, run
 
 The `downsideUp.provider` setting defaults to `mock`. Mock output is
 deterministic placeholder content, not semantic analysis. There are two live
-providers.
+providers, each with its own section in the extension's settings (**VS Code
+Language Models** and **OpenAI**) holding its explanation model and its
+optional overview model.
 
 ### GitHub Copilot or another VS Code language model (no API key)
 
 1. Sign in to GitHub Copilot in VS Code (or install another extension that
    provides language models).
 2. Run **Downside Up: Choose Language Model** and pick a model. This sets
-   `downsideUp.provider` to `vscode-lm` and records the model's vendor and ID.
+   `downsideUp.provider` to `vscode-lm` and records the model's vendor and ID
+   (`downsideUp.languageModel.vendor` and `downsideUp.languageModel.model`).
 3. Explain a function. Before the first request for a repository and model,
    review and accept the code-sharing prompt. VS Code also asks once whether
    The Downside Up may use language models; you can change that later under
@@ -180,7 +184,8 @@ provider's data-handling terms and your organization's policies.
 
 ### OpenAI API key
 
-1. Set `downsideUp.provider` to `openai`.
+1. Set `downsideUp.provider` to `openai`, and pick the model in
+   `downsideUp.openai.model`.
 2. Run **Downside Up: Set OpenAI API Key**. The key is stored in VS Code
    SecretStorage.
 3. Explain a function. Before the first external request for a repository and

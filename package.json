@@ -71,185 +71,226 @@
         "category": "Downside Up"
       }
     ],
-    "configuration": {
-      "title": "The Downside Up",
-      "properties": {
-        "downsideUp.provider": {
-          "type": "string",
-          "enum": [
-            "mock",
-            "vscode-lm",
-            "openai"
-          ],
-          "enumDescriptions": [
-            "Deterministic placeholder output; no external requests.",
-            "A VS Code language model, such as GitHub Copilot, using your existing subscription. No API key needed; choose a model with “Downside Up: Choose Language Model”.",
-            "OpenAI Responses API with your own API key and separate API billing."
-          ],
-          "default": "mock",
-          "description": "Explanation provider. External providers require explicit per-repository and per-model consent before code is shared."
-        },
-        "downsideUp.languageModel.vendor": {
-          "type": "string",
-          "default": "copilot",
-          "description": "Vendor of the VS Code language model used by the vscode-lm provider. Set by “Downside Up: Choose Language Model”. Changing it requires renewed repository consent."
-        },
-        "downsideUp.languageModel.id": {
-          "type": "string",
-          "default": "",
-          "description": "ID of the VS Code language model used by the vscode-lm provider. Set by “Downside Up: Choose Language Model”; when empty, Explain asks you to choose one. Changing it requires renewed repository consent."
-        },
-        "downsideUp.openai.model": {
-          "type": "string",
-          "default": "gpt-4.1-mini",
-          "description": "OpenAI model used with the Responses API. Changing the model requires renewed repository consent."
-        },
-        "downsideUp.preview.include": {
-          "type": "object",
-          "markdownDescription": "Which items the preview lists besides functions and methods. All off gives a concise preview; turn items on for more detail. These descriptions are built locally and never call the AI.",
-          "properties": {
-            "imports": {
-              "type": "boolean",
-              "description": "Import statements."
-            },
-            "types": {
-              "type": "boolean",
-              "description": "Structs, enums, interfaces, traits, type aliases, implementations, and fields."
-            },
-            "values": {
-              "type": "boolean",
-              "description": "Constants and variables outside functions."
-            },
-            "locals": {
-              "type": "boolean",
-              "description": "Variables and constants declared inside functions."
-            },
-            "comments": {
-              "type": "boolean",
-              "description": "Standalone comments."
-            },
-            "modules": {
-              "type": "boolean",
-              "description": "Modules, packages, and macros."
-            },
-            "functionDetails": {
-              "type": "boolean",
-              "description": "A one-line description of each function's parameters and results, and notes such as receivers or test roles."
-            }
+    "configuration": [
+      {
+        "title": "The Downside Up",
+        "properties": {
+          "downsideUp.provider": {
+            "type": "string",
+            "enum": [
+              "mock",
+              "vscode-lm",
+              "openai"
+            ],
+            "enumDescriptions": [
+              "Deterministic placeholder output; no external requests.",
+              "A VS Code language model, such as GitHub Copilot, using your existing subscription. No API key needed; choose a model with “Downside Up: Choose Language Model”.",
+              "OpenAI Responses API with your own API key and separate API billing."
+            ],
+            "default": "mock",
+            "description": "Where explanations and project summaries come from. Each provider has its own settings section below (VS Code Language Models, OpenAI). External providers require explicit per-repository and per-model consent before code is shared.",
+            "order": 0
           },
-          "additionalProperties": false,
-          "default": {
-            "imports": false,
-            "types": false,
-            "values": false,
-            "locals": false,
-            "comments": false,
-            "modules": false,
-            "functionDetails": false
-          }
-        },
-        "downsideUp.explanations.showDetails": {
-          "type": "boolean",
-          "default": false,
-          "markdownDescription": "Open the **More detail** part of AI explanations (where the function fits, edge cases, language notes, related code, and limitations) by default. It is part of every explanation, so changing this never regenerates anything."
-        },
-        "downsideUp.explanations.formats": {
-          "type": "object",
-          "markdownDescription": "Extra ways to show **What happens** in AI explanations, as tabs next to the numbered steps. Enabled views are generated together with new explanations, which makes each request somewhat larger; for saved explanations, open the tab and choose **Generate**.",
-          "properties": {
-            "pseudocode": {
-              "type": "boolean",
-              "description": "Plain-language pseudocode, line by line."
+          "downsideUp.preview.include": {
+            "type": "object",
+            "markdownDescription": "Which items the preview lists besides functions and methods. All off gives a concise preview; turn items on for more detail. These descriptions are built locally and never call the AI.",
+            "properties": {
+              "imports": {
+                "type": "boolean",
+                "description": "Import statements."
+              },
+              "types": {
+                "type": "boolean",
+                "description": "Structs, enums, interfaces, traits, type aliases, implementations, and fields."
+              },
+              "values": {
+                "type": "boolean",
+                "description": "Constants and variables outside functions."
+              },
+              "locals": {
+                "type": "boolean",
+                "description": "Variables and constants declared inside functions."
+              },
+              "comments": {
+                "type": "boolean",
+                "description": "Standalone comments."
+              },
+              "modules": {
+                "type": "boolean",
+                "description": "Modules, packages, and macros."
+              },
+              "functionDetails": {
+                "type": "boolean",
+                "description": "A one-line description of each function's parameters and results, and notes such as receivers or test roles."
+              }
             },
-            "flowchart": {
-              "type": "boolean",
-              "description": "A flowchart of the function's main path, decisions, and exits."
-            }
+            "additionalProperties": false,
+            "default": {
+              "imports": false,
+              "types": false,
+              "values": false,
+              "locals": false,
+              "comments": false,
+              "modules": false,
+              "functionDetails": false
+            },
+            "order": 1
           },
-          "additionalProperties": false,
-          "default": {
-            "pseudocode": false,
-            "flowchart": false
+          "downsideUp.explanations.showDetails": {
+            "type": "boolean",
+            "default": false,
+            "markdownDescription": "Open the **More detail** part of AI explanations (where the function fits, edge cases, language notes, related code, and limitations) by default. It is part of every explanation, so changing this never regenerates anything.",
+            "order": 2
+          },
+          "downsideUp.explanations.formats": {
+            "type": "object",
+            "markdownDescription": "Extra ways to show **What happens** in AI explanations, as tabs next to the numbered steps. Enabled views are generated together with new explanations, which makes each request somewhat larger; for saved explanations, open the tab and choose **Generate**.",
+            "properties": {
+              "pseudocode": {
+                "type": "boolean",
+                "description": "Plain-language pseudocode, line by line."
+              },
+              "flowchart": {
+                "type": "boolean",
+                "description": "A flowchart of the function's main path, decisions, and exits."
+              }
+            },
+            "additionalProperties": false,
+            "default": {
+              "pseudocode": false,
+              "flowchart": false
+            },
+            "order": 3
+          },
+          "downsideUp.explanations.initialFormat": {
+            "type": "string",
+            "enum": [
+              "steps",
+              "pseudocode",
+              "flowchart"
+            ],
+            "default": "steps",
+            "markdownDescription": "Which view of **What happens** an explanation opens with, when it is enabled in `#downsideUp.explanations.formats#`.",
+            "order": 4
+          },
+          "downsideUp.hover.savedExplanations": {
+            "type": "boolean",
+            "default": true,
+            "markdownDescription": "When hovering a call to a function, show the purpose from its saved AI explanation (in languages other than Rust and Go, calls are found with the editor's go-to-definition). Reads only the local cache and never generates. Works once the extension is active, for example after opening the preview.",
+            "order": 5
           }
-        },
-        "downsideUp.explanations.initialFormat": {
-          "type": "string",
-          "enum": [
-            "steps",
-            "pseudocode",
-            "flowchart"
-          ],
-          "default": "steps",
-          "markdownDescription": "Which view of **What happens** an explanation opens with, when it is enabled in `#downsideUp.explanations.formats#`."
-        },
-        "downsideUp.maxConcurrentRequests": {
-          "type": "integer",
-          "default": 3,
-          "minimum": 1,
-          "maximum": 8,
-          "scope": "application",
-          "markdownDescription": "How many AI requests may run at the same time. Your own requests always start before prefetches, and prefetching leaves one slot free for them (unless this is 1). Higher values make prefetching faster but can hit your provider's rate limits sooner; they do not change how many requests are made."
-        },
-        "downsideUp.prefetch.enabled": {
-          "type": "boolean",
-          "default": false,
-          "scope": "application",
-          "markdownDescription": "Generate AI explanations in the background for functions in the file shown in the preview, starting where you are reading and spreading outward. Uses your provider and its usage limits or billing without a click per function. Runs only in trusted workspaces and only after code sharing was approved for the repository and model by explaining a function once; it never asks for approval itself. Can only be set in user settings."
-        },
-        "downsideUp.prefetch.window": {
-          "type": "integer",
-          "default": 10,
-          "minimum": 0,
-          "scope": "application",
-          "markdownDescription": "How many of the functions nearest to where you are reading are prefetched; the window moves as you move through the file. `0` prefetches every function in the file. Requires `#downsideUp.prefetch.enabled#`."
-        },
-        "downsideUp.prefetch.dependencies": {
-          "type": "integer",
-          "default": 3,
-          "minimum": 0,
-          "scope": "application",
-          "markdownDescription": "For the function you are reading, how many of the functions and methods it calls in other files are prefetched (in languages other than Rust and Go, calls are found with the editor's go-to-definition), right after the function itself. Only the first calls in order of use are considered, and ones already explained count toward the number. `0` prefetches none. Requires `#downsideUp.prefetch.enabled#`."
-        },
-        "downsideUp.overviewModel.vendor": {
-          "type": "string",
-          "default": "",
-          "description": "Vendor of the VS Code language model for project-level work (the repository overview and folder summaries). Set by “Downside Up: Choose Overview Model”; empty uses the vendor of the explanation model's choice, normally copilot."
-        },
-        "downsideUp.overviewModel.id": {
-          "type": "string",
-          "default": "",
-          "description": "ID of the VS Code language model for project-level work (the repository overview and folder summaries), which is rarer than explaining functions and benefits from a stronger model. Set by “Downside Up: Choose Overview Model”; empty uses the explanation model. A new model asks once before code is shared."
-        },
-        "downsideUp.openai.overviewModel": {
-          "type": "string",
-          "default": "",
-          "description": "OpenAI model for project-level work (the repository overview and folder summaries) when the provider is openai; empty uses downsideUp.openai.model. A new model asks once before code is shared."
-        },
-        "downsideUp.exclusion.blockedFilePatternsFile": {
-          "type": "string",
-          "default": "",
-          "scope": "application",
-          "markdownDescription": "Path to a text file of patterns for files that are never read into context or sent to a model provider, in any repository, in addition to `.gitignore` and `.copilotignore`. One gitignore-style pattern per line; blank lines and lines starting with `#` are skipped. Patterns are matched against paths inside the repository: a pattern without `/` matches at any depth (`*.vault` matches `config/app.vault`), a pattern with `/` is anchored at the repository root (`docs/private`), and a pattern matching a folder covers everything in it. `*` and `?` stay within one folder, `**` crosses folders. `~` is expanded. Read from user settings only. A missing or unreadable file adds nothing, so check the path. See the README for an example."
-        },
-        "downsideUp.exclusion.restrictedRemotesFile": {
-          "type": "string",
-          "default": "",
-          "scope": "application",
-          "markdownDescription": "Path to a text file of Git remote URL prefixes, one per line (blank lines and lines starting with `#` are skipped). `*` matches any characters, and a trailing `*` is implied, so `ssh://git.example.com/` matches every repository on that server. A repository with any matching remote is not read or sent at all (explanations, file summaries, and **Refresh Repository Context** stop with the reason; the local preview still works) until it opts in with a `.copilotignore` file at its root or in a folder above it, a `.allowed-services` file at its Git root that contains the word `copilot`, or a listing in `#downsideUp.exclusion.allowedRepositoriesFile#`. `~` is expanded. Read from user settings only. A missing or unreadable file adds nothing. See the README for an example."
-        },
-        "downsideUp.exclusion.allowedRepositoriesFile": {
-          "type": "string",
-          "default": "",
-          "scope": "application",
-          "markdownDescription": "Path to a text file of repository paths, one per line (blank lines and lines starting with `#` are skipped), that may be sent even when `#downsideUp.exclusion.restrictedRemotesFile#` restricts their remote. A remote's path is its URL without the scheme, user, host and port, and `.git`, so `ssh://user@git.example.com:29418/team/app.git` has the path `team/app`. `*` matches within one path segment (`team/*` matches `team/app` but not `team/app/tools`), and the whole path must match. `~` is expanded. Read from user settings only. A missing or unreadable file adds nothing."
-        },
-        "downsideUp.hover.savedExplanations": {
-          "type": "boolean",
-          "default": true,
-          "markdownDescription": "When hovering a call to a function, show the purpose from its saved AI explanation (in languages other than Rust and Go, calls are found with the editor's go-to-definition). Reads only the local cache and never generates. Works once the extension is active, for example after opening the preview."
+        }
+      },
+      {
+        "title": "VS Code Language Models",
+        "properties": {
+          "downsideUp.languageModel.vendor": {
+            "type": "string",
+            "default": "copilot",
+            "description": "Vendor of the VS Code language model for explanations, when the provider is vscode-lm. Set by “Downside Up: Choose Language Model”. Changing it requires renewed repository consent.",
+            "order": 0
+          },
+          "downsideUp.languageModel.model": {
+            "type": "string",
+            "default": "",
+            "description": "VS Code language model (its ID) for explanations, when the provider is vscode-lm. Set by “Downside Up: Choose Language Model”; when empty, you are asked to choose one. Changing it requires renewed repository consent.",
+            "order": 1
+          },
+          "downsideUp.languageModel.overviewVendor": {
+            "type": "string",
+            "default": "",
+            "description": "Vendor of the overview model, when the provider is vscode-lm. Set by “Downside Up: Choose Overview Model”; empty uses the explanation model's vendor.",
+            "order": 2
+          },
+          "downsideUp.languageModel.overviewModel": {
+            "type": "string",
+            "default": "",
+            "description": "VS Code language model (its ID) for project-level work, when the provider is vscode-lm: the repository overview, folder summaries, and main flows. This is rarer than explaining functions, so a stronger model can pay off. Set by “Downside Up: Choose Overview Model”; empty uses the explanation model. A new model asks once before code is shared.",
+            "order": 3
+          }
+        }
+      },
+      {
+        "title": "OpenAI",
+        "properties": {
+          "downsideUp.openai.model": {
+            "type": "string",
+            "default": "gpt-4.1-mini",
+            "description": "OpenAI model for explanations, when the provider is openai (Responses API with your own API key). Changing the model requires renewed repository consent.",
+            "order": 0
+          },
+          "downsideUp.openai.overviewModel": {
+            "type": "string",
+            "default": "",
+            "markdownDescription": "OpenAI model for project-level work, when the provider is openai: the repository overview, folder summaries, and main flows. Empty uses `#downsideUp.openai.model#`. A new model asks once before code is shared.",
+            "order": 1
+          }
+        }
+      },
+      {
+        "title": "Background Requests",
+        "properties": {
+          "downsideUp.maxConcurrentRequests": {
+            "type": "integer",
+            "default": 3,
+            "minimum": 1,
+            "maximum": 8,
+            "scope": "application",
+            "markdownDescription": "How many AI requests may run at the same time. Your own requests always start before prefetches, and prefetching leaves one slot free for them (unless this is 1). Higher values make prefetching faster but can hit your provider's rate limits sooner; they do not change how many requests are made.",
+            "order": 0
+          },
+          "downsideUp.prefetch.enabled": {
+            "type": "boolean",
+            "default": false,
+            "scope": "application",
+            "markdownDescription": "Generate AI explanations in the background for functions in the file shown in the preview, starting where you are reading and spreading outward. Uses your provider and its usage limits or billing without a click per function. Runs only in trusted workspaces and only after code sharing was approved for the repository and model by explaining a function once; it never asks for approval itself. Can only be set in user settings.",
+            "order": 1
+          },
+          "downsideUp.prefetch.window": {
+            "type": "integer",
+            "default": 10,
+            "minimum": 0,
+            "scope": "application",
+            "markdownDescription": "How many of the functions nearest to where you are reading are prefetched; the window moves as you move through the file. `0` prefetches every function in the file. Requires `#downsideUp.prefetch.enabled#`.",
+            "order": 2
+          },
+          "downsideUp.prefetch.dependencies": {
+            "type": "integer",
+            "default": 3,
+            "minimum": 0,
+            "scope": "application",
+            "markdownDescription": "For the function you are reading, how many of the functions and methods it calls in other files are prefetched (in languages other than Rust and Go, calls are found with the editor's go-to-definition), right after the function itself. Only the first calls in order of use are considered, and ones already explained count toward the number. `0` prefetches none. Requires `#downsideUp.prefetch.enabled#`.",
+            "order": 3
+          }
+        }
+      },
+      {
+        "title": "Exclusions",
+        "properties": {
+          "downsideUp.exclusion.blockedFilePatternsFile": {
+            "type": "string",
+            "default": "",
+            "scope": "application",
+            "markdownDescription": "Path to a text file of patterns for files that are never read into context or sent to a model provider, in any repository, in addition to `.gitignore` and `.copilotignore`. One gitignore-style pattern per line; blank lines and lines starting with `#` are skipped. Patterns are matched against paths inside the repository: a pattern without `/` matches at any depth (`*.vault` matches `config/app.vault`), a pattern with `/` is anchored at the repository root (`docs/private`), and a pattern matching a folder covers everything in it. `*` and `?` stay within one folder, `**` crosses folders. `~` is expanded. Read from user settings only. A missing or unreadable file adds nothing, so check the path. See the README for an example.",
+            "order": 0
+          },
+          "downsideUp.exclusion.restrictedRemotesFile": {
+            "type": "string",
+            "default": "",
+            "scope": "application",
+            "markdownDescription": "Path to a text file of Git remote URL prefixes, one per line (blank lines and lines starting with `#` are skipped). `*` matches any characters, and a trailing `*` is implied, so `ssh://git.example.com/` matches every repository on that server. A repository with any matching remote is not read or sent at all (explanations, file summaries, and **Refresh Repository Context** stop with the reason; the local preview still works) until it opts in with a `.copilotignore` file at its root or in a folder above it, a `.allowed-services` file at its Git root that contains the word `copilot`, or a listing in `#downsideUp.exclusion.allowedRepositoriesFile#`. `~` is expanded. Read from user settings only. A missing or unreadable file adds nothing. See the README for an example.",
+            "order": 1
+          },
+          "downsideUp.exclusion.allowedRepositoriesFile": {
+            "type": "string",
+            "default": "",
+            "scope": "application",
+            "markdownDescription": "Path to a text file of repository paths, one per line (blank lines and lines starting with `#` are skipped), that may be sent even when `#downsideUp.exclusion.restrictedRemotesFile#` restricts their remote. A remote's path is its URL without the scheme, user, host and port, and `.git`, so `ssh://user@git.example.com:29418/team/app.git` has the path `team/app`. `*` matches within one path segment (`team/*` matches `team/app` but not `team/app/tools`), and the whole path must match. `~` is expanded. Read from user settings only. A missing or unreadable file adds nothing.",
+            "order": 2
+          }
         }
       }
-    },
+    ],
     "menus": {
       "commandPalette": [
         {

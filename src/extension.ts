@@ -280,7 +280,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     const configured = settings.get<string>("provider", "mock");
     if (configured === "vscode-lm") {
       const vendor = settings.get<string>("languageModel.vendor", "copilot").trim() || "copilot";
-      const id = settings.get<string>("languageModel.id", "").trim();
+      const id = settings.get<string>("languageModel.model", "").trim();
       return { kind: "vscode-lm", modelId: languageModelDescriptorId(vendor, id) };
     }
     if (configured === "openai") {
@@ -299,8 +299,10 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     const base = describeProvider();
     const settings = vscode.workspace.getConfiguration("downsideUp");
     if (base.kind === "vscode-lm") {
-      const id = settings.get<string>("overviewModel.id", "").trim();
-      const vendor = settings.get<string>("overviewModel.vendor", "").trim() || "copilot";
+      const id = settings.get<string>("languageModel.overviewModel", "").trim();
+      const vendor = settings.get<string>("languageModel.overviewVendor", "").trim()
+        || settings.get<string>("languageModel.vendor", "copilot").trim()
+        || "copilot";
       return id ? { kind: "vscode-lm", modelId: languageModelDescriptorId(vendor, id) } : base;
     }
     if (base.kind === "openai") {
@@ -429,7 +431,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     if (!picked) return false;
     const settings = vscode.workspace.getConfiguration("downsideUp");
     await settings.update("languageModel.vendor", picked.model.vendor, vscode.ConfigurationTarget.Global);
-    await settings.update("languageModel.id", picked.model.id, vscode.ConfigurationTarget.Global);
+    await settings.update("languageModel.model", picked.model.id, vscode.ConfigurationTarget.Global);
     await settings.update("provider", "vscode-lm", vscode.ConfigurationTarget.Global);
     const effective = describeProvider();
     if (effective.modelId !== languageModelDescriptorId(picked.model.vendor, picked.model.id)) {
@@ -475,8 +477,8 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     );
     if (!picked) return;
     const settings = vscode.workspace.getConfiguration("downsideUp");
-    await settings.update("overviewModel.vendor", picked.model?.vendor, vscode.ConfigurationTarget.Global);
-    await settings.update("overviewModel.id", picked.model?.id, vscode.ConfigurationTarget.Global);
+    await settings.update("languageModel.overviewVendor", picked.model?.vendor, vscode.ConfigurationTarget.Global);
+    await settings.update("languageModel.overviewModel", picked.model?.id, vscode.ConfigurationTarget.Global);
   };
 
   const ensureLanguageModelSelected = async (): Promise<boolean> => {
@@ -2770,8 +2772,8 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
   });
 
   const onConfigChange = vscode.workspace.onDidChangeConfiguration((event) => {
-    if (event.affectsConfiguration("downsideUp.overviewModel") || event.affectsConfiguration("downsideUp.openai.overviewModel")) {
-      // Folder summaries are saved per model, so look again for the shown folder.
+    if (["downsideUp.provider", "downsideUp.languageModel", "downsideUp.openai"].some((key) => event.affectsConfiguration(key))) {
+      // Folder summaries are saved per overview model, which falls back to the explanation model, so look again.
       if (panel && folderPreview && !preview) void showFolder(folderPreview.root, folderPreview.path);
     }
     if (event.affectsConfiguration("downsideUp.exclusion")) {
@@ -2797,7 +2799,8 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     if (
       !event.affectsConfiguration("downsideUp.provider") &&
       !event.affectsConfiguration("downsideUp.openai.model") &&
-      !event.affectsConfiguration("downsideUp.languageModel")
+      !event.affectsConfiguration("downsideUp.languageModel.vendor") &&
+      !event.affectsConfiguration("downsideUp.languageModel.model")
     ) return;
     scheduleRecheck();
     // Saved explanations and file summaries are per model, so other ones may now apply.
