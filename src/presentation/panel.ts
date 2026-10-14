@@ -77,11 +77,37 @@ export interface FolderChildView {
   readonly partSummary?: string;
 }
 
+/** A box on a folder's project map; `target` opens its folder when it is in the repository. */
+export interface MapNodeView {
+  readonly id: string;
+  readonly name: string;
+  readonly summary: string;
+  readonly place: "inside" | "outside" | "external";
+  readonly group?: string;
+  readonly target?: string;
+}
+
 /** A folder preview: its children and the import structure between them. Local only. */
 export interface FolderView {
   readonly name: string;
   /** Repository-relative path, or "" for the repository root. */
   readonly path: string;
+  /**
+   * How far the page zooms, from the project map: the project, a group of
+   * components, a component, a module, a support folder, or a plain folder.
+   */
+  readonly level: "project" | "group" | "component" | "module" | "support" | "folder";
+  /** What the project map says about this folder, or at the root about the project. */
+  readonly about?: { readonly summary: string; readonly detail?: string; readonly offers?: string; readonly uses?: string };
+  /** The folder's map, one zoom level down. */
+  readonly map?: {
+    readonly nodes: readonly MapNodeView[];
+    readonly edges: ReadonlyArray<{ readonly from: string; readonly to: string; readonly label: string }>;
+  };
+  /** The parts listed on a project or group page. */
+  readonly members?: ReadonlyArray<{ readonly name: string; readonly summary: string; readonly level: string; readonly target?: string }>;
+  /** Whether a project map is saved: current for the overview model and settings, made with other ones, or missing. */
+  readonly mapState: "current" | "other" | "missing";
   readonly fileCount: number;
   readonly children: readonly FolderChildView[];
   readonly structure?: {
@@ -90,7 +116,7 @@ export interface FolderView {
   };
   readonly limitations: readonly string[];
   /** The folder's saved AI summary; `current` is false when its contents changed since. */
-  readonly ai?: { readonly summary: string; readonly overview: string; readonly current: boolean };
+  readonly ai?: { readonly summary: string; readonly overview: string; readonly offers?: string; readonly uses?: string; readonly current: boolean };
   /** Whether a summary is being generated. */
   readonly summarizing: boolean;
   /** Whether a summary can be requested now (its input is ready). */
@@ -295,7 +321,12 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
     .structure-node { cursor: pointer; text-align: center; max-width: 190px; font: inherit; color: inherit; }
     .structure-node .node-name { font-weight: 600; overflow-wrap: anywhere; }
     .structure-node .node-meta { font-size: .78em; color: var(--vscode-descriptionForeground); }
-    .structure-node.kind-folder { border-width: 2px; }
+    .structure-node.kind-folder, .structure-node.kind-inside { border-width: 2px; }
+    .structure-node.kind-outside { border-style: dashed; }
+    .structure-node.kind-external { border-style: dashed; border-radius: 999px; color: var(--vscode-descriptionForeground); }
+    div.structure-node { cursor: default; }
+    .folder-contents { margin: 18px 0; }
+    .folder-contents > summary { cursor: pointer; font-weight: 600; }
     .structure-node:hover, .structure-node:focus-visible { border-color: var(--vscode-focusBorder); }
     .flow-scroll { overflow-x: auto; margin: 6px 0 12px; }
     .flow { position: relative; display: inline-grid; grid-auto-columns: max-content; column-gap: 32px; row-gap: 34px; align-items: center; padding: 4px 16px 8px 4px; }
@@ -976,13 +1007,14 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
      * what they import, shared folders in a bottom row, cycles' closing edges
      * up the left. Boxes open their folder or file.
      */
-    function renderStructure(structure, children) {
+    function renderStructure(structure, children, options) {
+      const opts = options || {};
       const layout = structureLayout(structure);
       const byPath = new Map(children.map((child) => [child.path, child]));
       const scroll = el("div", "structure-scroll");
       const chart = el("div", "structure");
       chart.setAttribute("role", "group");
-      chart.setAttribute("aria-label", "Structure diagram: what imports what");
+      chart.setAttribute("aria-label", opts.label || "Structure diagram: what imports what");
       if (layout.back.length) chart.classList.add("has-loops");
       scroll.append(chart);
       const boxes = new Map();
@@ -990,7 +1022,7 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
       layout.rows.forEach((row, index) => {
         const kind = layout.rowKinds[index];
         if (kind === "shared") chart.append(el("div", "structure-caption", "Used by most of the others"));
-        if (kind === "unconnected") chart.append(el("div", "structure-caption", "No imports to or from the others"));
+        if (kind === "unconnected") chart.append(el("div", "structure-caption", opts.unconnected || "No imports to or from the others"));
         const line = el("div", "structure-row " + kind);
         for (const id of row) {
           if (id.startsWith("\\u0001")) {
@@ -1002,13 +1034,14 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
           }
           const child = byPath.get(id);
           if (!child) continue;
-          const box = el("button", "flow-node structure-node kind-" + child.kind);
-          box.type = "button";
-          box.title = (child.kind === "folder" ? "Preview " : "Open ") + child.path;
+          const box = el(child.target ? "button" : "div", "flow-node structure-node kind-" + child.kind);
+          if (child.target) box.type = "button";
+          box.title = opts.title ? opts.title(child) : (child.kind === "folder" ? "Preview " : "Open ") + child.path;
           box.append(el("div", "node-name", child.name + (child.kind === "folder" ? "/" : "")));
-          const meta = layout.usedBy[id] ? "used by " + layout.usedBy[id] + " · " + childMeta(child) : childMeta(child);
-          box.append(el("div", "node-meta", meta));
-          box.addEventListener("click", () => post({ type: "navigate", referenceId: child.target }));
+          const own = opts.meta ? opts.meta(child) : childMeta(child);
+          const meta = layout.usedBy[id] ? "used by " + layout.usedBy[id] + (own ? " · " + own : "") : own;
+          if (meta) box.append(el("div", "node-meta", meta));
+          if (child.target) box.addEventListener("click", () => post({ type: "navigate", referenceId: child.target }));
           boxes.set(id, box);
           line.append(box);
         }
@@ -1095,6 +1128,8 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
         spread(downward, (edge) => edge.from, firstAfter, ":out");
         spread(downward, (edge) => edge.to, lastBefore, ":in");
         let lane = 0;
+        // Paths are measured once the diagram is in the page.
+        const placeLabels = [];
         for (const edge of shown) {
           const key = keyOf(edge);
           const from = rect(edge.from);
@@ -1123,11 +1158,25 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
           path.setAttribute("stroke-width", String(1.2 + Math.min(2.4, Math.log2(edge.weight))));
           path.setAttribute("marker-end", "url(#" + markerId + ")");
           const title = document.createElementNS(SVG, "title");
-          title.textContent = plural(edge.weight, "import");
+          title.textContent = edge.label || plural(edge.weight, "import");
           path.append(title);
           svg.append(path);
+          if (opts.labels && edge.label) {
+            // Labels sit at the middle of their arrow, where arrows from one box have spread apart.
+            const label = document.createElementNS(SVG, "text");
+            label.setAttribute("class", "flow-label");
+            label.setAttribute("text-anchor", "middle");
+            label.textContent = edge.label;
+            svg.append(label);
+            placeLabels.push(() => {
+              const middle = path.getPointAtLength(path.getTotalLength() / 2);
+              label.setAttribute("x", String(middle.x));
+              label.setAttribute("y", String(middle.y - 4));
+            });
+          }
         }
         chart.prepend(svg);
+        for (const place of placeLabels) place();
       };
       requestAnimationFrame(draw);
       if (typeof ResizeObserver === "function") {
@@ -1178,23 +1227,28 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
         box.append(loading);
       } else if (folder.canDescribeFlows && (!folder.flows || !folder.flows.current)) {
         const note = el("p", "muted small");
-        if (folder.flows) note.append(document.createTextNode("Outdated: the files, summaries, or function names changed since. "));
+        const betweenParts = folder.level === "project" || folder.level === "group" || folder.level === "component";
+        if (folder.flows) note.append(document.createTextNode(betweenParts ? "Outdated: the project map changed since. " : "Outdated: the files, summaries, or function names changed since. "));
         note.append(action(folder.flows ? "Regenerate" : "Describe the main flows", () => post({ type: "describeFlows" })));
-        note.append(document.createTextNode(" · sends file paths, saved summaries, function names, and imports; no code. Steps link to the files and functions they name."));
+        note.append(document.createTextNode(betweenParts
+          ? " · sends the parts on this map, their one-line summaries, and how they connect; no code. Steps open the folders they pass through."
+          : " · sends file paths, saved summaries, function names, and imports; no code. Steps link to the files and functions they name."));
         box.append(note);
       }
       if (folder.flowsError) box.append(el("p", "error", folder.flowsError));
       return box;
     }
 
-    /** The folder's AI summary, or a way to request one. */
-    function renderFolderSummary(folder) {
+    /** The folder's AI summary, or a way to request one; with withTree, also the run over its subfolders. */
+    function renderFolderSummary(folder, withTree) {
       const box = el("div", "folder-ai");
       if (folder.ai) {
         const summary = el("p", "summary", folder.ai.summary);
         summary.title = "AI-generated summary of this folder";
         box.append(summary);
         if (folder.ai.overview) box.append(el("p", "", folder.ai.overview));
+        if (folder.ai.offers) box.append(labelled("Offers", folder.ai.offers));
+        if (folder.ai.uses) box.append(labelled("Uses", folder.ai.uses));
       }
       if (folder.summarizing) {
         const loading = el("div", "loading");
@@ -1205,10 +1259,19 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
         const note = el("p", "muted small");
         if (folder.ai) note.append(document.createTextNode("Outdated: the folder's contents changed since. "));
         note.append(action(folder.ai ? "Regenerate" : "Summarize this folder", () => post({ type: "summarizeFolder" })));
-        note.append(document.createTextNode(" · sends the names, saved summaries, and function names of its contents, the imports between them, and its README; no code."));
+        note.append(document.createTextNode(folder.level === "component"
+          ? " · sends the names, saved summaries, and function names of its contents, the imports between them, its README, and its API contracts; no other code."
+          : " · sends the names, saved summaries, and function names of its contents, the imports between them, and its README; no code."));
         box.append(note);
       }
       if (folder.summaryError) box.append(el("p", "error", folder.summaryError));
+      if (withTree) box.append(renderTreeRun(folder));
+      return box;
+    }
+
+    /** Progress of a run over the folder and its subfolders, or a way to start one. */
+    function renderTreeRun(folder) {
+      const box = el("div", "folder-tree-run");
       if (folder.tree) {
         const loading = el("div", "loading");
         loading.setAttribute("role", "status");
@@ -1224,31 +1287,102 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
       return box;
     }
 
-    /** For the project (repository root) preview: the repository overview, open near the top. */
-    function renderAbout(overview) {
-      const box = el("section", "project-about");
-      box.append(el("h2", "folder-heading", "About this project"));
-      if (!overview) {
-        box.append(el("p", "muted", "No repository overview is saved yet. It is made with the first explanation in this repository, or with Refresh repository context."));
-        return box;
+    /** A paragraph that starts with a bold label, such as "Offers: …". */
+    function labelled(label, text) {
+      const paragraph = el("p", "");
+      paragraph.append(el("strong", "", label + ": "), document.createTextNode(text));
+      return paragraph;
+    }
+
+    /**
+     * What the project map says about the folder: at the root, what the
+     * project is; elsewhere, the folder's sentence and, with detailed maps,
+     * more about a component. For the project, also a way to make or refresh
+     * the map.
+     */
+    function renderAbout(folder) {
+      const box = el("div", "folder-about");
+      const about = folder.about;
+      // A folder's own AI summary says the same in more words, so the map's sentence steps aside.
+      if (about && (folder.level === "project" || !folder.ai)) {
+        const summary = el("p", "summary", about.summary);
+        summary.title = "From the project map; AI-generated";
+        box.append(summary);
+        if (about.detail) box.append(el("p", "", about.detail));
+        if (about.offers) box.append(labelled("Offers", about.offers));
+        if (about.uses) box.append(labelled("Uses", about.uses));
       }
-      for (const [key, title] of [
-        ["purpose", "Purpose"], ["components", "Components"], ["flows", "Entry points and flows"],
-        ["conventions", "Conventions"], ["uncertainties", "Uncertainties and gaps"]
-      ]) {
-        if (overview[key]) box.append(el("h5", "", title), el("p", "", overview[key]));
+      if (folder.level === "project" && folder.mapState !== "current") {
+        const note = el("p", "muted small");
+        note.append(document.createTextNode(folder.mapState === "missing"
+          ? "No project map yet. It is made with the repository overview, at the first explanation in this repository, or now: "
+          : "The project map was made with another overview model or setting. "));
+        note.append(action(folder.mapState === "missing" ? "Map this project" : "Refresh the map", () => post({ type: "refreshContext" })));
+        note.append(document.createTextNode(" · sends a bounded inventory of the repository (READMEs, manifests, API contracts, deployment facts with values left out, and some source files) and its folder outline to the overview model."));
+        box.append(note);
       }
-      box.append(el("p", "muted small", "The repository overview used as background for explanations; AI-generated."));
       return box;
     }
 
-    /** A folder preview: the structure diagram, then subfolders and files with their saved summaries. */
-    function renderFolder(folder, overview) {
-      const parts = [renderFolderSummary(folder)];
-      if (!folder.path) parts.push(renderAbout(overview));
-      parts.push(renderFolderFlows(folder));
+    const LEVEL_WORDS = { group: "group", component: "component", module: "part", support: "support", external: "outside the repository" };
+
+    /** The parts listed on a project or group page, each with its sentence from the map. */
+    function renderMembers(folder) {
+      const box = el("section", "folder-members");
+      box.append(el("h2", "folder-heading", folder.level === "project" ? "Main parts" : "Members"));
+      const list = el("ul", "folder-list");
+      for (const member of folder.members) {
+        const item = el("li");
+        item.append(member.target
+          ? action(member.name, () => post({ type: "navigate", referenceId: member.target }), "child-name")
+          : el("span", "child-name", member.name));
+        item.append(el("span", "child-meta muted small", LEVEL_WORDS[member.level] || member.level));
+        if (member.summary) item.append(el("p", "child-summary", member.summary));
+        list.append(item);
+      }
+      box.append(list);
+      return box;
+    }
+
+    /** The folder's map one zoom level down: its parts, what they connect to, and how. */
+    function renderMap(folder) {
+      const box = el("section", "folder-map");
+      box.append(el("h2", "folder-heading", "Map"));
+      box.append(el("p", "muted small", "Arrows point from a part to what it calls, sends to, or depends on. Made by the AI from manifests, API contracts, deployment files, and READMEs; it may miss connections."));
+      const nodes = folder.map.nodes.map((node) => ({ ...node, path: node.id, kind: node.place }));
+      const structure = {
+        nodes: nodes.map((node) => ({ id: node.id })),
+        edges: folder.map.edges.map((edge) => ({ ...edge, weight: 1 }))
+      };
+      box.append(renderStructure(structure, nodes, {
+        label: "Map: the parts and how they connect",
+        unconnected: "No known connections to the others",
+        labels: true,
+        title: (node) => node.summary || node.name,
+        meta: (node) => node.place === "external" ? "outside the repository" : node.place === "outside" ? "elsewhere in the repository" : node.group || ""
+      }));
+      return box;
+    }
+
+    /**
+     * A folder preview, zoomed to its level: the project and groups show
+     * their parts and map; components their map and offers; modules and
+     * plain folders their files and import structure; support folders only a
+     * short description and their contents.
+     */
+    function renderFolder(folder) {
+      const level = folder.level;
+      // The project and groups lead with their summary and map; requests for more come last.
+      const overviewFirst = level === "project" || level === "group";
+      const parts = [renderAbout(folder), renderFolderSummary(folder, !overviewFirst)];
+      if (folder.map) parts.push(renderMap(folder));
+      if (folder.members && folder.members.length) parts.push(renderMembers(folder));
+      if (level !== "support") parts.push(renderFolderFlows(folder));
+      if (overviewFirst) parts.push(renderTreeRun(folder));
       const structure = folder.structure;
-      if (structure && structure.nodes.length > 1) {
+      // Imports are drawn where the map has nothing to show, such as inside a component's parts.
+      const showImports = level !== "support" && !folder.map;
+      if (showImports && structure && structure.nodes.length > 1) {
         parts.push(el("h2", "folder-heading", "Structure"));
         if (structure.edges.length) {
           parts.push(el("p", "muted small", "Arrows point from a file or folder to what it imports. Only imports are shown; other connections, such as calls between services, are not."));
@@ -1257,7 +1391,6 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
           parts.push(el("p", "muted", "No imports between these were found."));
         }
       }
-      parts.push(el("h2", "folder-heading", "Contents"));
       const list = el("ul", "folder-list");
       for (const child of folder.children) {
         const item = el("li");
@@ -1274,7 +1407,14 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
         }
         list.append(item);
       }
-      parts.push(list);
+      // The project and groups are read through their parts; their full contents are one click away.
+      if ((level === "project" || level === "group") && folder.members && folder.members.length) {
+        const contents = el("details", "folder-contents");
+        contents.append(el("summary", "", "All files and folders (" + folder.children.length + ")"), list);
+        parts.push(contents);
+      } else {
+        parts.push(el("h2", "folder-heading", "Contents"), list);
+      }
       return parts;
     }
 
@@ -1309,13 +1449,12 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
       purpose.hidden = !localPurpose;
       purpose.textContent = localPurpose;
       const views = new Map((next.explanations || []).map((view) => [view.entryId, view]));
-      byId("entries").replaceChildren(...(file ? file.entries.map((entry) => renderEntry(entry, views)) : folder ? renderFolder(folder, next.overview) : []));
+      byId("entries").replaceChildren(...(file ? file.entries.map((entry) => renderEntry(entry, views)) : folder ? renderFolder(folder) : []));
       const empty = byId("empty");
       empty.hidden = Boolean((file && file.entries.length) || (folder && folder.children.length));
       empty.textContent = file ? "Nothing to describe in this file." : folder ? "Nothing to describe in this folder." : "Open a source file to see its description here.";
       byId("limitations").textContent = file ? file.limitations.join("\\n") : folder ? folder.limitations.join("\\n") : "";
-      // The project preview shows the overview near the top instead.
-      renderOverview(folder && !folder.path ? undefined : next.overview);
+      renderOverview(next.overview);
       highlight(currentEntry);
       highlightSteps(activeSteps);
       updateStuck();

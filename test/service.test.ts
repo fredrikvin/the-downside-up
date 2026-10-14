@@ -56,7 +56,9 @@ function makeInventory(_root: string, previous?: Record<string, string>) {
     inventoryText: "--- README.md ---\nA tiny library checkout fixture.",
     languageIds: ["javascript"],
     limitations: [],
-    changedPaths
+    changedPaths,
+    outline: [{ path: "", files: 3, markers: ["README"] }, { path: "src", files: 2, markers: ["package.json"] }],
+    folders: new Set(["src"])
   };
 }
 
@@ -340,6 +342,59 @@ describe("ExplanationService", () => {
     const other = await service.explain(root, otherTarget(), fakeDocument);
     expect(other.cached).toBe(false);
     expect(provider.requests).toBe(calls + 2);
+  });
+
+  it("maps the project while priming and saves the map apart from the overview", async () => {
+    const provider = new MockProvider();
+    const store = new MemoryRepositoryCacheStore();
+    const service = createService(store, provider);
+    expect(await service.savedProjectMap(root)).toBeUndefined();
+    await service.explain(root, target(), fakeDocument);
+    const saved = await service.savedProjectMap(root);
+    expect(saved?.current).toBe(true);
+    expect(saved?.map.parts.map((part) => `${part.path ?? ""}:${part.level}`)).toEqual(["src:component", ":external"]);
+    const cache = await store.read(root);
+    expect(Object.keys(cache.overview!.value)).not.toContain("map");
+  });
+
+  it("keeps explanations current when only the project map changes", async () => {
+    const provider = new MockProvider();
+    const store = new MemoryRepositoryCacheStore();
+    const service = createService(store, provider);
+    await service.explain(root, target(), fakeDocument);
+    const requests = provider.requests;
+    await store.update(root, (current) => ({
+      ...current,
+      projectMap: { ...current.projectMap!, value: { ...current.projectMap!.value, summary: "Edited map." } }
+    }));
+    const again = await service.explain(root, target(), fakeDocument);
+    expect(again.cached).toBe(true);
+    expect(again.earlierOverview).toBeFalsy();
+    expect(provider.requests).toBe(requests);
+  });
+
+  it("maps the project again with the next new explanation after the map detail setting changes", async () => {
+    const provider = new MockProvider();
+    let detail: "brief" | "detailed" = "brief";
+    const service = new ExplanationService({
+      store: new MemoryRepositoryCacheStore(),
+      describeProvider: () => ({ kind: "mock", modelId: provider.modelId }),
+      createProvider: async () => provider,
+      authorizeExternalData: async () => true,
+      projectMapDetail: () => detail
+    });
+    await service.explain(root, target(), fakeDocument);
+    expect((await service.savedProjectMap(root))?.map.parts[0]?.detail).toBeUndefined();
+    detail = "detailed";
+    expect((await service.savedProjectMap(root))?.current).toBe(false);
+    const requests = provider.requests;
+    expect((await service.explain(root, target(), fakeDocument)).cached).toBe(true);
+    expect(provider.requests).toBe(requests);
+    await service.explain(root, otherTarget(), fakeDocument);
+    expect(provider.requests).toBe(requests + 2);
+    const saved = await service.savedProjectMap(root);
+    expect(saved?.current).toBe(true);
+    expect(saved?.map.parts[0]?.detail).toBe("Mock detail of src.");
   });
 
   it("keeps explanations current when only the repository overview changes", async () => {

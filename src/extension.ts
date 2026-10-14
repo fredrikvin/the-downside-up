@@ -6,6 +6,7 @@ import { FileRepositoryCacheStore } from "./cache/store";
 import {
   ExplanationService,
   type ExplanationResult,
+  type FlowsRequest,
   type ProviderDescriptor
 } from "./controller";
 import {
@@ -20,8 +21,16 @@ import {
 import { folderStructure, type StructureGraph } from "./context/structure";
 import { folderSummaryInput, projectFlowsInput } from "./context/folderInput";
 import { collectFolderTree, foldersToSummarize, type FolderTree } from "./context/folderTree";
+import {
+  folderLevel,
+  isContractFile,
+  mapMembers,
+  mapPartAt,
+  mapView,
+  type FolderPageLevel
+} from "./context/projectMap";
 import type { FolderSummaryPromptInput, ProjectFlowsPromptInput } from "./generation/provider";
-import { folderSummaryPrompt, projectFlowsPrompt } from "./generation/prompts";
+import { folderSummaryPrompt, partFlowsPrompt, projectFlowsPrompt } from "./generation/prompts";
 import { findCalledFunctions, type CalledFunction } from "./context/related";
 import { buildFileOverview, type FileOverview, type OutlineEntry } from "./context/fileOverview";
 import type {
@@ -32,6 +41,8 @@ import type {
   FunctionTarget,
   LineLinked,
   ProjectFlow,
+  ProjectMap,
+  ProjectMapDetail,
   RepositoryOverview,
   Usage
 } from "./core/types";
@@ -120,8 +131,12 @@ interface FolderPreview {
   readonly input?: FolderSummaryPromptInput;
   readonly ai?: { value: FolderSummary; current: boolean };
   readonly summaryError?: string;
+  /** How the page zooms, from the saved project map. */
+  readonly level: FolderPageLevel;
+  /** The saved project map; `current` is false when it was made with other settings. */
+  readonly map?: { readonly map: ProjectMap; readonly current: boolean };
   /** What main flows would be made from, built after the structure. */
-  readonly flowsInput?: ProjectFlowsPromptInput;
+  readonly flowsInput?: FlowsRequest;
   readonly flows?: { flows: readonly ProjectFlow[]; current: boolean };
   readonly flowsError?: string;
 }
@@ -326,6 +341,8 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       }
       return new OpenAIProvider(descriptor.modelId, key);
     },
+    projectMapDetail: (): ProjectMapDetail =>
+      vscode.workspace.getConfiguration("downsideUp").get<string>("projectMap.detail", "brief") === "detailed" ? "detailed" : "brief",
     explanationFormats: () => {
       const formats = formatSettings();
       return [
@@ -787,11 +804,50 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     return crumbs;
   };
 
+  /** What the project map shows on a folder page: what it says about the folder, its map, and its members. */
+  const mapOnPage = (shown: FolderPreview, target: (open: () => Promise<void>) => string): Pick<FolderView, "about" | "map" | "members" | "mapState"> => {
+    const saved = shown.map;
+    if (!saved) return { mapState: "missing" };
+    const part = shown.path ? mapPartAt(saved.map, shown.path) : undefined;
+    const about = shown.path
+      ? part && { summary: part.summary, ...(part.detail ? { detail: part.detail } : {}), ...(part.offers ? { offers: part.offers } : {}), ...(part.uses ? { uses: part.uses } : {}) }
+      : saved.map.summary ? { summary: saved.map.summary } : undefined;
+    const view = mapView(saved.map, shown.path);
+    const open = (path: string) => target(() => showFolder(shown.root, path));
+    const members = shown.level === "project" || shown.level === "group" ? mapMembers(saved.map, shown.path) : [];
+    return {
+      mapState: saved.current ? "current" : "other",
+      ...(about ? { about } : {}),
+      ...(view
+        ? {
+            map: {
+              nodes: view.nodes.map((node) => ({
+                id: node.id,
+                name: node.name,
+                summary: node.summary,
+                place: node.place,
+                ...(node.group ? { group: node.group } : {}),
+                ...(node.path !== undefined ? { target: open(node.path) } : {})
+              })),
+              edges: view.edges
+            }
+          }
+        : {}),
+      ...(members.length
+        ? { members: members.map((member) => ({ name: member.name, summary: member.summary, level: member.level, ...(member.path !== undefined ? { target: open(member.path) } : {}) })) }
+        : {})
+    };
+  };
+
   const folderView = (shown: FolderPreview, target: (open: () => Promise<void>) => string): FolderView => {
     const parts = new Map((shown.ai?.value.parts ?? []).map((part) => [part.name, part.summary]));
+    // The project and its groups are described by the map, so they are not summarized on their own.
+    const describedByMap = (shown.level === "project" || shown.level === "group") && Boolean(shown.map);
     return {
     name: shown.path ? basename(shown.path) : basename(shown.root),
     path: shown.path,
+    level: shown.level,
+    ...mapOnPage(shown, target),
     fileCount: shown.children.reduce((total, child) => total + (child.kind === "folder" ? child.fileCount ?? 0 : 1), 0),
     children: shown.children.map((child) => {
       const summary = shown.summaries.get(child.path);
@@ -804,9 +860,19 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     }),
     ...(shown.structure ? { structure: { nodes: shown.structure.nodes, edges: shown.structure.edges } } : {}),
     limitations: [...shown.limitations, ...(shown.structure?.limitations ?? [])],
-    ...(shown.ai ? { ai: { summary: shown.ai.value.summary, overview: shown.ai.value.overview, current: shown.ai.current } } : {}),
+    ...(shown.ai && !describedByMap
+      ? {
+          ai: {
+            summary: shown.ai.value.summary,
+            overview: shown.ai.value.overview,
+            ...(shown.ai.value.offers ? { offers: shown.ai.value.offers } : {}),
+            ...(shown.ai.value.uses ? { uses: shown.ai.value.uses } : {}),
+            current: shown.ai.current
+          }
+        }
+      : {}),
     summarizing: folderJobs.has(folderJobKey("summary", shown.root, shown.path)),
-    canSummarize: Boolean(shown.input) && !inTreeJob(shown.root, shown.path),
+    canSummarize: Boolean(shown.input) && !inTreeJob(shown.root, shown.path) && !describedByMap && shown.level !== "project",
     ...(shown.summaryError ? { summaryError: shown.summaryError } : {}),
     ...(shown.flows
       ? {
@@ -824,7 +890,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
         }
       : {}),
     describingFlows: folderJobs.has(folderJobKey("flows", shown.root, shown.path)),
-    canDescribeFlows: Boolean(shown.flowsInput && shown.flowsInput.catalog.length) && !inTreeJob(shown.root, shown.path),
+    canDescribeFlows: hasFlowsInput(shown.flowsInput) && !inTreeJob(shown.root, shown.path),
     canSummarizeTree: Boolean(shown.input) && !treeJob && !planningTree && folderJobs.size === 0
       && shown.children.some((child) => child.kind === "folder"),
     ...(treeJob && inTreeJob(shown.root, shown.path)
@@ -844,12 +910,14 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
   };
 
   const referenceCaption = (ref: FlowReference): string =>
-    ref.function ? `${basename(ref.path)} › ${ref.function}` : basename(ref.path);
+    ref.folder ? `${basename(ref.path)}/` : ref.function ? `${basename(ref.path)} › ${ref.function}` : basename(ref.path);
 
   /** Opens the file a flow step points to, at its function when one is named; the preview follows. */
   const openReference = async (root: string, ref: FlowReference): Promise<void> => {
     const absolute = resolve(root, ref.path);
     if (!isWithin(root, absolute)) return;
+    // Steps of flows between map parts open the part's folder.
+    if (ref.folder) return showFolder(root, ref.path);
     const document = await vscode.workspace.openTextDocument(vscode.Uri.file(absolute));
     let line = 0;
     const language = ref.function ? bundledLanguageFor({ languageId: document.languageId, path: document.uri.path }) : undefined;
@@ -908,13 +976,22 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     const { children, limitations } = listing;
     const files = children.filter((child) => child.kind === "file").map((child) => child.path);
     const summaries = await service.findFileSummaries(root, files, (file) => repositoryText(root, file)).catch(() => new Map());
+    const savedMap = await service.savedProjectMap(root).catch(() => undefined);
     if (epoch !== folderEpoch || !panel) return;
     openingFolder = undefined;
     stopPrefetch();
     clearReveal();
     preview = undefined;
     notice = undefined;
-    folderPreview = { root, path, children, summaries, limitations };
+    folderPreview = {
+      root,
+      path,
+      children,
+      summaries,
+      limitations,
+      level: folderLevel(savedMap?.map, path),
+      ...(savedMap ? { map: savedMap } : {})
+    };
     panel.panel.title = `Downside Up: ${path ? basename(path) : basename(root)}`;
     // The project preview shows the saved repository overview near the top.
     if (!path && repositoryContext?.root !== root) {
@@ -955,9 +1032,12 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     structure: StructureGraph | undefined
   ): Promise<{ subfolderSummaries: Map<string, { summary: string; current: boolean }>; input?: FolderSummaryPromptInput }> => {
     const subfolderSummaries = new Map<string, { summary: string; current: boolean }>();
+    const saved = await service.savedProjectMap(root).catch(() => undefined);
     for (const child of children.filter((entry) => entry.kind === "folder")) {
-      const saved = await service.savedFolderSummary(root, child.path).catch(() => undefined);
-      if (saved) subfolderSummaries.set(child.path, { summary: saved, current: true });
+      const summary = await service.savedFolderSummary(root, child.path).catch(() => undefined);
+      // A subfolder without a summary of its own uses the project map's sentence about it.
+      const fromMap = saved ? mapPartAt(saved.map, child.path)?.summary : undefined;
+      if (summary || fromMap) subfolderSummaries.set(child.path, { summary: (summary ?? fromMap)!, current: Boolean(summary) || saved!.current });
     }
     const input = await folderSummaryInput(basename(root), path, children, structure, {
       fileSummary: (file) => summaries.get(file)?.summary,
@@ -965,7 +1045,40 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       text: (file) => shareableText(root, file),
       contents: async (folder) => (await listFolder(root, folder)).children.map((entry) => entry.name + (entry.kind === "folder" ? "/" : ""))
     }).catch(() => undefined);
-    return { subfolderSummaries, ...(input ? { input } : {}) };
+    if (!input) return { subfolderSummaries };
+    const level = folderLevel(saved?.map, path);
+    const mapSummary = saved ? (path ? mapPartAt(saved.map, path)?.summary : saved.map.summary) : undefined;
+    const contracts = level === "component" ? await contractsIn(root, path) : [];
+    return {
+      subfolderSummaries,
+      input: {
+        ...input,
+        ...(saved ? { level } : {}),
+        ...(mapSummary ? { mapSummary } : {}),
+        ...(contracts.length ? { contracts } : {})
+      }
+    };
+  };
+
+  const MAX_CONTRACT_BYTES = 6 * 1024;
+  const MAX_CONTRACTS_BYTES = 16 * 1024;
+
+  /** A component's API contracts for its summary, bounded, and only from files that may be shared. */
+  const contractsIn = async (root: string, path: string): Promise<Array<{ path: string; text: string }>> => {
+    const { files } = await listEligibleFiles(root, path).catch(() => ({ files: [] as string[] }));
+    const contracts: Array<{ path: string; text: string }> = [];
+    let total = 0;
+    for (const file of files.filter(isContractFile).sort((left, right) => left.split("/").length - right.split("/").length || left.localeCompare(right))) {
+      const text = await shareableText(root, file);
+      if (!text) continue;
+      const bounded = Buffer.byteLength(text, "utf8") > MAX_CONTRACT_BYTES
+        ? `${Buffer.from(text, "utf8").subarray(0, MAX_CONTRACT_BYTES).toString("utf8").replace(/\uFFFD+$/, "")}\n[… cut]`
+        : text;
+      if (total + Buffer.byteLength(bounded, "utf8") > MAX_CONTRACTS_BYTES) break;
+      contracts.push({ path: file, text: bounded });
+      total += Buffer.byteLength(bounded, "utf8");
+    }
+    return contracts;
   };
 
   /** Lists a folder that is not shown and builds its summary input, for runs over many folders. */
@@ -1002,11 +1115,57 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     }).catch(() => undefined);
   };
 
+  /**
+   * What a folder's main flows would be made from, at its zoom level: the
+   * project, groups, and components get flows between the connected parts
+   * on their map; modules, plain folders, and a mapped project without
+   * separate parts (a single library, say) get flows through files and
+   * functions; support folders, and the project before it is mapped, get
+   * none. Local only.
+   */
+  const flowsRequestFor = async (
+    root: string,
+    path: string,
+    structure: StructureGraph | undefined,
+    folderSummary: string | undefined
+  ): Promise<FlowsRequest | undefined> => {
+    const saved = await service.savedProjectMap(root).catch(() => undefined);
+    const level = folderLevel(saved?.map, path);
+    if (level === "support") return undefined;
+    if (level === "project" && !saved) return undefined;
+    const view = saved && (level === "project" || level === "group" || level === "component") ? mapView(saved.map, path) : undefined;
+    if (view && view.edges.length === 0) return undefined;
+    if (saved && view) {
+      const summary = path ? mapPartAt(saved.map, path)?.summary : saved.map.summary;
+      return {
+        kind: "parts",
+        input: {
+          repositoryName: basename(root),
+          path,
+          level,
+          ...(summary ? { summary } : {}),
+          parts: view.nodes.map((node) => ({ id: node.id, name: node.name, summary: node.summary, place: node.place })),
+          links: view.edges
+        },
+        paths: new Map(view.nodes.flatMap((node) => (node.path ? [[node.id, node.path] as const] : [])))
+      };
+    }
+    const input = await flowsInputFor(root, path, structure, folderSummary);
+    return input ? { kind: "files", input } : undefined;
+  };
+
+  /** Whether a flows request has anything to describe. */
+  const hasFlowsInput = (request: FlowsRequest | undefined): boolean =>
+    Boolean(request && (request.kind === "parts" || request.input.catalog.length));
+
+  const flowsPromptText = (request: FlowsRequest): string =>
+    (request.kind === "parts" ? partFlowsPrompt(request.input) : projectFlowsPrompt(request.input)).join("\n");
+
   /** Builds what main flows would be made from, and looks up saved ones; local only. */
   const loadFlowsInput = async (root: string, path: string, epoch: number): Promise<void> => {
     const current = () => epoch === folderEpoch && folderPreview?.path === path && folderPreview.root === root;
     if (!current()) return;
-    const flowsInput = await flowsInputFor(root, path, folderPreview!.structure, folderPreview!.ai?.value.summary);
+    const flowsInput = await flowsRequestFor(root, path, folderPreview!.structure, folderPreview!.ai?.value.summary);
     if (!current() || !flowsInput) return;
     const flows = await service.findProjectFlows(root, flowsInput).catch(() => undefined);
     if (!current()) return;
@@ -1130,12 +1289,19 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       prepared.set(folder, ready);
       if ((await service.findFolderSummary(root, ready.input).catch(() => undefined))?.current) current.add(folder);
     }
-    const todo = new Set([...foldersToSummarize(tree, current)].filter((folder) => prepared.has(folder)));
-    const flowsInput = await flowsInputFor(root, path, prepared.get(path)?.structure, undefined);
-    const flowsNeeded = Boolean(flowsInput?.catalog.length)
+    // Once mapped, the project and its groups are described by the map, so they are not summarized.
+    const mapped = await service.savedProjectMap(root).catch(() => undefined);
+    const describedByMap = (folder: string) => {
+      const level = mapped ? folderLevel(mapped.map, folder) : undefined;
+      return level === "project" || level === "group";
+    };
+    const todo = new Set([...foldersToSummarize(tree, current)].filter((folder) => prepared.has(folder) && !describedByMap(folder)));
+    const flowsInput = await flowsRequestFor(root, path, prepared.get(path)?.structure, undefined);
+    const flowsNeeded = hasFlowsInput(flowsInput)
       && !(await service.findProjectFlows(root, flowsInput!).catch(() => undefined))?.current;
+    const byMap = tree.folders.filter(describedByMap).length;
     if (todo.size === 0 && !flowsNeeded) {
-      say({ tone: "info", text: `Every folder under ${name} (${tree.folders.length}) has a current summary${flowsInput?.catalog.length ? ", and its main flows are current" : ""}.` });
+      say({ tone: "info", text: `Every folder under ${name} (${tree.folders.length}) has a current summary${byMap ? " or is described by the project map" : ""}${hasFlowsInput(flowsInput) ? ", and its main flows are current" : ""}.` });
       return undefined;
     }
     if (todo.size > MAX_TREE_REQUESTS) {
@@ -1145,8 +1311,8 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     const requests = todo.size + (flowsNeeded ? 1 : 0);
     if (confirm) {
       const bytes = [...todo].reduce((total, folder) => total + Buffer.byteLength(folderSummaryPrompt(prepared.get(folder)!.input).join("\n"), "utf8"), 0)
-        + (flowsNeeded ? Buffer.byteLength(projectFlowsPrompt(flowsInput!).join("\n"), "utf8") : 0);
-      const skipped = tree.folders.length - todo.size;
+        + (flowsNeeded ? Buffer.byteLength(flowsPromptText(flowsInput!), "utf8") : 0);
+      const skipped = tree.folders.length - todo.size - byMap;
       const accept = `Send ${plural(requests, "request")}`;
       const answer = await vscode.window.showInformationMessage(
         `Summarize ${plural(todo.size, "folder")} under ${name}, deepest first${flowsNeeded ? ", then describe its main flows" : ""}?`,
@@ -1155,7 +1321,8 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
           detail: [
             `${plural(requests, "request")} to ${model.modelId || model.kind}, about ${Math.ceil(bytes / 4).toLocaleString()} input tokens in all (byte-based estimate), plus the answers.`,
             skipped ? `${plural(skipped, "folder")} already ${skipped === 1 ? "has" : "have"} a current summary and ${skipped === 1 ? "is" : "are"} skipped.` : "",
-            "Requests hold names, saved summaries, function names, imports, and READMEs; no source code."
+            byMap ? `${plural(byMap, "folder")} (the project or a group) ${byMap === 1 ? "is" : "are"} described by the project map and ${byMap === 1 ? "is" : "are"} skipped.` : "",
+            "Requests hold names, saved summaries, function names, imports, READMEs, and, for components, their API contracts; no other source code."
           ].filter(Boolean).join("\n\n")
         },
         accept
@@ -1252,9 +1419,9 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       if (flowsNeeded && !controller.signal.aborted) {
         await step("flows", path, async () => {
           const structure = (await prepareFolderSummary(root, path).catch(() => undefined))?.structure;
-          const input = await flowsInputFor(root, path, structure, await service.savedFolderSummary(root, path).catch(() => undefined));
-          if (!input?.catalog.length) throw new Error("no files with summaries or function names were found");
-          return service.describeProjectFlows(root, input, controller.signal);
+          const input = await flowsRequestFor(root, path, structure, await service.savedFolderSummary(root, path).catch(() => undefined));
+          if (!hasFlowsInput(input)) throw new Error("no parts, or files with summaries or function names, were found");
+          return service.describeProjectFlows(root, input!, controller.signal);
         });
       }
     } finally {
@@ -2525,9 +2692,12 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       const previous = repositoryContext?.root === root ? repositoryContext.overview : undefined;
       const changed = Boolean(previous && JSON.stringify(previous) !== JSON.stringify(result.overview));
       repositoryContext = { root, overview: result.overview };
+      // A shown folder of this repository picks up the new project map.
+      if (!preview && folderPreview?.root === root) await showFolder(root, folderPreview.path);
+      if (repositoryJob !== controller) return;
       notice = {
         tone: "info",
-        text: `${changed ? "Repository context changed. Saved explanations stay current; they note that an earlier overview was used." : "Repository context checked."} ${formatUsage(result.usage)}`
+        text: `${changed ? "Repository context changed. Saved explanations stay current; they note that an earlier overview was used." : "Repository context and project map checked."} ${formatUsage(result.usage)}`
       };
       if (changed) scheduleRecheck();
     } catch (error) {
@@ -2772,7 +2942,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
   });
 
   const onConfigChange = vscode.workspace.onDidChangeConfiguration((event) => {
-    if (["downsideUp.provider", "downsideUp.languageModel", "downsideUp.openai"].some((key) => event.affectsConfiguration(key))) {
+    if (["downsideUp.provider", "downsideUp.languageModel", "downsideUp.openai", "downsideUp.projectMap"].some((key) => event.affectsConfiguration(key))) {
       // Folder summaries are saved per overview model, which falls back to the explanation model, so look again.
       if (panel && folderPreview && !preview) void showFolder(folderPreview.root, folderPreview.path);
     }
@@ -2888,7 +3058,15 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
           edges: (folderPreview.structure?.edges ?? []).map((edge) => `${edge.from} > ${edge.to}`).sort(),
           ...(folderPreview.ai ? { summary: folderPreview.ai.value.summary, current: folderPreview.ai.current } : {}),
           ready: Boolean(folderPreview.input),
-          hasOverview: repositoryContext?.root === folderPreview.root
+          hasOverview: repositoryContext?.root === folderPreview.root,
+          level: folderPreview.level,
+          mapState: folderPreview.map ? (folderPreview.map.current ? "current" : "other") : "missing",
+          mapNodes: (folderPreview.map ? mapView(folderPreview.map.map, folderPreview.path)?.nodes ?? [] : []).map((node) => `${node.name}:${node.place}`).sort(),
+          members: (folderPreview.level === "project" || folderPreview.level === "group") && folderPreview.map
+            ? mapMembers(folderPreview.map.map, folderPreview.path).map((part) => `${part.name}:${part.level}`)
+            : [],
+          ...(folderPreview.ai?.value.offers ? { offers: folderPreview.ai.value.offers } : {}),
+          ...(folderPreview.input?.contracts ? { contracts: folderPreview.input.contracts.map((contract) => contract.path) } : {})
         }
       : undefined,
     summarizeFolder: () => summarizeShownFolder(),
@@ -2897,6 +3075,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     shownFlows: () => (folderPreview && !preview && folderPreview.flows
       ? folderPreview.flows.flows.map((flow) => ({ title: flow.title, refs: flow.refs.map((ref) => ref ? referenceCaption(ref) : null) }))
       : undefined),
+    flowsKind: () => folderPreview?.flowsInput?.kind,
     flowsReady: () => Boolean(folderPreview?.flowsInput),
     previewFolder: (path: string) => preview ? showFolder(preview.root, path) : folderPreview ? showFolder(folderPreview.root, path) : Promise.resolve(),
     allExplanations: () => [...functions.values()].map((state) => ({
@@ -2909,12 +3088,27 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
 }
 
 export interface DownsideUpTestApi {
-  shownFolder(): { path: string; children: string[]; edges: string[]; summary?: string; current?: boolean; ready: boolean; hasOverview: boolean } | undefined;
+  shownFolder(): {
+    path: string;
+    children: string[];
+    edges: string[];
+    summary?: string;
+    current?: boolean;
+    ready: boolean;
+    hasOverview: boolean;
+    level: string;
+    mapState: string;
+    mapNodes: string[];
+    members: string[];
+    offers?: string;
+    contracts?: string[];
+  } | undefined;
   summarizeFolder(): Promise<void>;
   summarizeTree(): Promise<void>;
   describeFlows(): Promise<void>;
   shownFlows(): Array<{ title: string; refs: Array<string | null> }> | undefined;
   flowsReady(): boolean;
+  flowsKind(): "files" | "parts" | undefined;
   previewFolder(path: string): Promise<void>;
   reviewChanges(base: string): Promise<number>;
   reviewItems(): Array<{ qualifiedName: string; path: string; status: string }>;

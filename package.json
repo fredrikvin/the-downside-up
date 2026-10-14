@@ -178,6 +178,21 @@
             "default": true,
             "markdownDescription": "When hovering a call to a function, show the purpose from its saved AI explanation (in languages other than Rust and Go, calls are found with the editor's go-to-definition). Reads only the local cache and never generates. Works once the extension is active, for example after opening the preview.",
             "order": 5
+          },
+          "downsideUp.projectMap.detail": {
+            "type": "string",
+            "enum": [
+              "brief",
+              "detailed"
+            ],
+            "enumDescriptions": [
+              "One sentence per part of the project, plus how the parts connect. Component pages are filled in with Summarize.",
+              "Also a few sentences per component, with what it offers and what it uses, so component pages are filled in without a click. Makes the request that maps the project larger."
+            ],
+            "default": "brief",
+            "scope": "application",
+            "markdownDescription": "How much the project map describes. The map is made with the repository overview, by the overview model, and drives what each folder preview shows: the project's parts, a group's members, or a component's internal parts. Changing this maps the project again with the next new explanation or **Refresh repository context**; nothing is sent until then.",
+            "order": 6
           }
         }
       },

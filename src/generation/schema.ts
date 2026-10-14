@@ -6,8 +6,11 @@ import type {
   ProjectFlowsDraft,
   FlowNode,
   FunctionExplanation,
+  MapPart,
+  ProjectMap,
   PseudocodeLine,
-  RepositoryOverview
+  RepositoryOverview,
+  RepositoryPriming
 } from "../core/types";
 
 const string = { type: "string" };
@@ -38,6 +41,36 @@ export const overviewSchema = objectSchema(
     "uncertainties",
     "limitations"
   ]
+);
+
+const mapSchema = objectSchema(
+  {
+    summary: string,
+    parts: {
+      type: "array",
+      items: objectSchema(
+        {
+          id: string,
+          path: string,
+          level: { type: "string", enum: ["group", "component", "module", "support", "external"] },
+          name: string,
+          summary: string,
+          detail: string,
+          offers: string,
+          uses: string
+        },
+        ["id", "path", "level", "name", "summary", "detail", "offers", "uses"]
+      )
+    },
+    links: { type: "array", items: objectSchema({ from: string, to: string, label: string }, ["from", "to", "label"]) }
+  },
+  ["summary", "parts", "links"]
+);
+
+/** The overview and the project map, made in one priming or review request. */
+export const primingSchema = objectSchema(
+  { ...(overviewSchema.properties as Record<string, unknown>), map: mapSchema },
+  [...(overviewSchema.required as string[]), "map"]
 );
 
 const inputSchema = objectSchema({ label: string, name: string, description: string }, ["label", "name", "description"]);
@@ -132,9 +165,36 @@ export const folderSummarySchema = objectSchema(
   {
     summary: string,
     overview: string,
-    parts: { type: "array", items: objectSchema({ name: string, summary: string }, ["name", "summary"]) }
+    parts: { type: "array", items: objectSchema({ name: string, summary: string }, ["name", "summary"]) },
+    offers: string,
+    uses: string
   },
-  ["summary", "overview", "parts"]
+  ["summary", "overview", "parts", "offers", "uses"]
+);
+
+/** Flows between the parts of a project map; each node names the part where its step happens. */
+export const partFlowsSchema = objectSchema(
+  {
+    flows: {
+      type: "array",
+      items: objectSchema(
+        {
+          title: string,
+          summary: string,
+          nodes: {
+            type: "array",
+            items: objectSchema(
+              { id: string, kind: { type: "string", enum: ["start", "action", "decision", "end", "show"] }, label: string, part: string },
+              ["id", "kind", "label", "part"]
+            )
+          },
+          edges: { type: "array", items: objectSchema({ from: string, to: string, label: string }, ["from", "to", "label"]) }
+        },
+        ["title", "summary", "nodes", "edges"]
+      )
+    }
+  },
+  ["flows"]
 );
 
 function record(value: unknown): Record<string, unknown> {
@@ -381,11 +441,93 @@ export function parseProjectFlows(value: unknown): ProjectFlowsDraft {
   return { flows };
 }
 
+/** Optional text: trimmed and bounded, or empty when missing or unusable. */
+function optionalText(source: Record<string, unknown>, key: string, maxLength: number): string {
+  const value = source[key];
+  return typeof value === "string" ? value.trim().slice(0, maxLength) : "";
+}
+
+/**
+ * The project map from a priming or review reply. It is read leniently: a
+ * malformed part or link is dropped, and a missing map is empty, so the
+ * overview still serves explanations. Folder paths are checked against the
+ * repository by the caller.
+ */
+export function parseProjectMap(value: unknown): ProjectMap {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return { summary: "", parts: [], links: [] };
+  const source = value as Record<string, unknown>;
+  const levels = new Set(["group", "component", "module", "support", "external"]);
+  const parts: MapPart[] = (Array.isArray(source.parts) ? source.parts.slice(0, 120) : []).flatMap((item): MapPart[] => {
+    if (typeof item !== "object" || item === null) return [];
+    const part = item as Record<string, unknown>;
+    const id = optionalText(part, "id", 60);
+    const name = optionalText(part, "name", 80);
+    const level = part.level;
+    if (!id || !name || typeof level !== "string" || !levels.has(level)) return [];
+    const path = optionalText(part, "path", 300);
+    const detail = optionalText(part, "detail", 1_200);
+    const offers = optionalText(part, "offers", 500);
+    const uses = optionalText(part, "uses", 500);
+    return [{
+      id,
+      ...(path ? { path } : {}),
+      level: level as MapPart["level"],
+      name,
+      summary: optionalText(part, "summary", 300),
+      ...(detail ? { detail } : {}),
+      ...(offers ? { offers } : {}),
+      ...(uses ? { uses } : {})
+    }];
+  });
+  const links = (Array.isArray(source.links) ? source.links.slice(0, 200) : []).flatMap((item) => {
+    if (typeof item !== "object" || item === null) return [];
+    const link = item as Record<string, unknown>;
+    const from = optionalText(link, "from", 60);
+    const to = optionalText(link, "to", 60);
+    return from && to ? [{ from, to, label: optionalText(link, "label", 40) }] : [];
+  });
+  return { summary: optionalText(source, "summary", 1_200), parts, links };
+}
+
+/** The overview (checked strictly, as explanations rely on it) and the project map (read leniently). */
+export function parsePriming(value: unknown): RepositoryPriming {
+  const source = record(value);
+  const { map, ...overview } = source;
+  return { overview: parseOverview(overview), map: parseProjectMap(map) };
+}
+
+/**
+ * Flows between map parts, checked like project flows; each node's part id
+ * is returned in `refs[].file` for the caller to check against the map.
+ */
+export function parsePartFlows(value: unknown): ProjectFlowsDraft {
+  const source = record(value);
+  if (!Array.isArray(source.flows)) throw new Error("The provider response contains invalid flows.");
+  return parseProjectFlows({
+    flows: source.flows.map((flow) => {
+      if (typeof flow !== "object" || flow === null) return flow;
+      const nodes = (flow as Record<string, unknown>).nodes;
+      return {
+        ...(flow as Record<string, unknown>),
+        nodes: Array.isArray(nodes)
+          ? nodes.map((node) => typeof node === "object" && node !== null
+            ? { ...(node as Record<string, unknown>), file: (node as Record<string, unknown>).part, function: "" }
+            : node)
+          : nodes
+      };
+    })
+  });
+}
+
 /** A folder summary; parts with blank or unusable text are dropped rather than failing it. */
 export function parseFolderSummary(value: unknown): FolderSummary {
   const source = record(value);
   const parts = Array.isArray(source.parts) ? source.parts.slice(0, 200) : [];
+  const offers = optionalText(source, "offers", 600);
+  const uses = optionalText(source, "uses", 600);
   return {
+    ...(offers ? { offers } : {}),
+    ...(uses ? { uses } : {}),
     summary: readText(source, "summary", 600).trim(),
     overview: readText(source, "overview", 2_500).trim(),
     parts: parts.flatMap((part) => {

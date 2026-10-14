@@ -5,15 +5,23 @@ import type {
   FunctionExplanation,
   ProjectFlowsDraft,
   GenerationResult,
+  ProjectMap,
+  ProjectMapDetail,
   ProviderKind,
   RepositoryOverview,
+  RepositoryPriming,
   Usage
 } from "../core/types";
+import type { FolderPageLevel } from "../context/projectMap";
 
 export interface RepositoryPromptInput {
   readonly repositoryName: string;
   readonly inventory: string;
   readonly languageIds: readonly string[];
+  /** Bounded folder outline with component markers, one folder per line; the map's paths come from it. */
+  readonly folders: string;
+  /** Whether the map also describes each component in a few sentences. */
+  readonly mapDetail: ProjectMapDetail;
 }
 
 export interface ExplanationPromptInput {
@@ -74,6 +82,32 @@ export interface FolderSummaryPromptInput {
   readonly imports: ReadonlyArray<{ readonly from: string; readonly to: string }>;
   /** The folder's README, bounded. */
   readonly readme?: string;
+  /** How the folder page zooms, from the project map; absent before there is one. */
+  readonly level?: FolderPageLevel;
+  /** The project map's sentence about this folder, as background. */
+  readonly mapSummary?: string;
+  /** For components: their API contracts (OpenAPI, AsyncAPI, GraphQL, protobuf), bounded. */
+  readonly contracts?: ReadonlyArray<{ readonly path: string; readonly text: string }>;
+}
+
+/** A part of the project map that flows may pass through: inside the folder, elsewhere in the repository, or outside it. */
+export interface FlowPartInput {
+  readonly id: string;
+  readonly name: string;
+  readonly summary: string;
+  readonly place: "inside" | "outside" | "external";
+}
+
+/** What flows between a project's, group's, or component's parts are made from: its map, never code. */
+export interface PartFlowsPromptInput {
+  readonly repositoryName: string;
+  /** Repository-relative folder path, or "" for the repository root. */
+  readonly path: string;
+  readonly level: FolderPageLevel;
+  /** The map's summary of the folder (or of the project), when there is one. */
+  readonly summary?: string;
+  readonly parts: readonly FlowPartInput[];
+  readonly links: ReadonlyArray<{ readonly from: string; readonly to: string; readonly label: string }>;
 }
 
 /** A file the flows may point to: its path, saved summary, and function names; never code. */
@@ -100,6 +134,8 @@ export interface ProjectFlowsPromptInput {
 
 export interface OverviewReviewPromptInput extends RepositoryPromptInput {
   readonly previous: RepositoryOverview;
+  /** The saved project map, when it was made with the same settings. */
+  readonly previousMap?: ProjectMap;
   readonly changedPaths: readonly string[];
 }
 
@@ -109,11 +145,11 @@ export interface GenerationProvider {
   explainRepository(
     input: RepositoryPromptInput,
     signal?: AbortSignal
-  ): Promise<GenerationResult<RepositoryOverview>>;
+  ): Promise<GenerationResult<RepositoryPriming>>;
   reviewRepository(
     input: OverviewReviewPromptInput,
     signal?: AbortSignal
-  ): Promise<GenerationResult<RepositoryOverview>>;
+  ): Promise<GenerationResult<RepositoryPriming>>;
   explainFunction(
     input: ExplanationPromptInput,
     signal?: AbortSignal
@@ -128,6 +164,11 @@ export interface GenerationProvider {
   ): Promise<GenerationResult<FolderSummary>>;
   describeFlows(
     input: ProjectFlowsPromptInput,
+    signal?: AbortSignal
+  ): Promise<GenerationResult<ProjectFlowsDraft>>;
+  /** Flows between map parts; each node's part id is returned in `refs[].file`. */
+  describePartFlows(
+    input: PartFlowsPromptInput,
     signal?: AbortSignal
   ): Promise<GenerationResult<ProjectFlowsDraft>>;
   explainFormat(

@@ -54,9 +54,10 @@ async function loadAllowedSource(
   relativePath: string
 ): Promise<{ uri: vscode.Uri; text: string } | undefined> {
   if (!isEligibleRelativePath(inventory.root, relativePath)) return undefined;
-  const file = inventory.files.find((item) => item.relativePath === relativePath);
-  if (!file) return undefined;
-  const canonical = await realpath(file.absolutePath);
+  // Any file the scan found eligible may be read when an explanation needs it; the scan applied every exclusion.
+  if (!Object.hasOwn(inventory.snapshot, relativePath)) return undefined;
+  const canonical = await realpath(resolve(inventory.root, relativePath)).catch(() => undefined);
+  if (!canonical) return undefined;
   if (!isWithin(inventory.root, canonical)) return undefined;
   const open = vscode.workspace.textDocuments.find(
     (document) => document.uri.scheme === "file" && resolve(document.uri.fsPath) === canonical
@@ -96,7 +97,8 @@ function dependencyRequest(
   inventory: RepositoryInventory,
   extra: Pick<DependencyRequest, "onlyName" | "deadline"> = {}
 ): DependencyRequest {
-  const readablePaths = new Set(inventory.files.map((file) => file.relativePath));
+  // Explanations read the eligible files they need, not only those read for priming.
+  const readablePaths = new Set(Object.keys(inventory.snapshot).filter((path) => !path.startsWith("\0")));
   return {
     ...extra,
     root: inventory.root,
@@ -105,7 +107,6 @@ function dependencyRequest(
     line: target.range.start.line,
     name: target.name,
     readablePaths,
-    unreadPaths: new Set(Object.keys(inventory.snapshot).filter((path) => !readablePaths.has(path))),
     load: async (path) => (await loadAllowedSource(inventory, path))?.text
   };
 }

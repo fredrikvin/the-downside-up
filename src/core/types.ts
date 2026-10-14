@@ -142,14 +142,76 @@ export interface FolderSummary {
   readonly overview: string;
   /** One sentence for each listed file or subfolder that had no summary of its own. */
   readonly parts: ReadonlyArray<{ readonly name: string; readonly summary: string }>;
+  /** For components: what it provides to others, such as APIs or events. */
+  readonly offers?: string;
+  /** For components: what it relies on, such as other services or databases. */
+  readonly uses?: string;
 }
 
-/** Where a project flow's step happens: a repository file and, optionally, a function in it. */
+/**
+ * How far a folder page zooms: the project shows its main parts, a group
+ * (such as `services/`) its members, a component (a service, app, or
+ * library) its internal parts, a module its files, and support folders
+ * (docs, tools, tests, infrastructure) only a short description.
+ */
+export type FolderLevel = "group" | "component" | "module" | "support";
+
+/** A part of the project map: a repository folder at some level, or something outside the repository. */
+export interface MapPart {
+  /** Short unique id, used by links and flows. */
+  readonly id: string;
+  /** Repository-relative folder; absent for things outside the repository, such as devices or cloud services. */
+  readonly path?: string;
+  readonly level: FolderLevel | "external";
+  /** Plain name, such as "Inventory service". */
+  readonly name: string;
+  /** One plain sentence. */
+  readonly summary: string;
+  /** With detailed maps, for components: a few sentences, what it provides, and what it relies on. */
+  readonly detail?: string;
+  readonly offers?: string;
+  readonly uses?: string;
+}
+
+/** A connection between two map parts, such as a frontend calling a service over GraphQL. */
+export interface MapLink {
+  readonly from: string;
+  readonly to: string;
+  /** How, in a few words, such as "GraphQL" or "MQTT events". */
+  readonly label: string;
+}
+
+/** The project's parts at every level and how they connect, made while priming the repository. */
+export interface ProjectMap {
+  /** Two or three sentences about the whole project. */
+  readonly summary: string;
+  readonly parts: readonly MapPart[];
+  readonly links: readonly MapLink[];
+}
+
+export type ProjectMapDetail = "brief" | "detailed";
+
+export interface ProjectMapRecord {
+  readonly value: ProjectMap;
+  /** Provider, model, prompt version, and detail setting it was made with. */
+  readonly config: string;
+  readonly savedAt: number;
+}
+
+/** What priming or reviewing a repository returns: the overview used for explanations, and the project map. */
+export interface RepositoryPriming {
+  readonly overview: RepositoryOverview;
+  readonly map: ProjectMap;
+}
+
+/** Where a project flow's step happens: a repository file and, optionally, a function in it, or a mapped folder. */
 export interface FlowReference {
   /** Repository-relative path. */
   readonly path: string;
   /** Qualified function name as the extension lists it. */
   readonly function?: string;
+  /** True when `path` is a folder of the project map, opened as a folder preview. */
+  readonly folder?: boolean;
 }
 
 /** A main flow through a folder or project, drawn as a flowchart whose steps point to code. */
@@ -268,6 +330,11 @@ export interface RepositoryCache {
   readonly folderSummaries?: Record<string, FolderSummaryRecord>;
   /** AI project flows keyed by folder path, provider, model, and prompt version. */
   readonly projectFlows?: Record<string, ProjectFlowsRecord>;
+  /**
+   * The project map, made in the same request as the overview but saved
+   * apart from it, so map changes never outdate saved explanations.
+   */
+  readonly projectMap?: ProjectMapRecord | null;
 }
 
 export interface FileSummaryRecord {

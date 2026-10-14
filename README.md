@@ -112,27 +112,81 @@ that file. The diagram is built locally from imports (Rust, Go, JavaScript,
 and TypeScript, including `tsconfig` path aliases); it does not show other
 connections, such as dependency injection or calls between services, and
 nothing is generated or sent. The folder preview stays until you switch to
-another file. The project (repository root) preview also shows the saved
-repository overview under **About this project**.
+another file.
 
-A folder (or the whole project) can also get an AI summary: choose
-**Summarize this folder** at the top of its preview. It gives one sentence on
+**The project map: one zoom level at a time.** When the repository is primed
+(with the first explanation, or **Map this project** in the project preview,
+which is the same as **Refresh Repository Context**), the overview model also
+maps the project: its parts, the level of each folder, and how the parts
+connect. Each folder preview then shows what fits its level:
+
+| Level | Example | The preview shows |
+|---|---|---|
+| Project | the repository root | two or three sentences, a **map** of the components and outside services with labelled connections (such as GraphQL, REST, or MQTT), the main parts, and flows between parts |
+| Group | `services/` | its members with one sentence each, and a map of how they connect to each other and to the rest |
+| Component | `services/inventory` | what it is, what it offers and uses, a map of its internal parts and outside connections, and flows between them |
+| Module | a folder inside a component | its files, import structure, and flows through files and functions |
+| Support | `docs/`, `tools/` | a short description and its contents; no charts |
+
+Folders the map does not list take their level from the closest mapped folder
+above (inside a component they are shown like modules), and anything else is
+shown as a plain folder with its files and import structure. A project whose
+map has no separate components, such as a single library, is shown that way
+too. Boxes on a map open their folder; outside services (such as devices or
+a message broker) are drawn with dashed, rounded borders. The map is saved
+with the repository overview and reviewed with it when the repository changes
+(a new or removed file, a changed manifest or README, or a branch switch, at
+the next new explanation or refresh), never on its own; it is saved apart from
+the overview, so a changed map never outdates explanations.
+
+To map the project, priming lists the repository's files breadth-first (up
+to 2,000, so every area is covered at its top levels), ranks them by name and
+location, and reads only what it may send: READMEs, manifests
+(`package.json`, `go.mod`, and others), API contracts (OpenAPI, AsyncAPI,
+GraphQL schemas, protobuf), Dockerfiles, and deployment files, then entry
+points and a few other files; test folders and generated code are not read.
+Each kind gets a share of a bounded budget (64 KiB of files, most cut at
+6 KiB), so no kind crowds out the others in a large repository. Priming also
+sends a bounded outline of the repository's folders with these markers.
+Explanations read the related files they need on their own, so what priming
+read does not limit them.
+Compose, Kubernetes, and Helm files are sent only as names: resource kinds
+and names, services, images, ports, environment variable names, and config
+keys, never their values. **Project Map: Detail**
+(`downsideUp.projectMap.detail`) chooses `brief` (one sentence per part) or
+`detailed` (also a few sentences per component with what it offers and uses,
+so component pages need no extra request, at the cost of a larger priming
+request). Changing it maps the project again with the next new explanation or
+refresh.
+
+A folder can also get an AI summary: choose **Summarize this folder** at the
+top of its preview (the project and groups are described by the map
+instead). It gives one sentence on
 what the folder is for, a few on how its parts fit together and where to start
 reading, and a sentence for each file or subfolder that has no summary of its
-own (marked as inferred from names). The request holds only names: the
+own (marked as inferred from names). For a component, it also says what the
+component offers and what it uses. The request holds only names: the
 contents' names and saved summaries, the names of functions and types in
 files without a summary, the imports between them, and the folder's README;
-no code. Summarize subfolders first, and their summaries feed the parent's.
+no code, except that a component's request includes its API contracts (up to
+16 KiB, from files that may be shared). Support folders get a shorter
+summary. Summarize subfolders first, and their summaries feed the parent's;
+a subfolder without a summary of its own uses the map's sentence about it.
 A saved summary is shown whenever you preview the folder, and marked
 outdated when its contents change; choose **Regenerate** to update it.
 
-**Describe the main flows** in a folder (or project) preview draws one to
-three flowcharts of what happens, such as handling a request or starting up.
-Each step names the file and function where it happens, and clicking it opens
-that place; the extension only links to files and functions it found itself.
-The request holds file paths, saved file summaries, function names, and the
-imports between parts, not code, so explaining a few functions first (which
-saves file summaries) gives better flows.
+**Describe the main flows** draws one to three flowcharts of what happens,
+such as a person using the app, data arriving from devices, or startup, at
+the level of the preview. In the project, group, and component previews, the
+steps pass between the parts on the map, and clicking a step opens that
+part's folder; the request holds the map's parts, their one-line summaries,
+and how they connect. In module and plain folder previews, each step names
+the file and function where it happens, and clicking it opens that place; the
+request holds file paths, saved file summaries, function names, and the
+imports between parts, so explaining a few functions first (which saves file
+summaries) gives better flows. Neither request holds code, and the extension
+only links to parts, files, and functions it found itself. Support folders,
+and the project before it is mapped, have no flows.
 
 **Summarize with all subfolders** does both for a whole tree in one go. It
 first checks every folder below locally, then says how many requests it will
@@ -144,8 +198,9 @@ trees of at most 400 folders); for larger trees, start with their subfolders.
 The preview shows the progress, and **Cancel** (or changing the overview
 model) stops the run; finished summaries are kept.
 
-Project-level work (the repository overview and folder summaries) happens
-far less often than explaining functions, so it can use a stronger model:
+Project-level work (the repository overview and project map, folder
+summaries, and flows) happens far less often than explaining functions, so it
+can use a stronger model:
 run **Downside Up: Choose Overview Model**, which sets
 `downsideUp.languageModel.overviewModel` (or, with OpenAI, set
 `downsideUp.openai.overviewModel`). Explanations keep using the regular model.
@@ -153,7 +208,8 @@ Code sharing is approved once per repository and model, so a new overview
 model asks once.
 
 The development fixtures are in `fixtures/rust-app`,
-`fixtures/go-app`, `fixtures/js-app`, and `fixtures/react-app`.
+`fixtures/go-app`, `fixtures/js-app`, `fixtures/react-app`, and
+`fixtures/services-app` (a small multi-service project for the project map).
 
 To install a locally packaged VSIX, run
 `code --install-extension the-downside-up-0.21.0.vsix`.

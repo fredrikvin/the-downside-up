@@ -79,6 +79,17 @@ describe("Rust function context across files", () => {
     expect(context.text).toContain("--- src/storage.rs (function persist) ---\npub fn persist(book: &Book)");
   });
 
+  it("reads the files it uses on demand, even ones priming did not read", async () => {
+    // Enough other files that priming's read stops before the crate's modules.
+    for (let index = 0; index < 60; index++) await writeFile(resolve(root, `note${String(index).padStart(2, "0")}.md`), `Note ${index}.\n`);
+    const inventory = await gatherInventory(root);
+    expect(inventory.files.map((file) => file.relativePath)).not.toContain("src/storage.rs");
+    expect(inventory.snapshot["src/storage.rs"]).toMatch(/^unread:/);
+    const context = await checkoutContext();
+    expect(context.inputs.map((input) => `${input.path} ${input.description}`)).toContain("src/storage.rs function persist");
+    expect(context.limitations.join(" ")).not.toMatch(/read budget/);
+  });
+
   it("marks the explanation outdated only when a used item changes", async () => {
     const original = await checkoutContext();
 

@@ -6,9 +6,9 @@ import type {
   FunctionExplanation,
   ProjectFlowsDraft,
   GenerationResult,
-  RepositoryOverview
+  RepositoryPriming
 } from "../core/types";
-import { explanationPrompt, fileSummaryPrompt, folderSummaryPrompt, formatPrompt, projectFlowsPrompt, overviewPrompt, reviewPrompt } from "./prompts";
+import { explanationPrompt, fileSummaryPrompt, folderSummaryPrompt, formatPrompt, partFlowsPrompt, projectFlowsPrompt, overviewPrompt, reviewPrompt } from "./prompts";
 import type {
   ExplanationPromptInput,
   FileSummaryPromptInput,
@@ -17,6 +17,7 @@ import type {
   FormatPromptInput,
   GenerationProvider,
   OverviewReviewPromptInput,
+  PartFlowsPromptInput,
   RepositoryPromptInput
 } from "./provider";
 import {
@@ -25,13 +26,15 @@ import {
   fileSummarySchema,
   folderSummarySchema,
   projectFlowsSchema,
-  overviewSchema,
+  primingSchema,
+  partFlowsSchema,
   parseExplanation,
   parseFileSummary,
   parseFolderSummary,
   parseProjectFlows,
   parseFormat,
-  parseOverview
+  parsePriming,
+  parsePartFlows
 } from "./schema";
 
 const REQUEST_TIMEOUT_MS = 90_000;
@@ -136,17 +139,17 @@ export class LanguageModelProvider implements GenerationProvider {
   async explainRepository(
     input: RepositoryPromptInput,
     signal?: AbortSignal
-  ): Promise<GenerationResult<RepositoryOverview>> {
+  ): Promise<GenerationResult<RepositoryPriming>> {
     const [system, user] = overviewPrompt(input);
-    return this.request(system, user, overviewSchema, parseOverview, signal);
+    return this.request(system, user, primingSchema, parsePriming, signal);
   }
 
   async reviewRepository(
     input: OverviewReviewPromptInput,
     signal?: AbortSignal
-  ): Promise<GenerationResult<RepositoryOverview>> {
+  ): Promise<GenerationResult<RepositoryPriming>> {
     const [system, user] = reviewPrompt(input);
-    return this.request(system, user, overviewSchema, parseOverview, signal);
+    return this.request(system, user, primingSchema, parsePriming, signal);
   }
 
   async explainFunction(
@@ -179,6 +182,14 @@ export class LanguageModelProvider implements GenerationProvider {
   ): Promise<GenerationResult<ProjectFlowsDraft>> {
     const [system, user] = projectFlowsPrompt(input);
     return this.request(system, user, projectFlowsSchema, parseProjectFlows, signal);
+  }
+
+  async describePartFlows(
+    input: PartFlowsPromptInput,
+    signal?: AbortSignal
+  ): Promise<GenerationResult<ProjectFlowsDraft>> {
+    const [system, user] = partFlowsPrompt(input);
+    return this.request(system, user, partFlowsSchema, parsePartFlows, signal);
   }
 
   async explainFormat(

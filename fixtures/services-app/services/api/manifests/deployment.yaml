@@ -1,0 +1,13 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+spec:
+  template:
+    spec:
+      containers:
+        - name: api
+          image: example/api:1.0
+          env:
+            - name: WORKER_URL
+              value: http://worker.internal:9000

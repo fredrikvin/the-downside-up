@@ -7,13 +7,41 @@ import ignore from "ignore";
 import { minimatch } from "minimatch";
 import { fingerprint } from "../core/fingerprint";
 import { currentPolicy } from "./policy";
+import {
+  deploymentFacts,
+  folderOutline,
+  foldersOf,
+  isContainerFile,
+  isContractFile,
+  isDeploymentFile,
+  isGeneratedSource,
+  type FolderOutlineEntry
+} from "./projectMap";
 import { bundledLanguageIdForPath } from "../languages/registry";
 
 const MAX_FILES = 2_000;
 const MAX_FILE_BYTES = 256 * 1024;
 const MAX_SNAPSHOT_BYTES = 12 * 1024 * 1024;
-const MAX_PRIME_BYTES = 80 * 1024;
-const MAX_READABLE_FILES = 200;
+const MAX_PRIME_BYTES = 64 * 1024;
+/** One file's share of the priming inventory; longer files are cut, so a few large ones cannot crowd out the rest. */
+const MAX_PRIME_FILE_BYTES = 6 * 1024;
+/** The root README introduces the whole project, so it may take more. */
+const MAX_PRIME_ROOT_README_BYTES = 12 * 1024;
+/** Manifests mostly list dependencies; their start says what a component is. */
+const MAX_PRIME_MANIFEST_BYTES = 3 * 1024;
+/**
+ * Each kind of evidence, by priority, first gets at most this share of the
+ * priming budget (root README, manifests, READMEs, contracts, deployment
+ * files, architecture notes, entry points), so no kind crowds out the others
+ * in a large repository; whatever is left is then filled in priority order.
+ */
+const PRIME_SHARES = [10, 14, 16, 10, 6, 4, 4].map((kib) => kib * 1024);
+/** At most this many evidence files (READMEs, manifests, contracts, deployment files, architecture notes, entry points) are read for priming. */
+const MAX_EVIDENCE_FILES = 300;
+/** At most this many other files are read to fill what is left of the priming budget. */
+const MAX_FILL_FILES = 40;
+/** The walk stops after this many directory entries, however few files are eligible. */
+const MAX_WALK_DIRECTORY_ENTRIES = 50_000;
 const GIT_HEAD_SNAPSHOT_KEY = "\0git-head";
 const GIT_HEAD_CHANGED_LABEL = "[Git branch/HEAD]";
 const ALWAYS_SKIP_DIRS = new Set([
@@ -34,18 +62,63 @@ const TEXT_EXTENSIONS = new Set([
   ".py", ".go", ".java", ".cs", ".cpp", ".c", ".h", ".hpp",
   ".rb", ".php", ".swift", ".kt", ".scala", ".md", ".mdx",
   ".txt", ".toml", ".json", ".yaml", ".yml", ".xml", ".html",
-  ".css", ".scss", ".sql", ".sh", ".gitignore", ".properties"
+  ".css", ".scss", ".sql", ".sh", ".gitignore", ".properties",
+  ".graphql", ".graphqls", ".gql", ".proto"
 ]);
-/** Source and text files the inventory reads, including every bundled language's files. */
+/** Source and text files the inventory reads, including every bundled language's files and Dockerfiles. */
 const isTextFile = (path: string): boolean =>
-  TEXT_EXTENSIONS.has(extname(path).toLowerCase()) || bundledLanguageIdForPath(path) !== undefined;
+  TEXT_EXTENSIONS.has(extname(path).toLowerCase()) || bundledLanguageIdForPath(path) !== undefined || isContainerFile(basename(path));
 
-const PRIORITY = [
-  /^README(?:\.[^/]*)?$/i,
-  /(?:^|\/)(?:Cargo\.toml|package\.json|pyproject\.toml|go\.mod|pom\.xml|build\.gradle)$/i,
-  /(?:^|\/)(?:ARCHITECTURE|CONTRIBUTING|DESIGN)(?:\.[^/]*)?$/i,
-  /(?:^|\/)(?:main|index|lib|mod)\.(?:rs|[cm]?js|jsx|mjs|cjs|ts|tsx|py|go|java)$/i
-];
+const MANIFEST = /(?:^|\/)(?:Cargo\.toml|package\.json|pyproject\.toml|go\.mod|pom\.xml|build\.gradle)$/i;
+const TEST_FOLDER = /^(?:tests?|__tests__|e2e|testdata|test-?data|api-?tests?|fixtures?|mocks?|examples?|samples?)$/i;
+
+const parentFolder = (path: string): string => (path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "");
+
+/**
+ * Ranks files by what they say about the project, from names and locations
+ * only: the root README, manifests, other READMEs, API contracts,
+ * deployment files (reduced to names), architecture notes, and entry points
+ * (any `main` file, and `index`, `lib`, `app`, or `server` files only at a
+ * component's top or in its `src` folder, not every barrel file); then
+ * everything else. Files in test folders rank below that, and generated code
+ * last, so neither crowds out the product.
+ */
+function rankerFor(paths: readonly string[]): (path: string) => number {
+  const components = new Set(paths.filter((path) => MANIFEST.test(path)).map(parentFolder));
+  const isEntryPoint = (path: string): boolean => {
+    const name = basename(path);
+    if (/^main\.(?:rs|go|py|java|kt|cs|[cm]?[jt]sx?)$/i.test(name)) return true;
+    if (!/^(?:index|lib|app|server)\.(?:rs|py|[cm]?[jt]sx?)$/i.test(name)) return false;
+    const folder = parentFolder(path);
+    return folder === "" || components.has(folder) || (basename(folder) === "src" && (components.has(parentFolder(folder)) || parentFolder(folder) === ""));
+  };
+  const tiers: ReadonlyArray<(path: string) => boolean> = [
+    (path) => /^README(?:\.[^/]*)?$/i.test(path),
+    (path) => MANIFEST.test(path),
+    (path) => /(?:^|\/)README(?:\.[^/]*)?$/i.test(path),
+    isContractFile,
+    (path) => isDeploymentFile(path) || isContainerFile(basename(path)),
+    (path) => /(?:^|\/)(?:ARCHITECTURE|CONTRIBUTING|DESIGN)(?:\.[^/]*)?$/i.test(path),
+    isEntryPoint
+  ];
+  const cache = new Map<string, number>();
+  return (path) => {
+    let rank = cache.get(path);
+    if (rank === undefined) {
+      if (isGeneratedSource(path)) rank = 30;
+      else if (path.split("/").slice(0, -1).some((segment) => TEST_FOLDER.test(segment))) rank = 20;
+      else {
+        const index = tiers.findIndex((matches) => matches(path));
+        rank = index < 0 ? 10 : index;
+      }
+      cache.set(path, rank);
+    }
+    return rank;
+  };
+}
+
+/** Ranks of evidence that priming reads and gives a share of its budget; higher ranks only fill what is left. */
+const EVIDENCE_RANKS = PRIME_SHARES.length;
 
 export interface InventoryFile {
   readonly relativePath: string;
@@ -67,6 +140,10 @@ export interface RepositoryInventory {
   readonly languageIds: string[];
   readonly limitations: string[];
   readonly changedPaths: string[];
+  /** Bounded folder outline with component markers, for the project map. */
+  readonly outline: FolderOutlineEntry[];
+  /** Every folder holding eligible files, for checking folder paths a model returns. */
+  readonly folders: ReadonlySet<string>;
 }
 
 function isWithin(root: string, target: string): boolean {
@@ -153,6 +230,7 @@ function eligiblePath(relativePath: string): boolean {
     file === "go.work" ||
     file === "package.json" ||
     file === "package-lock.json" ||
+    isContainerFile(file) ||
     file === ".gitignore" ||
     file === ".copilotignore";
 }
@@ -254,27 +332,58 @@ async function readDocumentOrDisk(absolutePath: string): Promise<string> {
   return readFile(absolutePath, "utf8");
 }
 
-function priority(path: string): number {
-  const index = PRIORITY.findIndex((pattern) => pattern.test(path));
-  return index < 0 ? 10 : index;
+/** Important files first, shallow before deep, so priming covers every part of a large repository. */
+function byRank(rank: (path: string) => number): (left: string, right: string) => number {
+  return (left, right) =>
+    rank(left) - rank(right) ||
+    left.split("/").length - right.split("/").length ||
+    left.localeCompare(right);
 }
 
-function selectPrimeFiles(files: readonly InventoryFile[]): InventoryFile[] {
-  const selected: InventoryFile[] = [];
-  let size = 0;
-  for (const file of [...files].sort((a, b) =>
-    priority(a.relativePath) - priority(b.relativePath) ||
-    a.relativePath.localeCompare(b.relativePath)
-  )) {
-    if (
-      !isTextFile(file.relativePath) &&
-      !/^(?:Cargo\.toml|Cargo\.lock|go\.mod|go\.work|package\.json|package-lock\.json)$/.test(basename(file.relativePath))
-    ) continue;
-    if (size + Buffer.byteLength(file.content) > MAX_PRIME_BYTES) continue;
-    selected.push(file);
-    size += Buffer.byteLength(file.content);
+/**
+ * What priming sends of a file: deployment files only as facts reduced to
+ * names, and other files cut at a bounded length.
+ */
+function primeText(file: InventoryFile, rank: (path: string) => number): string {
+  if (isDeploymentFile(file.relativePath)) {
+    const facts = deploymentFacts(file.content);
+    return facts ? `[Deployment facts; values omitted]\n${facts}` : "";
   }
-  return selected;
+  const limit = /^README(?:\.[^/]*)?$/i.test(file.relativePath)
+    ? MAX_PRIME_ROOT_README_BYTES
+    : rank(file.relativePath) === 1 ? MAX_PRIME_MANIFEST_BYTES : MAX_PRIME_FILE_BYTES;
+  if (Buffer.byteLength(file.content, "utf8") <= limit) return file.content;
+  return `${Buffer.from(file.content, "utf8").subarray(0, limit).toString("utf8").replace(/\uFFFD+$/, "")}\n[… cut to fit the priming budget]`;
+}
+
+function selectPrimeFiles(files: readonly InventoryFile[], rank: (path: string) => number): Array<{ file: InventoryFile; text: string }> {
+  const order = byRank(rank);
+  const candidates = [...files]
+    .sort((a, b) => order(a.relativePath, b.relativePath))
+    .filter((file) =>
+      rank(file.relativePath) < 30 && (
+        isTextFile(file.relativePath) ||
+        /^(?:Cargo\.toml|Cargo\.lock|go\.mod|go\.work|package\.json|package-lock\.json)$/.test(basename(file.relativePath))))
+    .map((file) => ({ file, text: primeText(file, rank), tier: rank(file.relativePath) }))
+    .filter((candidate) => candidate.text);
+  const chosen = new Set<(typeof candidates)[number]>();
+  const used = new Map<number, number>();
+  let size = 0;
+  const take = (candidate: (typeof candidates)[number]) => {
+    const bytes = Buffer.byteLength(candidate.text);
+    chosen.add(candidate);
+    used.set(candidate.tier, (used.get(candidate.tier) ?? 0) + bytes);
+    size += bytes;
+  };
+  for (const candidate of candidates) {
+    const share = PRIME_SHARES[candidate.tier];
+    const bytes = Buffer.byteLength(candidate.text);
+    if (share !== undefined && (used.get(candidate.tier) ?? 0) + bytes <= share && size + bytes <= MAX_PRIME_BYTES) take(candidate);
+  }
+  for (const candidate of candidates) {
+    if (!chosen.has(candidate) && size + Buffer.byteLength(candidate.text) <= MAX_PRIME_BYTES) take(candidate);
+  }
+  return candidates.filter((candidate) => chosen.has(candidate)).map(({ file, text }) => ({ file, text }));
 }
 
 export async function gatherInventory(
@@ -285,59 +394,91 @@ export async function gatherInventory(
   const paths: string[] = [];
   const limitations: string[] = [];
   const policy = await currentPolicy();
-  const visit = async (directory: string): Promise<void> => {
-    if (paths.length >= MAX_FILES) return;
-    const entries = await readdir(directory, { withFileTypes: true });
-    entries.sort((a, b) => a.name.localeCompare(b.name));
-    for (const entry of entries) {
-      if (paths.length >= MAX_FILES) return;
-      const absolutePath = resolve(directory, entry.name);
-      if (entry.isSymbolicLink()) continue;
-      if (entry.isDirectory()) {
-        if (entry.name.startsWith(".") || ALWAYS_SKIP_DIRS.has(entry.name)) continue;
-        const rel = canonicalRelative(relative(root, absolutePath));
-        if (policy.blockedBy(rel) || await isIgnored(root, rel, true)) continue;
-        await visit(absolutePath);
+  // Breadth-first, so when the file limit is reached every area of the
+  // repository is listed at its top levels rather than only the first folders
+  // in alphabetical order.
+  const walk = async (): Promise<void> => {
+    const queue = [root];
+    let entriesLeft = MAX_WALK_DIRECTORY_ENTRIES;
+    for (let next = 0; next < queue.length && paths.length < MAX_FILES; next++) {
+      let entries;
+      try {
+        entries = await readdir(queue[next]!, { withFileTypes: true });
+      } catch {
         continue;
       }
-      if (!entry.isFile()) continue;
-      const rel = canonicalRelative(relative(root, absolutePath));
-      if (
-        isSecretOrGenerated(rel) ||
-        policy.blockedBy(rel) ||
-        isEditorExcluded(root, rel) ||
-        !eligiblePath(rel) ||
-        await isIgnored(root, rel)
-      ) continue;
-      paths.push(rel);
+      entries.sort((a, b) => a.name.localeCompare(b.name));
+      for (const entry of entries) {
+        if (paths.length >= MAX_FILES) return;
+        if (--entriesLeft < 0) {
+          limitations.push(`Inventory stopped after ${MAX_WALK_DIRECTORY_ENTRIES.toLocaleString("en")} folder entries.`);
+          return;
+        }
+        const absolutePath = resolve(queue[next]!, entry.name);
+        if (entry.isSymbolicLink()) continue;
+        const rel = canonicalRelative(relative(root, absolutePath));
+        if (entry.isDirectory()) {
+          if (entry.name.startsWith(".") || ALWAYS_SKIP_DIRS.has(entry.name)) continue;
+          if (policy.blockedBy(rel) || await isIgnored(root, rel, true)) continue;
+          queue.push(absolutePath);
+          continue;
+        }
+        if (!entry.isFile()) continue;
+        if (
+          isSecretOrGenerated(rel) ||
+          policy.blockedBy(rel) ||
+          isEditorExcluded(root, rel) ||
+          !eligiblePath(rel) ||
+          await isIgnored(root, rel)
+        ) continue;
+        paths.push(rel);
+      }
     }
   };
   // A restricted repository is not read at all, so nothing from it can reach an overview or context.
   const restricted = await policy.repositoryRestriction(root);
   if (restricted) limitations.push(`No files were read because ${restricted}.`);
-  else await visit(root);
+  else await walk();
   if (paths.length >= MAX_FILES) limitations.push(`Inventory stopped at ${MAX_FILES} eligible files.`);
 
+  // Only what priming may send is read: evidence files, then other files while
+  // the priming budget has room. Every other file is tracked by size and
+  // modification time, and explanations read the files they need themselves.
+  const rank = rankerFor(paths);
+  const ranked = [...paths].sort(byRank(rank));
   const files: InventoryFile[] = [];
   const snapshot: Record<string, string> = {};
   let scannedBytes = 0;
-  let readableFiles = 0;
-  for (const path of paths) {
+  let evidenceFiles = 0;
+  let fillFiles = 0;
+  let fillBudget: number | undefined;
+  let bounded = false;
+  for (const path of ranked) {
     const absolutePath = resolve(root, path);
     if (!isWithin(root, await realpath(absolutePath))) continue;
     const fileStat = await stat(absolutePath);
     const size = fileStat.size;
-    const previous = previousSnapshot?.[path];
     if (size > MAX_FILE_BYTES) {
       snapshot[path] = `oversize:${size}:${fileStat.mtimeMs}`;
       continue;
     }
-    if (scannedBytes + size > MAX_SNAPSHOT_BYTES || readableFiles >= MAX_READABLE_FILES) {
+    const tier = rank(path);
+    if (tier >= EVIDENCE_RANKS && fillBudget === undefined) {
+      // Evidence is read; what priming would leave unused is filled with other files.
+      const used = selectPrimeFiles(files, rank).reduce((total, { text }) => total + Buffer.byteLength(text), 0);
+      fillBudget = MAX_PRIME_BYTES - used;
+    }
+    const wanted = tier < EVIDENCE_RANKS
+      ? evidenceFiles < MAX_EVIDENCE_FILES
+      : tier < 20 && fillBudget! > 0 && fillFiles < MAX_FILL_FILES;
+    if (!wanted || scannedBytes + size > MAX_SNAPSHOT_BYTES) {
+      if (tier < EVIDENCE_RANKS || (tier < 20 && fillBudget! > 0)) bounded = true;
       snapshot[path] = `unread:${size}:${fileStat.mtimeMs}`;
       continue;
     }
     scannedBytes += size;
-    readableFiles++;
+    if (tier < EVIDENCE_RANKS) evidenceFiles++;
+    else fillFiles++;
     try {
       const content = await readDocumentOrDisk(absolutePath);
       if (content.includes("\0")) {
@@ -346,30 +487,31 @@ export async function gatherInventory(
       }
       const hash = fingerprint(content);
       snapshot[path] = hash;
-      files.push({
+      const file: InventoryFile = {
         relativePath: path,
         absolutePath,
         content,
         hash,
         size: Buffer.byteLength(content, "utf8"),
         languageId: vscodeLanguage(path)
-      });
+      };
+      files.push(file);
+      if (tier >= EVIDENCE_RANKS) fillBudget! -= Buffer.byteLength(primeText(file, rank));
     } catch {
       snapshot[path] = `unreadable:${size}`;
       limitations.push(`Could not read ${path}; it was omitted from context.`);
     }
-    if (previous && snapshot[path] === previous) continue;
   }
-  if (readableFiles >= MAX_READABLE_FILES || scannedBytes >= MAX_SNAPSHOT_BYTES) {
-    limitations.push("Snapshot content was bounded; lower-priority files may not have content fingerprints.");
+  if (bounded) {
+    limitations.push("Priming read was bounded; some lower-priority files were not read for the repository overview.");
   }
   const gitHead = await gitHeadFingerprint(root, limitations);
   if (gitHead) snapshot[GIT_HEAD_SNAPSHOT_KEY] = gitHead;
 
-  const selected = selectPrimeFiles(files);
-  const primedPaths = selected.map((file) => file.relativePath);
-  const inventoryText = selected.map((file) => `--- ${file.relativePath} ---\n${file.content}`).join("\n\n");
-  const languageIds = [...new Set(files.map((file) => file.languageId).filter((id): id is string => id !== null))].sort();
+  const selected = selectPrimeFiles(files, rank);
+  const primedPaths = selected.map(({ file }) => file.relativePath);
+  const inventoryText = selected.map(({ file, text }) => `--- ${file.relativePath} ---\n${text}`).join("\n\n");
+  const languageIds = [...new Set(paths.map(vscodeLanguage).filter((id): id is string => id !== null))].sort();
   const changedPaths = [...new Set([
     ...Object.keys(previousSnapshot ?? {}),
     ...Object.keys(snapshot)
@@ -385,7 +527,9 @@ export async function gatherInventory(
     inventoryText,
     languageIds,
     limitations,
-    changedPaths
+    changedPaths,
+    outline: folderOutline(paths),
+    folders: foldersOf(paths)
   };
 }
 

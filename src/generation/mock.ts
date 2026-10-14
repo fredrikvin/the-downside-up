@@ -6,7 +6,10 @@ import type {
   FunctionExplanation,
   ProjectFlowsDraft,
   GenerationResult,
-  RepositoryOverview
+  MapPart,
+  ProjectMap,
+  RepositoryOverview,
+  RepositoryPriming
 } from "../core/types";
 import type {
   ExplanationPromptInput,
@@ -16,8 +19,45 @@ import type {
   FormatPromptInput,
   GenerationProvider,
   OverviewReviewPromptInput,
+  PartFlowsPromptInput,
   RepositoryPromptInput
 } from "./provider";
+
+const COMPONENT_MARKERS = /\b(?:package\.json|go\.mod|Cargo\.toml|pyproject\.toml|setup\.py|pom\.xml|build\.gradle|Dockerfile|\.csproj)\b/;
+const SUPPORT_FOLDERS = new Set(["docs", "doc", "tools", "scripts", "test", "tests", "infra", "infrastructure"]);
+
+/**
+ * A deterministic map from the folder outline, for tests: the outermost
+ * folders with a manifest or Dockerfile are components, folders holding two
+ * or more of them are groups, well-known top-level folders are support, and
+ * the components are chained together with one outside service.
+ */
+function mockMap(input: RepositoryPromptInput): ProjectMap {
+  const folders = input.folders.split("\n").flatMap((line) => {
+    const match = /^(\S+)\/ \d+ files?(?:; (.*))?$/.exec(line);
+    return match ? [{ path: match[1]!, markers: match[2] ?? "" }] : [];
+  });
+  const within = (path: string, folder: string) => path === folder || path.startsWith(`${folder}/`);
+  const components: string[] = [];
+  for (const folder of folders) {
+    if (COMPONENT_MARKERS.test(folder.markers) && !components.some((component) => within(folder.path, component))) components.push(folder.path);
+  }
+  const parentOf = (path: string) => path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "";
+  const groups = [...new Set(components.map(parentOf))].filter((parent) => parent && components.filter((component) => parentOf(component) === parent).length >= 2);
+  const support = folders.filter((folder) => !folder.path.includes("/") && SUPPORT_FOLDERS.has(folder.path.toLowerCase())).map((folder) => folder.path);
+  const name = (path: string) => path.split("/").pop()!;
+  const parts: MapPart[] = [
+    ...groups.map((path) => ({ id: `group-${path}`, path, level: "group" as const, name: name(path), summary: `Mock group ${path}.` })),
+    ...components.map((path) => ({ id: `component-${path}`, path, level: "component" as const, name: name(path), summary: `Mock component ${path}.`, ...(input.mapDetail === "detailed" ? { detail: `Mock detail of ${path}.`, offers: "Mock offers.", uses: "Mock uses." } : {}) })),
+    ...support.filter((path) => !components.some((component) => within(component, path))).map((path) => ({ id: `support-${path}`, path, level: "support" as const, name: name(path), summary: `Mock support folder ${path}.` })),
+    ...(components.length ? [{ id: "outside", level: "external" as const, name: "Mock outside service", summary: "Something outside the repository, in mock mode." }] : [])
+  ];
+  const links = [
+    ...components.slice(1).map((path, index) => ({ from: `component-${components[index]}`, to: `component-${path}`, label: "mock link" })),
+    ...(components.length ? [{ from: "outside", to: `component-${components[0]}`, label: "mock events" }] : [])
+  ];
+  return { summary: `Mock mode: ${input.repositoryName} has not been interpreted; its map comes from folder markers only.`, parts, links };
+}
 
 /** Placeholder views that cover the whole function, so tests can exercise rendering and line links. */
 function mockFormats(formats: readonly ExplanationFormat[], source: string): Pick<FunctionExplanation, "pseudocode" | "flowchart"> {
@@ -93,8 +133,8 @@ export class MockProvider implements GenerationProvider {
   explainRepository(
     input: RepositoryPromptInput,
     signal?: AbortSignal
-  ): Promise<GenerationResult<RepositoryOverview>> {
-    const value: RepositoryOverview = {
+  ): Promise<GenerationResult<RepositoryPriming>> {
+    const overview: RepositoryOverview = {
       purpose: `Mock mode: repository purpose has not been interpreted. ${input.repositoryName} contains ${input.languageIds.join(", ") || "unknown-language"} files.`,
       components: `Mock mode does not analyze architecture. Inventory: ${input.inventory.slice(0, 2_000)}`,
       flows: "Mock mode does not infer application flows.",
@@ -102,17 +142,17 @@ export class MockProvider implements GenerationProvider {
       uncertainties: "This is deterministic placeholder output, not a semantic repository explanation. Configure a real provider for code interpretation.",
       limitations: ["Mock provider does not understand source semantics."]
     };
-    return this.respond(input.inventory, value, signal);
+    return this.respond(input.inventory, { overview, map: mockMap(input) }, signal);
   }
 
   reviewRepository(
     input: OverviewReviewPromptInput,
     signal?: AbortSignal
-  ): Promise<GenerationResult<RepositoryOverview>> {
+  ): Promise<GenerationResult<RepositoryPriming>> {
     if (input.changedPaths.length === 0) {
-      return this.respond(input.inventory, input.previous, signal);
+      return this.respond(input.inventory, { overview: input.previous, map: input.previousMap ?? mockMap(input) }, signal);
     }
-    const value: RepositoryOverview = {
+    const overview: RepositoryOverview = {
       purpose: `${input.previous.purpose} Rechecked snapshot; mock mode cannot assess semantic changes.`,
       components: input.previous.components,
       flows: input.previous.flows,
@@ -120,7 +160,7 @@ export class MockProvider implements GenerationProvider {
       uncertainties: "Mock review does not determine whether changed code alters architectural intent.",
       limitations: ["Mock provider cannot semantically review repository changes."]
     };
-    return this.respond(input.inventory, value, signal);
+    return this.respond(input.inventory, { overview, map: mockMap(input) }, signal);
   }
 
   explainFunction(
@@ -157,7 +197,8 @@ export class MockProvider implements GenerationProvider {
     return this.respond(JSON.stringify(input.parts), {
       summary: `Mock summary of ${input.path || "the repository"}; its contents have not been interpreted.`,
       overview: "Mock mode does not describe how the parts fit together. Choose a language model for a real summary.",
-      parts: input.parts.filter((part) => !part.summary).map((part) => ({ name: part.name, summary: `Mock description of ${part.name}.` }))
+      parts: input.parts.filter((part) => !part.summary).map((part) => ({ name: part.name, summary: `Mock description of ${part.name}.` })),
+      ...(input.level === "component" ? { offers: "Mock offers of this component.", uses: "Mock uses of this component." } : {})
     }, signal);
   }
 
@@ -181,6 +222,26 @@ export class MockProvider implements GenerationProvider {
           ...steps.map((entry) => ({ file: entry.path, function: entry.functions[0] ?? "" })),
           { file: "", function: "" }
         ]
+      }]
+    }, signal);
+  }
+
+  describePartFlows(
+    input: PartFlowsPromptInput,
+    signal?: AbortSignal
+  ): Promise<GenerationResult<ProjectFlowsDraft>> {
+    const steps = input.parts.slice(0, 2);
+    const nodes = [
+      { id: "start", kind: "start" as const, label: "Start", startLine: 0, endLine: 0 },
+      ...steps.map((part, index) => ({ id: `step${index}`, kind: "action" as const, label: `Mock step in ${part.name}`, startLine: 0, endLine: 0 })),
+      { id: "end", kind: "end" as const, label: "Done", startLine: 0, endLine: 0 }
+    ];
+    return this.respond(JSON.stringify(input.parts), {
+      flows: [{
+        title: "Mock flow between parts",
+        summary: "Mock mode does not describe flows. Choose a language model for real ones.",
+        chart: { nodes, edges: nodes.slice(1).map((node, index) => ({ from: nodes[index]!.id, to: node.id, label: "" })) },
+        refs: [{ file: "", function: "" }, ...steps.map((part) => ({ file: part.id, function: "" })), { file: "", function: "" }]
       }]
     }, signal);
   }

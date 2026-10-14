@@ -4,7 +4,7 @@ import type {
   FunctionExplanation,
   ProjectFlowsDraft,
   GenerationResult,
-  RepositoryOverview
+  RepositoryPriming
 } from "../core/types";
 import { estimateTokens } from "../core/fingerprint";
 import {
@@ -13,15 +13,17 @@ import {
   fileSummarySchema,
   folderSummarySchema,
   projectFlowsSchema,
-  overviewSchema,
+  primingSchema,
+  partFlowsSchema,
   parseExplanation,
   parseFileSummary,
   parseFolderSummary,
   parseProjectFlows,
   parseFormat,
-  parseOverview
+  parsePriming,
+  parsePartFlows
 } from "./schema";
-import { explanationPrompt, fileSummaryPrompt, folderSummaryPrompt, formatPrompt, projectFlowsPrompt, overviewPrompt, reviewPrompt } from "./prompts";
+import { explanationPrompt, fileSummaryPrompt, folderSummaryPrompt, formatPrompt, partFlowsPrompt, projectFlowsPrompt, overviewPrompt, reviewPrompt } from "./prompts";
 import type {
   ExplanationPromptInput,
   FileSummaryPromptInput,
@@ -30,6 +32,7 @@ import type {
   FormatPromptInput,
   GenerationProvider,
   OverviewReviewPromptInput,
+  PartFlowsPromptInput,
   RepositoryPromptInput
 } from "./provider";
 
@@ -55,17 +58,17 @@ export class OpenAIProvider implements GenerationProvider {
   async explainRepository(
     input: RepositoryPromptInput,
     signal?: AbortSignal
-  ): Promise<GenerationResult<RepositoryOverview>> {
+  ): Promise<GenerationResult<RepositoryPriming>> {
     const [system, user] = overviewPrompt(input);
-    return this.request(system, user, "repository_overview", overviewSchema, parseOverview, signal);
+    return this.request(system, user, "repository_overview", primingSchema, parsePriming, signal);
   }
 
   async reviewRepository(
     input: OverviewReviewPromptInput,
     signal?: AbortSignal
-  ): Promise<GenerationResult<RepositoryOverview>> {
+  ): Promise<GenerationResult<RepositoryPriming>> {
     const [system, user] = reviewPrompt(input);
-    return this.request(system, user, "repository_overview_review", overviewSchema, parseOverview, signal);
+    return this.request(system, user, "repository_overview_review", primingSchema, parsePriming, signal);
   }
 
   async explainFunction(
@@ -98,6 +101,14 @@ export class OpenAIProvider implements GenerationProvider {
   ): Promise<GenerationResult<ProjectFlowsDraft>> {
     const [system, user] = projectFlowsPrompt(input);
     return this.request(system, user, "project_flows", projectFlowsSchema, parseProjectFlows, signal);
+  }
+
+  async describePartFlows(
+    input: PartFlowsPromptInput,
+    signal?: AbortSignal
+  ): Promise<GenerationResult<ProjectFlowsDraft>> {
+    const [system, user] = partFlowsPrompt(input);
+    return this.request(system, user, "part_flows", partFlowsSchema, parsePartFlows, signal);
   }
 
   async explainFormat(

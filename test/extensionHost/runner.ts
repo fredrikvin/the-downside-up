@@ -115,14 +115,16 @@ export async function run(): Promise<void> {
   const jsRoot = resolve(__dirname, "../../fixtures/js-app");
   const goRoot = resolve(__dirname, "../../fixtures/go-app");
   const reactRoot = resolve(__dirname, "../../fixtures/react-app");
+  const servicesRoot = resolve(__dirname, "../../fixtures/services-app");
   // VS Code rejects a second folder change in this session, so all folders are added at once.
   assert.ok(vscode.workspace.updateWorkspaceFolders(
     1,
     0,
     { uri: vscode.Uri.file(jsRoot), name: "js-app" },
     { uri: vscode.Uri.file(goRoot), name: "go-app" },
-    { uri: vscode.Uri.file(reactRoot), name: "react-app" }
-  ), "The JavaScript, Go, and React fixture folders are added.");
+    { uri: vscode.Uri.file(reactRoot), name: "react-app" },
+    { uri: vscode.Uri.file(servicesRoot), name: "services-app" }
+  ), "The JavaScript, Go, React, and services fixture folders are added.");
   const jsFile = resolve(jsRoot, "src/checkout.js");
   const jsDocument = await vscode.workspace.openTextDocument(vscode.Uri.file(jsFile));
   const jsEditor = await vscode.window.showTextDocument(jsDocument, vscode.ViewColumn.One);
@@ -371,7 +373,8 @@ export async function run(): Promise<void> {
   await waitFor(async () => api.shownFlows()?.length === 1 ? true : undefined, "the saved flows to be shown again");
   await waitFor(async () => api.shownFolder()?.ready ? true : undefined, "the folder summary input before the tree run");
   await api.summarizeTree();
-  await waitFor(async () => api.shownFolder()?.current ? true : undefined, "the project summary to be current after the tree run");
+  // The project was mapped while priming, so the run leaves its description to the map and summarizes the folders below.
+  assert.equal(api.shownFolder()?.mapState, "current");
   for (const folder of ["inventory", "storage"]) {
     await api.previewFolder(folder);
     await waitFor(
@@ -501,6 +504,55 @@ export async function run(): Promise<void> {
   );
   assert.match(refused.error ?? "", /excluded from AI explanations because a \.gitignore or \.copilotignore file excludes it/);
   console.log("Downside Up integration tests: excluded files are never explained.");
+
+  // The project map: made on request, then each folder page zooms to its level.
+  const apiDocument = await vscode.workspace.openTextDocument(vscode.Uri.file(resolve(servicesRoot, "services/api/main.go")));
+  await vscode.window.showTextDocument(apiDocument, vscode.ViewColumn.One);
+  await waitFor(async () => api.shownOutline().some((entry) => entry.name === "handleOrder") ? true : undefined, "the services fixture's file preview");
+  await vscode.commands.executeCommand("downsideUp.previewProject");
+  const unmapped = await waitFor(async () => api.shownFolder()?.path === "" && api.shownFolder()?.ready ? api.shownFolder() : undefined, "the services project preview");
+  assert.equal(unmapped.level, "project");
+  assert.equal(unmapped.mapState, "missing", "Opening the project preview maps nothing.");
+  assert.equal(api.flowsKind(), undefined, "An unmapped project offers no flows.");
+  await vscode.commands.executeCommand("downsideUp.refreshRepositoryContext");
+  const mapped = await waitFor(
+    async () => api.shownFolder()?.path === "" && api.shownFolder()?.mapState === "current" ? api.shownFolder() : undefined,
+    "the project map after mapping the project"
+  );
+  assert.deepEqual(mapped.mapNodes, ["Mock outside service:external", "api:inside", "web:inside", "worker:inside"], "The project map shows components and what is outside.");
+  assert.deepEqual(mapped.members, ["services:group", "web:component", "docs:support", "Mock outside service:external"]);
+  await waitFor(async () => api.flowsKind() === "parts" ? true : undefined, "flows between the project's parts");
+  await api.describeFlows();
+  assert.deepEqual(api.shownFlows()?.[0]?.refs.filter(Boolean), ["api/", "worker/"], "Steps of the project's flows open the parts' folders.");
+
+  await api.previewFolder("services");
+  const group = await waitFor(async () => api.shownFolder()?.path === "services" ? api.shownFolder() : undefined, "the services group page");
+  assert.equal(group.level, "group");
+  assert.deepEqual(group.members, ["api:component", "worker:component"]);
+  assert.deepEqual(group.mapNodes, ["Mock outside service:external", "api:inside", "web:outside", "worker:inside"], "A group's map shows its members and what they connect to.");
+
+  await api.previewFolder("services/api");
+  const component = await waitFor(
+    async () => api.shownFolder()?.path === "services/api" && api.shownFolder()?.ready ? api.shownFolder() : undefined,
+    "the api component page"
+  );
+  assert.equal(component.level, "component");
+  assert.deepEqual(component.mapNodes, ["Mock outside service:external", "api:inside", "worker:outside"]);
+  assert.deepEqual(component.contracts, ["services/api/api/openapi.yaml"], "A component's summary input holds its API contracts.");
+  await api.summarizeFolder();
+  assert.match(api.shownFolder()?.offers ?? "", /Mock offers/, "A component's summary says what it offers.");
+
+  await api.previewFolder("services/api/api");
+  await waitFor(async () => api.shownFolder()?.path === "services/api/api" && api.flowsReady() ? true : undefined, "a module's flow input");
+  assert.equal(api.shownFolder()?.level, "module");
+  assert.equal(api.flowsKind(), "files", "Inside a component, flows go through files and functions.");
+
+  await api.previewFolder("docs");
+  await waitFor(async () => api.shownFolder()?.path === "docs" && api.shownFolder()?.ready ? true : undefined, "the docs support page");
+  await new Promise((resolveWait) => setTimeout(resolveWait, 500));
+  assert.equal(api.shownFolder()?.level, "support");
+  assert.equal(api.flowsKind(), undefined, "Support folders have no flows.");
+  console.log("Downside Up integration tests: the project map zooms from the project to groups, components, and modules.");
 
   const unsupported = await vscode.workspace.openTextDocument({
     language: "plaintext",

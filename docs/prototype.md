@@ -291,8 +291,8 @@ including depth 2, and each definition is mapped to its enclosing function
 with document symbols. Definitions outside the repository (such as the
 standard library or `node_modules`), in files the inventory may not read
 (ignored, excluded, or secret-like), or inside the function itself are
-skipped; a timeout, files outside the read budget, or a language without a
-definition provider are stated as limitations. For Rust, it also adds the items the function uses directly from other
+skipped; a timeout, files beyond the scanner's 2,000-file limit, or a
+language without a definition provider are stated as limitations. For Rust, it also adds the items the function uses directly from other
 files of the crate (depth 1): types, functions, constants, and methods of used
 types, found by following `use` declarations and paths (`crate::`, `self::`,
 `super::`, child modules, `mod.rs`, glob imports, and the package's own name
@@ -315,19 +315,46 @@ type names in plain prose rather than by identifiers. The "related code" links
 under an explanation come from the extension's own analysis, so navigation only
 goes to host-validated locations, never to locations taken from model output.
 
-The overview aims for approximately 500–1,000 words and separates observations,
+The overview stays under 800 words and separates observations,
 inferences, and limitations. It is shown at the end of the preview
-for inspection.
+for inspection. The same request also returns the project map (see "The
+project map" below).
 The repository overview is cached by repository and provider/model/prompt
 configuration. Explaining another function in an unchanged repository reuses the
 same overview; a bounded review/re-prime happens only when tracked repository
 changes make the existing overview potentially stale.
 Priming and explanation inputs are bounded by byte budgets; the complete
-priming/review request is limited to 96 KiB and the complete explanation request
-to 48 KiB. The scanner examines at most 2,000 eligible files, reads at most
-200 files and 12 MiB for snapshots, and excludes files over 256 KiB. Initial
-priming source/document text is capped at 80 KiB, with up to 16 KiB for the
-symbol outline. Excessive complete prompts fail before source is sent.
+priming/review request is limited to 128 KiB and the complete explanation request
+to 48 KiB. The scanner lists at most 2,000 eligible files, breadth-first, so
+in a larger repository every area is listed at its top levels rather than
+only the first folders in alphabetical order (the walk also stops after
+50,000 folder entries), and excludes files over 256 KiB. Listing only uses
+names; each file's size and modification time are recorded so changes are
+noticed. Files are ranked by name and location for what they say about the
+project: the root README, manifests, other READMEs, API contracts (OpenAPI,
+AsyncAPI, protobuf, and GraphQL files whose name or folder says schema),
+Dockerfiles and deployment files, architecture notes, and entry points (any
+`main` file, and `index`, `lib`, `app`, or `server` files only at a
+component's top or in its `src` folder, not every barrel file), then the
+rest, shallow before deep. Files in test, fixture, mock, and example folders
+rank below the rest, and generated code (`__generated__` and `generated`
+folders, and names such as `.generated.`, `.pb.go`, `.min.js`, or `.d.ts`)
+last. Only what priming may send is read (and fingerprinted by content): up
+to 300 evidence files, then up to 40 other files while the priming budget
+has room, within 12 MiB; test files and generated code are not read for
+priming. Explanations, hovers, and prefetching read the related files they
+need on demand from the scanner's eligible files, which passed every
+exclusion, so a function's context does not depend on what priming read.
+Priming file text is capped at 64 KiB. Each of those kinds first gets a share of it
+(10, 14, 16, 10, 6, 4, and 4 KiB), and what is left is filled in the same
+order, so no kind crowds out the others. The root README is cut at 12 KiB,
+manifests at 3 KiB, and other files at 6 KiB (marked). Compose, Kubernetes,
+and Helm files are sent only as
+facts reduced to names (`deploymentFacts`: resource kinds and names, Compose
+services and their dependencies, images, ports, environment variable names,
+ConfigMap and Secret keys, and Kustomize resources), never values. Up to
+16 KiB go to the symbol outline and up to 12 KiB to the folder outline.
+Excessive complete prompts fail before source is sent.
 
 The scanner honors `.gitignore`, `.copilotignore` (including `.copilotignore`
 files in folders above the repository, with patterns relative to their own
@@ -383,11 +410,71 @@ opened from it; opening a file there also previews it even when its editor
 was already active. Links and boxes use navigation ids that the extension
 resolves, so the webview never names paths.
 
-The project preview (the repository root) also shows the saved repository
-overview (purpose, components, entry points and flows, conventions, and
-uncertainties) under **About this project**, read from the cache, instead of
-in the collapsed repository-context section at the end; without one it says
-how one is made.
+### The project map
+
+Each folder preview zooms one level below its folder, using the project map
+that priming makes. The priming or review request that makes the repository
+overview, with the overview model, also sends a bounded folder outline
+(`folderOutline`, from the eligible files the scanner found): every folder up
+to two levels deep, deeper folders (up to six levels) that hold a marker, and
+the folders above those, at most 250, each with its file count and markers:
+manifests (`package.json`, `go.mod`, `Cargo.toml`, `pyproject.toml`, and
+others), Dockerfiles, Compose, Kubernetes or Helm files, API contracts,
+READMEs, and entry points. The model returns, besides the overview, `map`: a
+two- or three-sentence summary of the project, at most 60 parts, and at most
+80 links. A part is a folder with a level (`group`, a folder holding several
+components; `component`, something built, deployed, or published on its own;
+`module`, a main part inside a component; `support`, documentation, tooling,
+tests, infrastructure, or configuration) or something outside the repository
+(`external`, such as devices or a message broker), with a plain name and one
+sentence. A link names two parts and how they connect, such as "GraphQL" or
+"MQTT events". With `downsideUp.projectMap.detail` set to `detailed` (user
+settings only), components also get a few sentences and what they offer and
+use. The map is read leniently, so a malformed map never costs the overview:
+parts whose folder the scanner did not find, that leave the repository, or
+that repeat a folder or id are dropped, as are links to dropped parts, and
+duplicate links are merged (`checkedProjectMap`).
+
+The map is saved in the cache next to the overview, but apart from it
+(`projectMap`, with the overview model, prompt version, and detail setting it
+was made with), so changing it never outdates explanations. It is reviewed
+whenever the overview is (the previous map is part of the review request),
+made again when the detail setting or overview model changed, and never
+generated on its own: opening a preview only reads it. A map made with other
+settings is still shown, with a note offering to refresh it.
+
+A folder's level (`folderLevel`) is the project at the root, its own level
+when the map lists it, `module` inside a component or module, `support`
+inside a support folder, and otherwise a plain folder. The preview shows, by
+level:
+
+- **Project**: the map's summary, a map of the outermost components (drawn as
+  their groups when there are more than 14) and the outside parts they
+  connect to, the main parts (top-level parts and outside ones) with their
+  sentences, flows between parts, and all files and folders collapsed.
+  Without a map, it offers **Map this project** (the same request as
+  **Refresh Repository Context**) and has no flows.
+- **Group**: its sentence, its members, and a map of its components with the
+  parts elsewhere they connect to.
+- **Component**: its sentence (or its folder summary, with what it offers
+  and uses), a map of its modules, or of itself when it has none, with what
+  they connect to, and flows between those parts.
+- **Module** and plain folders: the folder summary, import structure, and
+  flows through files and functions, as below.
+- **Support**: a short summary and the contents; no diagram and no flows.
+
+Each map (`mapView`) draws a link between the boxes that hold its ends: an
+end elsewhere in the repository is drawn as its outermost component, an end
+outside the repository as itself, links inside one box are left for that
+box's own page, and links between two outside ends are left out. Maps use the
+structure diagram's layout with labelled arrows; boxes elsewhere in the
+repository are dashed, and outside parts are dashed and rounded. A map
+without separate parts (a project whose map lists no components, such as a
+single library) is not drawn, and the page shows the import structure and
+file flows instead. Boxes and members open their folder through navigation
+ids; outside parts open nothing. The repository overview itself is shown in
+the collapsed repository-context section at the end of every preview,
+including the project's.
 
 The listing applies the scanner's rules (hidden, dependency, and build
 folders, `.gitignore` and `.copilotignore`, VS Code exclusions, the
@@ -426,6 +513,8 @@ drawn thicker for more imports.
 Folder summaries are AI-generated only on an explicit **Summarize this
 folder** (or **Regenerate**) in the folder preview, which may ask for
 code-sharing approval like an explanation and uses an explicit request slot.
+The project and groups do not offer it once mapped, since the map describes
+them.
 The request (`folderSummaryPrompt`) holds the folder's path, the repository
 overview's purpose as background, and for each listed part (at most 150) its
 saved summary (a file's one-sentence summary or a subfolder's folder summary,
@@ -433,21 +522,37 @@ current or not), or else the names of a file's functions and types from its
 bundled language support (at most 20) or a subfolder's contents (at most 20),
 the import edges between parts by name (at most 200), and the folder's README
 (at most 8 KiB, marked when truncated); never source code, and a restricted
-repository sends nothing. The model returns one sentence on what the folder is
-for, two to four on how its parts fit together and where to start, and one
-sentence for each part without a summary; sentences about parts that were not
+repository sends nothing. Once the project is mapped, it also holds the
+folder's level and the map's sentence about it as background, and a subfolder
+without a summary of its own contributes the map's sentence instead. A
+component's request also holds its API contracts (`isContractFile` files
+under it that pass the sharing exclusion, shallow first, each cut at 6 KiB,
+16 KiB in total) and asks what the component offers and what it uses; a
+support folder's asks for a brief summary. The model returns one sentence on
+what the folder is for, two to four on how its parts fit together and where
+to start, what a component offers and uses, and one sentence for each part
+without a summary; sentences about parts that were not
 listed, or that have a summary, are dropped, and the preview marks the rest as
 inferred from names. Folder summaries are cached per folder, provider, model,
-and prompt version with a fingerprint of the input (not of the repository's
-purpose), so a changed part, summary, function name, import, or README marks
-the summary outdated; opening a folder preview only reads the cache. A
+and folder prompt version with a fingerprint of the input (not of the
+repository's purpose or the map's sentence), so a changed part, summary,
+function name, import, README, level, or contract marks the summary outdated; opening a folder preview only reads the cache. A
 subfolder's saved summary feeds its parent's input, so summaries can be built
 bottom-up. Every text sent (saved summaries' files and the README) passes the
 same sharing exclusion as an explained file.
 
 Main flows are AI-generated only on an explicit **Describe the main flows**
-(or **Regenerate**) in a folder preview, with the overview model. The request
-(`projectFlowsPrompt`) holds a catalog of the eligible files under the folder
+(or **Regenerate**) in a folder preview, with the overview model, at the
+preview's level. For the project, groups, and components with a drawn map
+that has connections, the request (`partFlowsPrompt`) holds the map's boxes
+(id, name, sentence, and whether they are inside, elsewhere, or outside) and
+links, and the folder's or project's summary as background; the model returns
+up to three flows of at most 12 nodes, each naming the part where its step
+happens. A node keeps its part only when the map lists it, and parts in the
+repository open their folder preview (`checkedPartReferences`); these flows
+are cached like file flows, with a fingerprint of the parts and links. For
+modules, plain folders, and a mapped project without separate parts, the
+request (`projectFlowsPrompt`) holds a catalog of the eligible files under the folder
 (at most 300, in path order, leaving out files with neither a saved summary
 nor function names, and stopping at 36 KiB, which is stated in the request),
 each with its saved one-sentence summary (current or not) and up to 25
@@ -545,7 +650,8 @@ so switching back to an approved model, or using a separate overview model,
 does not ask again; prefetching only uses approvals already given.
 
 An optional overview model does project-level work: the repository overview
-(priming, review, and **Refresh Repository Context**) and folder summaries.
+and project map (priming, review, and **Refresh Repository Context**), folder
+summaries, and flows.
 For VS Code language models it is chosen with **Choose Overview Model**
 (`downsideUp.languageModel.overviewModel`, a model name next to the
 explanation model's `downsideUp.languageModel.model`); with OpenAI it is
@@ -573,8 +679,10 @@ repository-context refresh, or turning on prefetching in user settings.
 
 Overview and explanation records are stored in VS Code global storage, outside
 the target repository. Explanations and file summaries have their own prompt
-version, separate from the repository overview's, so changing the explanation
-format outdates saved explanations once without rebuilding overviews; the
+version, separate from the repository overview's (which also covers the
+project map) and from folder summaries' and flows', so changing the
+explanation format outdates saved explanations once without rebuilding
+overviews; the
 switch to plain-language explanations is such a change. The cache includes prompt/schema/model settings and
 fingerprints of the relevant source and context. Function identity does not
 depend on line numbers or navigation history. Rust methods are identified by
@@ -794,8 +902,8 @@ webview's content-security policy.
   method or miss one whose type is never named. It follows Cargo's default
   file layout only (no `#[path]` attributes or `include!`), does not follow
   other crates in a Cargo workspace, finds `impl` blocks only in the file that
-  defines the type, and skips module files outside the inventory's read budget
-  (stated as a limitation).
+  defines the type, and skips module files beyond the scanner's 2,000-file
+  limit (stated as a limitation).
 - Go tracking also follows bodies at depth 1 and signatures at depth 2, and
   matches method calls by name against
   methods of the types the function names or receives from calls, so it may
@@ -803,8 +911,15 @@ webview's content-security policy.
   interface, embedding, or a variable of an unnamed type. Build tags and
   `//go:build` constraints are ignored, packages are followed only within the
   file's own module (not `go.work` workspaces, `replace` targets, or
-  `vendor/`), and package files outside the inventory's read budget are
+  `vendor/`), and package files beyond the scanner's 2,000-file limit are
   skipped with a stated limitation.
+- The project map is the overview model's reading of bounded evidence
+  (READMEs, manifests, API contracts, deployment facts, folder markers, and
+  some source files), not an analysis of calls: levels can be wrong and
+  connections can be missing or inferred from names, especially when calls
+  between services are configured at runtime. Regenerating is the fix; levels
+  cannot be overridden. Parts deeper than six folders, beyond 60 parts, or in
+  folders outside the scanner's 2,000-file budget are not mapped.
 - Structure diagrams show imports only: dependency injection, plugin
   registries, message queues, HTTP calls between services, Rust `super::`
   and `self::` paths, Go imports of other modules, TypeScript `baseUrl`

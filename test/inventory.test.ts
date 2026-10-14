@@ -51,6 +51,89 @@ describe("bounded repository inventory", () => {
     expect(result.inventoryText).not.toContain("test secret");
   });
 
+  it("reads what says most about the project first, and shares deployment files only as names", async () => {
+    // More files than the inventory reads in full, all sorting before the evidence below.
+    await mkdir(resolve(root, "aaa"), { recursive: true });
+    for (let index = 0; index < 220; index++) await writeFile(resolve(root, `aaa/file${String(index).padStart(3, "0")}.js`), `export const value${index} = ${index};\n`);
+    await mkdir(resolve(root, "services/api/api"), { recursive: true });
+    await mkdir(resolve(root, "services/api/manifests"), { recursive: true });
+    await writeFile(resolve(root, "services/api/go.mod"), "module example.com/api\n");
+    await writeFile(resolve(root, "services/api/Dockerfile"), "FROM golang:1.22\n");
+    await writeFile(resolve(root, "services/api/api/asyncapi.yaml"), "asyncapi: 2.6.0\ninfo:\n  title: Orders events\n");
+    await writeFile(resolve(root, "services/api/manifests/deployment.yaml"), [
+      "kind: Deployment",
+      "metadata:",
+      "  name: api",
+      "spec:",
+      "  template:",
+      "    spec:",
+      "      containers:",
+      "        - name: api",
+      "          env:",
+      "            - name: WORKER_URL",
+      "              value: http://worker.internal:9000"
+    ].join("\n"));
+    const result = await gatherInventory(root);
+    expect(result.primedPaths.slice(0, 1)).toEqual(["README.md"]);
+    expect(result.primedPaths).toEqual(expect.arrayContaining([
+      "services/api/go.mod",
+      "services/api/api/asyncapi.yaml",
+      "services/api/Dockerfile",
+      "services/api/manifests/deployment.yaml"
+    ]));
+    expect(result.inventoryText).toContain("Orders events");
+    expect(result.inventoryText).toContain("[Deployment facts; values omitted]");
+    expect(result.inventoryText).toContain("environment variable names: WORKER_URL");
+    expect(result.inventoryText).not.toContain("worker.internal");
+    const api = result.outline.find((entry) => entry.path === "services/api");
+    expect(api?.markers).toEqual(["Dockerfile", "go.mod"]);
+    expect(result.folders.has("services/api/api")).toBe(true);
+    expect(result.folders.has("vendor")).toBe(false);
+  });
+
+  it("reads only what priming may send, and ranks by name without reading generated code or test operations", async () => {
+    await mkdir(resolve(root, "lots"), { recursive: true });
+    for (let index = 0; index < 120; index++) await writeFile(resolve(root, `lots/helper${String(index).padStart(3, "0")}.js`), `export const value${index} = ${index};\n`);
+    await mkdir(resolve(root, "web/src/components/cart"), { recursive: true });
+    await mkdir(resolve(root, "web/src/__generated__"), { recursive: true });
+    await mkdir(resolve(root, "tests/operations"), { recursive: true });
+    await writeFile(resolve(root, "web/package.json"), "{\"name\":\"web\"}\n");
+    await writeFile(resolve(root, "web/src/index.ts"), "export const app = 1;\n");
+    await writeFile(resolve(root, "web/src/components/cart/index.ts"), "export * from './cart';\n");
+    await writeFile(resolve(root, "web/src/__generated__/index.ts"), "export const generated = 1;\n");
+    await writeFile(resolve(root, "tests/operations/order.graphql"), "query Order { order { id } }\n");
+    const result = await gatherInventory(root);
+    const read = result.files.map((file) => file.relativePath);
+    expect(read).toEqual(expect.arrayContaining(["README.md", "web/package.json", "web/src/index.ts"]));
+    expect(read.length).toBeLessThan(80);
+    expect(read).not.toContain("web/src/__generated__/index.ts");
+    expect(read).not.toContain("tests/operations/order.graphql");
+    expect(result.snapshot["web/src/__generated__/index.ts"]).toMatch(/^unread:/);
+    // A barrel deep in a component is not an entry point, so it ranks with ordinary files.
+    expect(result.primedPaths.indexOf("web/src/index.ts")).toBeLessThan(result.primedPaths.indexOf("lots/helper000.js"));
+    expect(result.outline.find((entry) => entry.path === "tests/operations")?.markers ?? []).toEqual([]);
+    expect(result.languageIds).toContain("javascript");
+  });
+
+  it("lists every top-level area when the repository has more files than the scan takes", async () => {
+    await mkdir(resolve(root, "aaa/deep/er"), { recursive: true });
+    for (let index = 0; index < 2_050; index++) await writeFile(resolve(root, `aaa/deep/er/file${String(index).padStart(4, "0")}.js`), "export {};\n");
+    await mkdir(resolve(root, "zzz-service"), { recursive: true });
+    await writeFile(resolve(root, "zzz-service/go.mod"), "module example.com/zzz\n");
+    const result = await gatherInventory(root);
+    expect(result.limitations).toContain("Inventory stopped at 2000 eligible files.");
+    expect(result.snapshot["zzz-service/go.mod"]).toBeDefined();
+    expect(result.primedPaths).toContain("zzz-service/go.mod");
+    expect(result.outline.find((entry) => entry.path === "zzz-service")?.markers).toEqual(["go.mod"]);
+  });
+
+  it("cuts a long file in the priming inventory instead of leaving it out", async () => {
+    await writeFile(resolve(root, "README.md"), `# Fixture\n${"A long introduction. ".repeat(1_500)}`);
+    const result = await gatherInventory(root);
+    expect(result.primedPaths[0]).toBe("README.md");
+    expect(result.inventoryText).toContain("[… cut to fit the priming budget]");
+  });
+
   it("includes Go module files and primes go.mod as a manifest", async () => {
     await writeFile(resolve(root, "go.mod"), "module example.com/fixture\n\ngo 1.22\n");
     await writeFile(resolve(root, "go.sum"), "example.com/dep v1.0.0 h1:abc=\n");

@@ -16,11 +16,17 @@ import type {
   FunctionTarget,
   GenerationResult,
   OverviewRecord,
+  ProjectMap,
+  ProjectMapDetail,
+  ProjectMapRecord,
   ProviderKind,
+  RepositoryCache,
   RepositoryOverview,
+  RepositoryPriming,
   Usage
 } from "./core/types";
 import { gatherInventory, sharingExclusion, type RepositoryInventory } from "./context/inventory";
+import { checkedProjectMap, outlineText } from "./context/projectMap";
 import {
   gatherFunctionContext,
   type FunctionContext
@@ -33,7 +39,9 @@ import {
   EXPLANATION_PROMPT_VERSION,
   explanationPrompt,
   fileSummaryPrompt,
+  FOLDER_PROMPT_VERSION,
   folderSummaryPrompt,
+  partFlowsPrompt,
   projectFlowsPrompt,
   formatPrompt,
   overviewPrompt,
@@ -45,12 +53,23 @@ import type {
   FileSummaryPromptInput,
   FlowCatalogEntry,
   FolderSummaryPromptInput,
+  PartFlowsPromptInput,
   ProjectFlowsPromptInput,
   FormatPromptInput,
   GenerationProvider,
   OverviewReviewPromptInput,
   RepositoryPromptInput
 } from "./generation/provider";
+
+/**
+ * What a folder's main flows are made from: a catalog of files and
+ * functions (modules and plain folders), or the project map's parts
+ * (project, groups, and components). `paths` gives each part's folder, so
+ * flow steps can open it.
+ */
+export type FlowsRequest =
+  | { readonly kind: "files"; readonly input: ProjectFlowsPromptInput }
+  | { readonly kind: "parts"; readonly input: PartFlowsPromptInput; readonly paths: ReadonlyMap<string, string> };
 
 export interface ProviderDescriptor {
   readonly kind: ProviderKind;
@@ -100,9 +119,12 @@ export interface ExplanationServiceOptions {
   ) => Promise<boolean>;
   /** Extra views to include when generating explanations; none when omitted. */
   readonly explanationFormats?: () => readonly ExplanationFormat[];
+  /** How much the project map describes each component; brief when omitted. */
+  readonly projectMapDetail?: () => ProjectMapDetail;
 }
 
-const MAX_PRIMING_BYTES = 96 * 1024;
+/** Priming holds the bounded inventory, symbol and folder outlines, and, when reviewing, the previous overview and map. */
+const MAX_PRIMING_BYTES = 128 * 1024;
 const MAX_EXPLANATION_BYTES = 48 * 1024;
 const MAX_FILE_SUMMARY_SOURCE_BYTES = 24 * 1024;
 
@@ -111,16 +133,40 @@ function fileSummaryKey(path: string, descriptor: ProviderDescriptor): string {
 }
 
 function folderSummaryKey(path: string, descriptor: ProviderDescriptor): string {
-  return cacheKey(["folder", path, descriptor.kind, descriptor.modelId, EXPLANATION_PROMPT_VERSION]);
+  return cacheKey(["folder", path, descriptor.kind, descriptor.modelId, FOLDER_PROMPT_VERSION]);
 }
 
 function projectFlowsKey(path: string, descriptor: ProviderDescriptor): string {
-  return cacheKey(["flows", path, descriptor.kind, descriptor.modelId, EXPLANATION_PROMPT_VERSION]);
+  return cacheKey(["flows", path, descriptor.kind, descriptor.modelId, FOLDER_PROMPT_VERSION]);
 }
 
-/** What project flows depend on; the repository overview and folder summary are background, not tracked. */
-function flowsInputFingerprint(input: ProjectFlowsPromptInput): string {
+/**
+ * What project flows depend on: the catalog and imports, or the map's parts
+ * and links; the repository overview, folder summary, and map summary are
+ * background, not tracked.
+ */
+function flowsInputFingerprint(request: FlowsRequest): string {
+  if (request.kind === "parts") {
+    const { input } = request;
+    return fingerprint(JSON.stringify(["parts", input.path, input.level, input.parts, input.links]));
+  }
+  const { input } = request;
   return fingerprint(JSON.stringify([input.path, input.catalog, input.imports, input.truncated]));
+}
+
+/** Keeps a step's part only when the map lists it; parts in the repository open their folder. */
+export function checkedPartReferences(draft: ProjectFlowsDraft, input: PartFlowsPromptInput, paths: ReadonlyMap<string, string>): ProjectFlow[] {
+  const known = new Set(input.parts.map((part) => part.id));
+  return draft.flows.map((flow) => ({
+    title: flow.title,
+    summary: flow.summary,
+    chart: flow.chart,
+    refs: flow.chart.nodes.map((_, index) => {
+      const id = flow.refs[index]?.file ?? "";
+      const path = known.has(id) ? paths.get(id) : undefined;
+      return path ? { path, folder: true } : null;
+    })
+  }));
 }
 
 /**
@@ -142,9 +188,9 @@ export function checkedFlowReferences(draft: ProjectFlowsDraft, catalog: readonl
   }));
 }
 
-/** What a folder summary depends on; the repository's name and purpose are background, not tracked. */
+/** What a folder summary depends on; the repository's name and purpose and the map's sentence are background, not tracked. */
 function folderInputFingerprint(input: FolderSummaryPromptInput): string {
-  return fingerprint(JSON.stringify([input.path, input.parts, input.imports, input.readme ?? ""]));
+  return fingerprint(JSON.stringify([input.path, input.parts, input.imports, input.readme ?? "", input.level ?? "", input.contracts ?? []]));
 }
 
 /** Whitespace-insensitive, so reformatting alone does not outdate a file summary. */
@@ -170,11 +216,13 @@ function usageTotal(values: readonly Usage[]): Usage | undefined {
   };
 }
 
-function inputToOverview(inventory: RepositoryInventory): RepositoryPromptInput {
+function inputToOverview(inventory: RepositoryInventory, mapDetail: ProjectMapDetail): RepositoryPromptInput {
   return {
     repositoryName: inventory.name,
     inventory: inventory.inventoryText,
-    languageIds: inventory.languageIds
+    languageIds: inventory.languageIds,
+    folders: outlineText(inventory.outline),
+    mapDetail
   };
 }
 
@@ -439,62 +487,24 @@ export class ExplanationService {
       const shouldReview =
         !cache.overview ||
         cache.overview.config !== overviewConfig ||
+        cache.projectMap?.config !== this.mapConfig(overviewDescriptor) ||
         needsOverviewReview(inventory, cache.overview);
       let overviewRecord = cache.overview;
 
       if (shouldReview) {
-        const previous = cache.overview;
-        progress(previous ? "reviewing" : "priming", previous ? "Reviewing bounded repository changes." : "Priming repository context.");
-        const prompt = inputToOverview(inventory);
-        let generated: GenerationResult<RepositoryOverview>;
-        if (previous && previous.config === overviewConfig) {
-          const reviewInput: OverviewReviewPromptInput = {
-            ...prompt,
-            previous: previous.value,
-            changedPaths: inventory.changedPaths
-          };
-          const [system, user] = reviewPrompt(reviewInput);
-          const requestBytes = Buffer.byteLength(system + user, "utf8");
-          if (requestBytes > MAX_PRIMING_BYTES) {
-            throw new Error("The complete repository-review request exceeds 96 KiB; no code was sent.");
-          }
-          generated = await providerCallFor(
-            overviewDescriptor,
-            requestBytes,
-            (provider) => provider.reviewRepository(reviewInput, signal)
-          );
-        } else {
-          const [system, user] = overviewPrompt(prompt);
-          const requestBytes = Buffer.byteLength(system + user, "utf8");
-          if (requestBytes > MAX_PRIMING_BYTES) {
-            throw new Error("The complete repository-priming request exceeds 96 KiB; no code was sent.");
-          }
-          generated = await providerCallFor(
-            overviewDescriptor,
-            requestBytes,
-            (provider) => provider.explainRepository(prompt, signal)
-          );
-        }
-        assertNotCancelled(signal);
-        if (this.fence(root) !== startingFence) {
-          throw new Error("The repository cache was cleared while context was being refreshed.");
-        }
-        usages.push(generated.usage);
-        const value = normalizedOverview(generated.value, overviewDescriptor.kind);
-        const version = overviewFingerprint(value);
-        overviewRecord = withOverview(
-          value,
-          previous?.value && version === overviewFingerprint(previous.value)
-            ? previous.contentVersion
-            : version,
-          inventory.snapshot,
-          inventory.primedPaths,
-          overviewConfig
+        const primed = await this.primeRepository(
+          root,
+          inventory,
+          cache,
+          overviewDescriptor,
+          (bytes, request) => providerCallFor(overviewDescriptor, bytes, request),
+          (stage) => progress(stage, stage === "reviewing" ? "Reviewing bounded repository changes." : "Priming repository context."),
+          startingFence,
+          signal
         );
-        cache = await this.options.store.update(root, (current) => ({
-          ...current,
-          overview: overviewRecord!
-        }));
+        usages.push(primed.usage);
+        overviewRecord = primed.overview;
+        cache = primed.cache;
       } else if (overviewRecord && inventory.changedPaths.length > 0) {
         overviewRecord = withOverview(
           overviewRecord.value,
@@ -640,7 +650,6 @@ export class ExplanationService {
     if (Buffer.byteLength(inventory.inventoryText, "utf8") > MAX_PRIMING_BYTES) {
       throw new Error("Repository inventory exceeds the priming budget; no code was sent.");
     }
-    const prompt = inputToOverview(inventory);
     const authorize = async () => {
       if (descriptor.kind !== "mock") {
         const accepted = await this.options.authorizeExternalData(
@@ -653,49 +662,98 @@ export class ExplanationService {
       }
       assertNotCancelled(signal);
     };
-    let result: GenerationResult<RepositoryOverview>;
-    if (cache.overview && cache.overview.config === `${descriptor.kind}:${descriptor.modelId}:${PROMPT_VERSION}`) {
+    const primed = await this.primeRepository(
+      root,
+      inventory,
+      cache,
+      descriptor,
+      async (_bytes, request) => {
+        await authorize();
+        return request(await this.options.createProvider(descriptor));
+      },
+      (stage) => onProgress?.({
+        stage,
+        detail: stage === "reviewing" ? "Reviewing repository context by request." : "Building repository context by request."
+      }),
+      startingFence,
+      signal
+    );
+    return { overview: primed.overview.value, usage: primed.usage };
+  }
+
+  /** The map's settings: the overview model, prompt version, and detail setting it was made with. */
+  private mapConfig(descriptor: ProviderDescriptor): string {
+    return `${descriptor.kind}:${descriptor.modelId}:${PROMPT_VERSION}:${this.options.projectMapDetail?.() ?? "brief"}`;
+  }
+
+  /**
+   * Primes the repository, or reviews its overview when one was made with
+   * the same model, in one request that returns the overview and the project
+   * map. The map's folders are checked against the repository; it is saved
+   * apart from the overview, so a changed map never outdates explanations.
+   */
+  private async primeRepository(
+    root: string,
+    inventory: RepositoryInventory,
+    cache: RepositoryCache,
+    descriptor: ProviderDescriptor,
+    send: (
+      bytes: number,
+      request: (provider: GenerationProvider) => Promise<GenerationResult<RepositoryPriming>>
+    ) => Promise<GenerationResult<RepositoryPriming>>,
+    onStage: (stage: "priming" | "reviewing") => void,
+    startingFence: number,
+    signal?: AbortSignal
+  ): Promise<{ overview: OverviewRecord; map: ProjectMap; cache: RepositoryCache; usage: Usage }> {
+    const overviewConfig = `${descriptor.kind}:${descriptor.modelId}:${PROMPT_VERSION}`;
+    const mapConfig = this.mapConfig(descriptor);
+    const prompt = inputToOverview(inventory, this.options.projectMapDetail?.() ?? "brief");
+    const previous = cache.overview;
+    let generated: GenerationResult<RepositoryPriming>;
+    if (previous && previous.config === overviewConfig) {
       const review: OverviewReviewPromptInput = {
         ...prompt,
-        previous: cache.overview.value,
+        previous: previous.value,
+        ...(cache.projectMap?.config === mapConfig ? { previousMap: cache.projectMap.value } : {}),
         changedPaths: inventory.changedPaths
       };
       const [system, user] = reviewPrompt(review);
-      if (Buffer.byteLength(system + user, "utf8") > MAX_PRIMING_BYTES) {
-        throw new Error("The complete repository-review request exceeds 96 KiB; no code was sent.");
+      const requestBytes = Buffer.byteLength(system + user, "utf8");
+      if (requestBytes > MAX_PRIMING_BYTES) {
+        throw new Error("The complete repository-review request exceeds 128 KiB; no code was sent.");
       }
-      onProgress?.({ stage: "reviewing", detail: "Reviewing repository context by request." });
-      await authorize();
-      result = await (await this.options.createProvider(descriptor)).reviewRepository(review, signal);
+      onStage("reviewing");
+      generated = await send(requestBytes, (provider) => provider.reviewRepository(review, signal));
     } else {
       const [system, user] = overviewPrompt(prompt);
-      if (Buffer.byteLength(system + user, "utf8") > MAX_PRIMING_BYTES) {
-        throw new Error("The complete repository-priming request exceeds 96 KiB; no code was sent.");
+      const requestBytes = Buffer.byteLength(system + user, "utf8");
+      if (requestBytes > MAX_PRIMING_BYTES) {
+        throw new Error("The complete repository-priming request exceeds 128 KiB; no code was sent.");
       }
-      onProgress?.({ stage: "priming", detail: "Building repository context by request." });
-      await authorize();
-      result = await (await this.options.createProvider(descriptor)).explainRepository(prompt, signal);
+      onStage("priming");
+      generated = await send(requestBytes, (provider) => provider.explainRepository(prompt, signal));
     }
     assertNotCancelled(signal);
     if (this.fence(root) !== startingFence) {
       throw new Error("The repository cache was cleared while context was being refreshed.");
     }
-    const value = normalizedOverview(result.value, descriptor.kind);
+    const value = normalizedOverview(generated.value.overview, descriptor.kind);
     const version = overviewFingerprint(value);
-    const overviewRecord = withOverview(
+    const overview = withOverview(
       value,
-      cache.overview?.value && overviewFingerprint(cache.overview.value) === version
-        ? cache.overview.contentVersion
-        : version,
+      previous?.value && version === overviewFingerprint(previous.value) ? previous.contentVersion : version,
       inventory.snapshot,
       inventory.primedPaths,
-      `${descriptor.kind}:${descriptor.modelId}:${PROMPT_VERSION}`
+      overviewConfig
     );
-    await this.options.store.update(root, (current) => ({
+    const map = checkedProjectMap(generated.value.map, (path) => inventory.folders.has(path));
+    const mapRecord: ProjectMapRecord = { value: map, config: mapConfig, savedAt: Date.now() };
+    const updated = await this.options.store.update(root, (current) => this.fence(root) !== startingFence ? current : {
       ...current,
-      overview: overviewRecord
-    }));
-    return { overview: value, usage: result.usage };
+      overview,
+      projectMap: mapRecord
+    });
+    return { overview, map, cache: updated, usage: generated.usage };
   }
 
   /**
@@ -791,13 +849,23 @@ export class ExplanationService {
     return overview ? { purpose: overview.purpose, components: overview.components, flows: overview.flows } : undefined;
   }
 
+  /**
+   * The saved project map, from the cache only; `current` is false when it
+   * was made with another overview model or detail setting. It is reviewed
+   * with the repository overview, so it is never older than that.
+   */
+  async savedProjectMap(root: string): Promise<{ map: ProjectMap; current: boolean } | undefined> {
+    const record = (await this.options.store.read(root)).projectMap;
+    return record ? { map: record.value, current: record.config === this.mapConfig(this.overviewDescriptor()) } : undefined;
+  }
+
   /** Cache-only lookup of a folder's saved project flows; `current` is false when their input changed since. */
   async findProjectFlows(
     root: string,
-    input: ProjectFlowsPromptInput
+    request: FlowsRequest
   ): Promise<{ flows: readonly ProjectFlow[]; current: boolean } | undefined> {
-    const record = (await this.options.store.read(root)).projectFlows?.[projectFlowsKey(input.path, this.overviewDescriptor())];
-    return record ? { flows: record.flows, current: record.fingerprint === flowsInputFingerprint(input) } : undefined;
+    const record = (await this.options.store.read(root)).projectFlows?.[projectFlowsKey(request.input.path, this.overviewDescriptor())];
+    return record ? { flows: record.flows, current: record.fingerprint === flowsInputFingerprint(request) } : undefined;
   }
 
   /**
@@ -808,31 +876,37 @@ export class ExplanationService {
    */
   async describeProjectFlows(
     root: string,
-    input: ProjectFlowsPromptInput,
+    request: FlowsRequest,
     signal?: AbortSignal
   ): Promise<{ flows: readonly ProjectFlow[]; usage: Usage }> {
     const startingFence = this.fence(root);
     const descriptor = this.overviewDescriptor();
+    const { input } = request;
     const restricted = await (await currentPolicy()).repositoryRestriction(root);
     if (restricted) throw new Error(`Nothing was sent because ${restricted}.`);
-    const [system, user] = projectFlowsPrompt(input);
+    const [system, user] = request.kind === "parts" ? partFlowsPrompt(request.input) : projectFlowsPrompt(request.input);
     const requestBytes = Buffer.byteLength(system + user, "utf8");
     if (requestBytes > MAX_EXPLANATION_BYTES) throw new Error("The folder has too much to describe in one request; nothing was sent.");
     assertNotCancelled(signal);
     if (descriptor.kind !== "mock" && !(await this.options.authorizeExternalData(root, descriptor, requestBytes, signal))) {
       throw new DOMException("External code sharing was not authorized.", "AbortError");
     }
-    const generated = await (await this.options.createProvider(descriptor)).describeFlows(input, signal);
+    const provider = await this.options.createProvider(descriptor);
+    const generated = request.kind === "parts"
+      ? await provider.describePartFlows(request.input, signal)
+      : await provider.describeFlows(request.input, signal);
     assertNotCancelled(signal);
-    const flows = checkedFlowReferences(generated.value, input.catalog);
+    const flows = request.kind === "parts"
+      ? checkedPartReferences(generated.value, request.input, request.paths)
+      : checkedFlowReferences(generated.value, request.input.catalog);
     if (flows.length === 0) throw new Error("The model returned no usable flows.");
     const record: ProjectFlowsRecord = {
       path: input.path,
       flows,
-      fingerprint: flowsInputFingerprint(input),
+      fingerprint: flowsInputFingerprint(request),
       provider: descriptor.kind,
       model: descriptor.modelId,
-      promptVersion: EXPLANATION_PROMPT_VERSION,
+      promptVersion: FOLDER_PROMPT_VERSION,
       savedAt: Date.now()
     };
     await this.options.store.update(root, (current) => this.fence(root) !== startingFence ? current : {
@@ -891,7 +965,7 @@ export class ExplanationService {
       fingerprint: folderInputFingerprint(input),
       provider: descriptor.kind,
       model: descriptor.modelId,
-      promptVersion: EXPLANATION_PROMPT_VERSION,
+      promptVersion: FOLDER_PROMPT_VERSION,
       savedAt: Date.now()
     };
     await this.options.store.update(root, (current) => this.fence(root) !== startingFence ? current : {
