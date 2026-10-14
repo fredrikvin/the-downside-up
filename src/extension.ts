@@ -251,6 +251,8 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
   const folderJobKey = (kind: "summary" | "flows" | "tree", root: string, path: string): string =>
     [kind, root, path, describeOverviewProvider().kind, describeOverviewProvider().modelId].join("\0");
   let folderEpoch = 0;
+  /** Shown while a folder's listing loads; a file shown meanwhile, or the folder itself, replaces it. */
+  let openingFolder: { epoch: number; notice: { tone: "info"; text: string } } | undefined;
   let treeJob: FolderTreeJob | undefined;
   /** Set while a tree run is being checked and confirmed, before it starts. */
   let planningTree = false;
@@ -888,11 +890,16 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     ensurePanel();
     const epoch = ++folderEpoch;
     previewEpoch++;
+    // Listing a large repository takes a while; until then, say so instead of looking unchanged.
+    openingFolder = { epoch, notice: { tone: "info", text: `Opening ${path ? basename(path) : basename(root)}…` } };
+    notice = openingFolder.notice;
+    render();
     let listing: Awaited<ReturnType<typeof listFolder>>;
     try {
       listing = await listFolder(root, path);
     } catch (error) {
       if (epoch === folderEpoch && panel) {
+        openingFolder = undefined;
         notice = { tone: "info", text: errorMessage(error) };
         render();
       }
@@ -902,6 +909,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     const files = children.filter((child) => child.kind === "file").map((child) => child.path);
     const summaries = await service.findFileSummaries(root, files, (file) => repositoryText(root, file)).catch(() => new Map());
     if (epoch !== folderEpoch || !panel) return;
+    openingFolder = undefined;
     stopPrefetch();
     clearReveal();
     preview = undefined;
@@ -1453,9 +1461,11 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     const exclusion = await sharingExclusion(root, document.uri.fsPath).catch(() => undefined);
     if (epoch !== previewEpoch || !panel) return;
     const fileChanged = !preview || !sameUri(preview.document.uri, document.uri);
-    // Opening a file leaves the folder preview.
+    // Opening a file leaves the folder preview, or the folder being opened.
     folderPreview = undefined;
     folderEpoch++;
+    if (openingFolder && notice === openingFolder.notice) notice = undefined;
+    openingFolder = undefined;
     preview = { document, root, overview, ...(exclusion ? { exclusion } : {}) };
     panel.panel.title = `Downside Up: ${overview.fileName}`;
     const handlers = new Map<string, () => Promise<void>>();
@@ -2431,11 +2441,13 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
         repositoryJob = undefined;
         preview = undefined;
         folderPreview = undefined;
+        openingFolder = undefined;
         notice = undefined;
         panel = undefined;
       },
       (visible) => {
-        if (visible && lastTextEditor && !folderPreview) void previewDocument(lastTextEditor.document);
+        // A folder shown or being opened stays; otherwise catch up with the editor.
+        if (visible && lastTextEditor && !folderPreview && !openingFolder) void previewDocument(lastTextEditor.document);
       }
     );
     panel = created;
