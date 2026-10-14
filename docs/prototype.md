@@ -512,11 +512,18 @@ The `vscode-lm` provider uses the VS Code Language Model API
 (`vscode.lm`), so GitHub Copilot or any other extension-provided model works
 without an API key and uses the user's existing subscription and its usage
 limits. **Downside Up: Choose Language Model** lists the available models and
-records the vendor and model ID; if none is recorded, Explain asks for one
-first. Copilot's internal `copilotcli` models are listed by VS Code but only
-serve Copilot CLI sessions and never return output, so the picker hides them
-and a previously saved one prompts for a new choice. The cache and consent
-identity is `vendor/id`. VS Code shows its own
+saves the chosen model's name (for example `Claude Opus 4.5`) in
+`downsideUp.languageModel.model`; there is no separate vendor setting. VS
+Code settings cannot list runtime choices, so the setting is a text field
+whose description links to the same picker. If no model is set, Explain asks
+for one first. A setting is matched against the available models by name,
+then by model ID, then by name in any letter case. If several match, Copilot's
+model wins, then the vendors in alphabetical order. A name that matches no
+available model asks for a new choice. Copilot's internal `copilotcli` models
+are listed by VS Code but only serve Copilot CLI sessions and never return
+output, so they are never offered or matched. Cached results are keyed by the
+model name. Consent is keyed by the matched model's `vendor/name`, so a
+same-named model from another vendor asks again. VS Code shows its own
 one-time permission prompt for language-model access in addition to this
 extension's consent. The API has no system role or schema-constrained output,
 so the instructions and JSON Schema are sent in a single user message, and the
@@ -540,12 +547,11 @@ does not ask again; prefetching only uses approvals already given.
 An optional overview model does project-level work: the repository overview
 (priming, review, and **Refresh Repository Context**) and folder summaries.
 For VS Code language models it is chosen with **Choose Overview Model**
-(`downsideUp.languageModel.overviewVendor` and `.overviewModel`, next to the
-explanation model's `.vendor` and `.model`); with OpenAI it is
+(`downsideUp.languageModel.overviewModel`, a model name next to the
+explanation model's `downsideUp.languageModel.model`); with OpenAI it is
 `downsideUp.openai.overviewModel`, next to `downsideUp.openai.model`. The
 settings are grouped in sections per provider. Empty settings use the
-explanation model (an empty overview vendor uses the explanation model's),
-and the mock provider ignores it. Explanations, pseudocode and flowchart
+explanation model, and the mock provider ignores it. Explanations, pseudocode and flowchart
 views, and file summaries always use the explanation model. The overview and
 folder summaries are cached per overview model, so changing it means the next
 explanation reviews or primes the overview with the new model and folder

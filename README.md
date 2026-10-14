@@ -171,8 +171,9 @@ optional overview model.
 1. Sign in to GitHub Copilot in VS Code (or install another extension that
    provides language models).
 2. Run **Downside Up: Choose Language Model** and pick a model. This sets
-   `downsideUp.provider` to `vscode-lm` and records the model's vendor and ID
-   (`downsideUp.languageModel.vendor` and `downsideUp.languageModel.model`).
+   `downsideUp.provider` to `vscode-lm` and saves the model's name, for
+   example `Claude Opus 4.5`, in `downsideUp.languageModel.model`. In the
+   settings, the **Choose…** link under the setting opens the same picker.
 3. Explain a function. Before the first request for a repository and model,
    review and accept the code-sharing prompt. VS Code also asks once whether
    The Downside Up may use language models; you can change that later under

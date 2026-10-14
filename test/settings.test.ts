@@ -45,9 +45,7 @@ describe("extension settings", () => {
     const configuration = JSON.parse(readFileSync(resolve("package.json"), "utf8")).contributes.configuration;
     const section = (title: string) => Object.keys(configuration.find((entry: { title: string }) => entry.title === title)?.properties ?? {});
     expect(section("VS Code Language Models")).toEqual([
-      "downsideUp.languageModel.vendor",
       "downsideUp.languageModel.model",
-      "downsideUp.languageModel.overviewVendor",
       "downsideUp.languageModel.overviewModel"
     ]);
     expect(section("OpenAI")).toEqual(["downsideUp.openai.model", "downsideUp.openai.overviewModel"]);

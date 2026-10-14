@@ -184,29 +184,17 @@
       {
         "title": "VS Code Language Models",
         "properties": {
-          "downsideUp.languageModel.vendor": {
-            "type": "string",
-            "default": "copilot",
-            "description": "Vendor of the VS Code language model for explanations, when the provider is vscode-lm. Set by “Downside Up: Choose Language Model”. Changing it requires renewed repository consent.",
-            "order": 0
-          },
           "downsideUp.languageModel.model": {
             "type": "string",
             "default": "",
-            "description": "VS Code language model (its ID) for explanations, when the provider is vscode-lm. Set by “Downside Up: Choose Language Model”; when empty, you are asked to choose one. Changing it requires renewed repository consent.",
-            "order": 1
-          },
-          "downsideUp.languageModel.overviewVendor": {
-            "type": "string",
-            "default": "",
-            "description": "Vendor of the overview model, when the provider is vscode-lm. Set by “Downside Up: Choose Overview Model”; empty uses the explanation model's vendor.",
-            "order": 2
+            "markdownDescription": "The model that explains functions, when the provider is VS Code language models (for example `Claude Opus 4.5`). [Choose…](command:downsideUp.selectLanguageModel) from the models available to you. A new model asks once before code is shared.",
+            "order": 0
           },
           "downsideUp.languageModel.overviewModel": {
             "type": "string",
             "default": "",
-            "description": "VS Code language model (its ID) for project-level work, when the provider is vscode-lm: the repository overview, folder summaries, and main flows. This is rarer than explaining functions, so a stronger model can pay off. Set by “Downside Up: Choose Overview Model”; empty uses the explanation model. A new model asks once before code is shared.",
-            "order": 3
+            "markdownDescription": "The model for project-level work: the repository overview, folder summaries, and main flows. This is rarer than explaining functions, so a stronger model can pay off. [Choose…](command:downsideUp.selectOverviewModel) from the models available to you. Empty uses the model for explanations. A new model asks once before code is shared.",
+            "order": 1
           }
         }
       },

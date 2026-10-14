@@ -40,11 +40,6 @@ const MAX_OUTPUT_CHARACTERS = 64 * 1024;
 export const LANGUAGE_MODEL_JUSTIFICATION =
   "The Downside Up sends the function you asked it to explain, with bounded repository context, to generate an explanation.";
 
-export interface LanguageModelReference {
-  readonly vendor: string;
-  readonly id: string;
-}
-
 /**
  * Vendors whose models appear in `vscode.lm` but cannot answer extension
  * requests. Copilot's `copilotcli` models only populate the Copilot CLI
@@ -56,15 +51,42 @@ export function isUsableLanguageModelVendor(vendor: string): boolean {
   return !PLACEHOLDER_VENDORS.has(vendor);
 }
 
-/** Cache, consent, and display identity for a VS Code language model; the vendor prevents ID collisions. */
-export function languageModelDescriptorId(vendor: string, id: string): string {
-  return id ? `${vendor}/${id}` : "";
+/** The parts of a VS Code language model that identify it to users and to `vscode.lm`. */
+export interface LanguageModelChoice {
+  readonly vendor: string;
+  readonly id: string;
+  readonly name: string;
 }
 
-export function parseLanguageModelDescriptorId(modelId: string): LanguageModelReference | undefined {
-  const separator = modelId.indexOf("/");
-  if (separator <= 0 || separator === modelId.length - 1) return undefined;
-  return { vendor: modelId.slice(0, separator), id: modelId.slice(separator + 1) };
+/** Usable models in picker order: Copilot first, then by vendor, name, and ID. */
+export function orderLanguageModels<T extends LanguageModelChoice>(models: readonly T[]): T[] {
+  return models
+    .filter((model) => isUsableLanguageModelVendor(model.vendor))
+    .sort((left, right) =>
+      Number(right.vendor === "copilot") - Number(left.vendor === "copilot") ||
+      left.vendor.localeCompare(right.vendor) ||
+      left.name.localeCompare(right.name) ||
+      left.id.localeCompare(right.id)
+    );
+}
+
+/**
+ * The model a setting refers to. Settings hold the name shown in the picker;
+ * an exact ID also matches, then a name in any letter case. When several
+ * models match, the first in picker order wins.
+ */
+export function resolveLanguageModel<T extends LanguageModelChoice>(models: readonly T[], value: string): T | undefined {
+  const wanted = value.trim();
+  if (!wanted) return undefined;
+  const ordered = orderLanguageModels(models);
+  return ordered.find((model) => model.name === wanted)
+    ?? ordered.find((model) => model.id === wanted)
+    ?? ordered.find((model) => model.name.toLowerCase() === wanted.toLowerCase());
+}
+
+/** Consent identity: the vendor is included so another vendor's model of the same name asks again. */
+export function languageModelConsentId(model: Pick<LanguageModelChoice, "vendor" | "name">): string {
+  return `${model.vendor}/${model.name}`;
 }
 
 function cancelled(): DOMException {

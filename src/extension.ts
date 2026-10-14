@@ -38,10 +38,10 @@ import type {
 import { MockProvider } from "./generation/mock";
 import { OpenAIProvider } from "./generation/openai";
 import {
-  isUsableLanguageModelVendor,
+  languageModelConsentId,
   LanguageModelProvider,
-  languageModelDescriptorId,
-  parseLanguageModelDescriptorId
+  orderLanguageModels,
+  resolveLanguageModel
 } from "./generation/languageModel";
 import { formatUsage } from "./generation/provider";
 import { nextPrefetch, nextReview, prefetchFocusLine } from "./presentation/prefetch";
@@ -279,9 +279,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     const settings = vscode.workspace.getConfiguration("downsideUp");
     const configured = settings.get<string>("provider", "mock");
     if (configured === "vscode-lm") {
-      const vendor = settings.get<string>("languageModel.vendor", "copilot").trim() || "copilot";
-      const id = settings.get<string>("languageModel.model", "").trim();
-      return { kind: "vscode-lm", modelId: languageModelDescriptorId(vendor, id) };
+      return { kind: "vscode-lm", modelId: settings.get<string>("languageModel.model", "").trim() };
     }
     if (configured === "openai") {
       const model = settings.get<string>("openai.model", "gpt-4.1-mini").trim();
@@ -299,11 +297,8 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     const base = describeProvider();
     const settings = vscode.workspace.getConfiguration("downsideUp");
     if (base.kind === "vscode-lm") {
-      const id = settings.get<string>("languageModel.overviewModel", "").trim();
-      const vendor = settings.get<string>("languageModel.overviewVendor", "").trim()
-        || settings.get<string>("languageModel.vendor", "copilot").trim()
-        || "copilot";
-      return id ? { kind: "vscode-lm", modelId: languageModelDescriptorId(vendor, id) } : base;
+      const model = settings.get<string>("languageModel.overviewModel", "").trim();
+      return model ? { kind: "vscode-lm", modelId: model } : base;
     }
     if (base.kind === "openai") {
       const model = settings.get<string>("openai.overviewModel", "").trim();
@@ -319,21 +314,8 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     createProvider: async (descriptor) => {
       if (descriptor.kind === "mock") return mockProvider;
       if (descriptor.kind === "vscode-lm") {
-        const reference = parseLanguageModelDescriptorId(descriptor.modelId);
-        if (!reference) {
-          throw new Error("No language model is selected. Run “Downside Up: Choose Language Model”.");
-        }
-        if (!isUsableLanguageModelVendor(reference.vendor)) {
-          throw new Error(
-            `Models from “${reference.vendor}” cannot answer extension requests. Run “Downside Up: Choose Language Model” and pick another model.`
-          );
-        }
-        const [model] = await vscode.lm.selectChatModels({ vendor: reference.vendor, id: reference.id });
-        if (!model) {
-          throw new Error(
-            `Language model “${reference.id}” from “${reference.vendor}” is not available. Sign in to its provider (for example GitHub Copilot) or run “Downside Up: Choose Language Model”.`
-          );
-        }
+        const model = await findLanguageModel(descriptor.modelId);
+        if (!model) throw new Error(missingLanguageModelMessage(descriptor.modelId));
         return new LanguageModelProvider(descriptor.modelId, model);
       }
       const key = await context.secrets.get(API_KEY_SECRET);
@@ -354,7 +336,8 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
         // Prefetching only uses code-sharing consent that was already given; it never asks.
         if (descriptor.kind === "mock") return true;
         if (!vscode.workspace.isTrusted) return false;
-        return hasConsent(await cacheStore.read(root), descriptor.kind, descriptor.modelId);
+        const consentId = await consentModelId(descriptor);
+        return consentId !== undefined && hasConsent(await cacheStore.read(root), descriptor.kind, consentId);
       }
       if (descriptor.kind === "mock") return true;
       if (!vscode.workspace.isTrusted) {
@@ -363,16 +346,17 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
         );
         return false;
       }
-      if (hasConsent(await cacheStore.read(root), descriptor.kind, descriptor.modelId)) return true;
+      const model = descriptor.kind === "vscode-lm" ? await findLanguageModel(descriptor.modelId) : undefined;
+      if (descriptor.kind === "vscode-lm" && !model) throw new Error(missingLanguageModelMessage(descriptor.modelId));
+      // Language model consent names the vendor, so a same-named model from another vendor asks again.
+      const consentId = model ? languageModelConsentId(model) : descriptor.modelId;
+      if (hasConsent(await cacheStore.read(root), descriptor.kind, consentId)) return true;
       const provider = descriptor.kind;
       // Parallel requests share one prompt for the same repository and model.
-      return singleFlight(consentPrompts, `${root}\0${descriptor.kind}\0${descriptor.modelId}`, async () => {
+      return singleFlight(consentPrompts, `${root}\0${descriptor.kind}\0${consentId}`, async () => {
         const approximateTokens = Math.ceil(estimatedBytes / 4);
-        const reference = descriptor.kind === "vscode-lm"
-          ? parseLanguageModelDescriptorId(descriptor.modelId)
-          : undefined;
-        const destination = descriptor.kind === "vscode-lm"
-          ? `Provider: VS Code language model from “${reference?.vendor ?? "unknown"}”\nModel: ${reference?.id ?? descriptor.modelId}`
+        const destination = model
+          ? `Provider: VS Code language model from “${model.vendor}”\nModel: ${model.name}`
           : `Provider: OpenAI Responses API\nModel: ${descriptor.modelId}`;
         const terms = descriptor.kind === "vscode-lm"
           ? "Requests use your existing subscription with that provider (for GitHub Copilot, your Copilot plan) and may count toward its usage limits. Data handling follows that provider's terms and your organization's policies. VS Code may also ask you to allow The Downside Up to use language models."
@@ -384,43 +368,55 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
           accept
         );
         if (action !== accept) return false;
-        await cacheStore.update(root, (current) => withConsent(current, provider, descriptor.modelId, Date.now()));
+        await cacheStore.update(root, (current) => withConsent(current, provider, consentId, Date.now()));
         return true;
       });
     }
   });
 
-  const chooseLanguageModel = async (): Promise<boolean> => {
-    let models: readonly vscode.LanguageModelChat[];
+  const availableLanguageModels = async (): Promise<vscode.LanguageModelChat[]> => {
     try {
-      models = (await vscode.lm.selectChatModels())
-        .filter((model) => isUsableLanguageModelVendor(model.vendor))
-        .sort((left, right) =>
-          Number(right.vendor === "copilot") - Number(left.vendor === "copilot") ||
-          left.vendor.localeCompare(right.vendor) ||
-          left.name.localeCompare(right.name)
-        );
+      return orderLanguageModels(await vscode.lm.selectChatModels());
     } catch {
-      models = [];
+      return [];
     }
+  };
+
+  /** The available model a setting names, or undefined; never prompts. */
+  const findLanguageModel = async (setting: string): Promise<vscode.LanguageModelChat | undefined> =>
+    setting ? resolveLanguageModel(await availableLanguageModels(), setting) : undefined;
+
+  const missingLanguageModelMessage = (setting: string): string =>
+    setting
+      ? `The language model “${setting}” is not available. Sign in to its provider (for example GitHub Copilot) or run “Downside Up: Choose Language Model”.`
+      : "No language model is selected. Run “Downside Up: Choose Language Model”.";
+
+  /** The consent identity for a descriptor, or undefined when its language model is unavailable. */
+  const consentModelId = async (descriptor: ProviderDescriptor): Promise<string | undefined> => {
+    if (descriptor.kind !== "vscode-lm") return descriptor.modelId;
+    const model = await findLanguageModel(descriptor.modelId);
+    return model ? languageModelConsentId(model) : undefined;
+  };
+
+  const languageModelItem = (model: vscode.LanguageModelChat, current: vscode.LanguageModelChat | undefined) => ({
+    label: model.name,
+    description: `${model.vendor}${current?.vendor === model.vendor && current.id === model.id ? " · current" : ""}`,
+    detail: `Up to ${model.maxInputTokens.toLocaleString()} input tokens · ${model.id}`,
+    model
+  });
+
+  const chooseLanguageModel = async (): Promise<boolean> => {
+    const models = await availableLanguageModels();
     if (models.length === 0) {
       await vscode.window.showWarningMessage(
         "No VS Code language models are available. Install and sign in to GitHub Copilot, or install another extension that provides language models, then try again."
       );
       return false;
     }
-    const current = parseLanguageModelDescriptorId(
-      describeProvider().kind === "vscode-lm" ? describeProvider().modelId : ""
-    );
+    const descriptor = describeProvider();
+    const current = descriptor.kind === "vscode-lm" ? resolveLanguageModel(models, descriptor.modelId) : undefined;
     const picked = await vscode.window.showQuickPick(
-      models.map((model) => ({
-        label: model.name,
-        description: `${model.vendor} · ${model.id}${
-          current?.vendor === model.vendor && current.id === model.id ? " · current" : ""
-        }`,
-        detail: `Family ${model.family}, version ${model.version}; up to ${model.maxInputTokens.toLocaleString()} input tokens`,
-        model
-      })),
+      models.map((model) => languageModelItem(model, current)),
       {
         title: "Choose the language model for Downside Up",
         placeHolder: "Uses your existing subscription with the model's provider. No code is sent until you explain a function and accept the sharing prompt.",
@@ -430,11 +426,10 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     );
     if (!picked) return false;
     const settings = vscode.workspace.getConfiguration("downsideUp");
-    await settings.update("languageModel.vendor", picked.model.vendor, vscode.ConfigurationTarget.Global);
-    await settings.update("languageModel.model", picked.model.id, vscode.ConfigurationTarget.Global);
+    await settings.update("languageModel.model", picked.model.name, vscode.ConfigurationTarget.Global);
     await settings.update("provider", "vscode-lm", vscode.ConfigurationTarget.Global);
     const effective = describeProvider();
-    if (effective.modelId !== languageModelDescriptorId(picked.model.vendor, picked.model.id)) {
+    if (effective.kind !== "vscode-lm" || resolveLanguageModel(models, effective.modelId) !== picked.model) {
       await vscode.window.showWarningMessage(
         "The model was saved in user settings, but workspace settings for downsideUp.provider or downsideUp.languageModel override it. Update or remove those workspace settings to use the chosen model."
       );
@@ -456,39 +451,35 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       );
       return;
     }
-    let models: readonly vscode.LanguageModelChat[];
-    try {
-      models = (await vscode.lm.selectChatModels()).filter((model) => isUsableLanguageModelVendor(model.vendor));
-    } catch {
-      models = [];
-    }
-    const current = parseLanguageModelDescriptorId(describeOverviewProvider().modelId);
-    const same = { label: "Same as explanations", description: "use the explanation model for project-level work too", model: undefined as vscode.LanguageModelChat | undefined };
+    const models = await availableLanguageModels();
+    const overviewSetting = vscode.workspace.getConfiguration("downsideUp").get<string>("languageModel.overviewModel", "").trim();
+    const current = overviewSetting ? resolveLanguageModel(models, overviewSetting) : undefined;
+    const same = {
+      label: "Same as explanations",
+      description: `use the explanation model for project-level work too${overviewSetting ? "" : " · current"}`,
+      model: undefined as vscode.LanguageModelChat | undefined
+    };
     const picked = await vscode.window.showQuickPick(
-      [same, ...models.map((model) => ({
-        label: model.name,
-        description: `${model.vendor} · ${model.id}${current?.vendor === model.vendor && current.id === model.id ? " · current" : ""}`,
-        model
-      }))],
+      [same, ...models.map((model) => languageModelItem(model, current))],
       {
         title: "Choose the model for project overviews",
-        placeHolder: "Used for the repository overview and folder summaries, which are rarer and benefit from a stronger model. It asks once before sharing code."
+        placeHolder: "Used for the repository overview and folder summaries, which are rarer and benefit from a stronger model. It asks once before sharing code.",
+        matchOnDescription: true,
+        matchOnDetail: true
       }
     );
     if (!picked) return;
-    const settings = vscode.workspace.getConfiguration("downsideUp");
-    await settings.update("languageModel.overviewVendor", picked.model?.vendor, vscode.ConfigurationTarget.Global);
-    await settings.update("languageModel.overviewModel", picked.model?.id, vscode.ConfigurationTarget.Global);
+    await vscode.workspace.getConfiguration("downsideUp")
+      .update("languageModel.overviewModel", picked.model?.name, vscode.ConfigurationTarget.Global);
   };
 
   const ensureLanguageModelSelected = async (): Promise<boolean> => {
     const descriptor = describeProvider();
     if (descriptor.kind !== "vscode-lm") return true;
-    const reference = parseLanguageModelDescriptorId(descriptor.modelId);
-    if (reference && isUsableLanguageModelVendor(reference.vendor)) return true;
-    if (reference) {
+    if (descriptor.modelId && (await findLanguageModel(descriptor.modelId))) return true;
+    if (descriptor.modelId) {
       await vscode.window.showWarningMessage(
-        `The configured model “${reference.id}” from “${reference.vendor}” cannot answer extension requests. Choose another model.`
+        `The language model “${descriptor.modelId}” is not available. Choose another model.`
       );
     }
     return chooseLanguageModel();
@@ -1830,11 +1821,8 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     const descriptor = describeProvider();
     if (descriptor.kind === "mock") return true;
     if (!vscode.workspace.isTrusted) return false;
-    if (descriptor.kind === "vscode-lm") {
-      const reference = parseLanguageModelDescriptorId(descriptor.modelId);
-      if (!reference || !isUsableLanguageModelVendor(reference.vendor)) return false;
-    }
-    return hasConsent(await cacheStore.read(root), descriptor.kind, descriptor.modelId);
+    const consentId = await consentModelId(descriptor);
+    return consentId !== undefined && hasConsent(await cacheStore.read(root), descriptor.kind, consentId);
   };
 
   /**
@@ -2799,7 +2787,6 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     if (
       !event.affectsConfiguration("downsideUp.provider") &&
       !event.affectsConfiguration("downsideUp.openai.model") &&
-      !event.affectsConfiguration("downsideUp.languageModel.vendor") &&
       !event.affectsConfiguration("downsideUp.languageModel.model")
     ) return;
     scheduleRecheck();

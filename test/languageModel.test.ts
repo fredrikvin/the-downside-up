@@ -5,8 +5,9 @@ import {
   isUsableLanguageModelVendor,
   LANGUAGE_MODEL_JUSTIFICATION,
   LanguageModelProvider,
-  languageModelDescriptorId,
-  parseLanguageModelDescriptorId
+  languageModelConsentId,
+  orderLanguageModels,
+  resolveLanguageModel
 } from "../src/generation/languageModel";
 import type { ExplanationPromptInput } from "../src/generation/provider";
 import { LanguageModelError } from "./vscode";
@@ -193,12 +194,29 @@ describe("VS Code language model generation", () => {
     await expect(provider.explainFunction(promptInput)).rejects.toThrow(/more output than the prototype accepts/);
   });
 
-  it("keeps vendor and model ID together in descriptor identities", () => {
-    expect(languageModelDescriptorId("copilot", "gpt-4.1")).toBe("copilot/gpt-4.1");
-    expect(languageModelDescriptorId("copilot", "")).toBe("");
-    expect(parseLanguageModelDescriptorId("ollama/library/qwen")).toEqual({ vendor: "ollama", id: "library/qwen" });
-    expect(parseLanguageModelDescriptorId("")).toBeUndefined();
-    expect(parseLanguageModelDescriptorId("copilot/")).toBeUndefined();
-    expect(parseLanguageModelDescriptorId("/gpt")).toBeUndefined();
+  it("resolves a model setting by name, then ID, in picker order", () => {
+    const models = [
+      { vendor: "ollama", id: "gpt-4.1", name: "GPT-4.1" },
+      { vendor: "copilotcli", id: "claude", name: "Claude Opus 4.5" },
+      { vendor: "copilot", id: "gpt-4.1", name: "GPT-4.1" },
+      { vendor: "copilot", id: "claude-opus-4.5", name: "Claude Opus 4.5" }
+    ];
+    expect(orderLanguageModels(models).map((model) => `${model.vendor}:${model.id}`)).toEqual([
+      "copilot:claude-opus-4.5",
+      "copilot:gpt-4.1",
+      "ollama:gpt-4.1"
+    ]);
+    expect(resolveLanguageModel(models, "Claude Opus 4.5")).toBe(models[3]);
+    expect(resolveLanguageModel(models, " GPT-4.1 ")).toBe(models[2]);
+    expect(resolveLanguageModel(models, "claude-opus-4.5")).toBe(models[3]);
+    expect(resolveLanguageModel(models, "claude opus 4.5")).toBe(models[3]);
+    expect(resolveLanguageModel(models.slice(0, 2), "Claude Opus 4.5")).toBeUndefined();
+    expect(resolveLanguageModel(models, "")).toBeUndefined();
+    expect(resolveLanguageModel(models, "Unknown")).toBeUndefined();
+  });
+
+  it("includes the vendor in consent identities", () => {
+    expect(languageModelConsentId({ vendor: "copilot", name: "GPT-4.1" })).toBe("copilot/GPT-4.1");
+    expect(languageModelConsentId({ vendor: "ollama", name: "GPT-4.1" })).not.toBe("copilot/GPT-4.1");
   });
 });
