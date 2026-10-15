@@ -174,7 +174,9 @@ for example after a rate limit; a second failure stops prefetching with a
 notice. It runs only in a
 trusted workspace and only after code sharing was approved for the repository
 and model by an explicit explanation; it never asks for approval itself and
-shows a notice when it is waiting for one. Prefetching uses the provider's
+shows a notice when it is waiting for one. When approval is given for the
+shown file's repository (by explaining a function or mapping the project),
+prefetching that was waiting starts. Prefetching uses the provider's
 usage limits or billing for every function it explains.
 
 Review mode explains the functions changed on the checked-out code ahead of
@@ -452,8 +454,17 @@ level:
   their groups when there are more than 14) and the outside parts they
   connect to, the main parts (top-level parts and outside ones) with their
   sentences, flows between parts, and all files and folders collapsed.
-  Without a map, it offers **Map this project** (the same request as
-  **Refresh Repository Context**) and has no flows.
+  Opening it without a current map (none, or one made with another overview
+  model or detail setting) maps the project: opening the project preview is
+  the request, so the first time it asks for code-sharing approval like an
+  explanation. It is skipped in an untrusted workspace, without a usable
+  model (or OpenAI key), or while another refresh runs, and after a declined
+  approval, a cancel, or a failure it is not started again on its own in that
+  session for the repository and overview model; the page then offers **Map
+  this project** (the same request as **Refresh Repository Context**). While
+  the map is made, the page shows a shimmering placeholder of the summary
+  and map with what is happening; a folder that is still being listed shows
+  a placeholder page too. Until there is a map, the project has no flows.
 - **Group**: its sentence, its members, and a map of its components with the
   parts elsewhere they connect to.
 - **Component**: its sentence (or its folder summary, with what it offers
@@ -673,7 +684,8 @@ organization policy files above.
 For VS Code language models, data handling follows the model provider's terms
 (for Copilot, the user's or organization's Copilot plan and policies). No
 provider request occurs without the user requesting an explanation or
-repository-context refresh, or turning on prefetching in user settings.
+repository-context refresh, opening the project preview without a current
+project map, or turning on prefetching in user settings.
 
 ## Cache and freshness
 

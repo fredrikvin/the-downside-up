@@ -509,16 +509,13 @@ export async function run(): Promise<void> {
   const apiDocument = await vscode.workspace.openTextDocument(vscode.Uri.file(resolve(servicesRoot, "services/api/main.go")));
   await vscode.window.showTextDocument(apiDocument, vscode.ViewColumn.One);
   await waitFor(async () => api.shownOutline().some((entry) => entry.name === "handleOrder") ? true : undefined, "the services fixture's file preview");
+  // Opening the project page without a map maps the project.
   await vscode.commands.executeCommand("downsideUp.previewProject");
-  const unmapped = await waitFor(async () => api.shownFolder()?.path === "" && api.shownFolder()?.ready ? api.shownFolder() : undefined, "the services project preview");
-  assert.equal(unmapped.level, "project");
-  assert.equal(unmapped.mapState, "missing", "Opening the project preview maps nothing.");
-  assert.equal(api.flowsKind(), undefined, "An unmapped project offers no flows.");
-  await vscode.commands.executeCommand("downsideUp.refreshRepositoryContext");
   const mapped = await waitFor(
-    async () => api.shownFolder()?.path === "" && api.shownFolder()?.mapState === "current" ? api.shownFolder() : undefined,
-    "the project map after mapping the project"
+    async () => api.shownFolder()?.path === "" && api.shownFolder()?.mapState === "current" && !api.shownFolder()?.mapping ? api.shownFolder() : undefined,
+    "the project to be mapped when its page opens"
   );
+  assert.equal(mapped.level, "project");
   assert.deepEqual(mapped.mapNodes, ["Mock outside service:external", "api:inside", "web:inside", "worker:inside"], "The project map shows components and what is outside.");
   assert.deepEqual(mapped.members, ["services:group", "web:component", "docs:support", "Mock outside service:external"]);
   await waitFor(async () => api.flowsKind() === "parts" ? true : undefined, "flows between the project's parts");

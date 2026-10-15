@@ -108,6 +108,8 @@ export interface FolderView {
   readonly members?: ReadonlyArray<{ readonly name: string; readonly summary: string; readonly level: string; readonly target?: string }>;
   /** Whether a project map is saved: current for the overview model and settings, made with other ones, or missing. */
   readonly mapState: "current" | "other" | "missing";
+  /** While the project is being mapped: what to say next to the placeholder. */
+  readonly mapping?: string;
   readonly fileCount: number;
   readonly children: readonly FolderChildView[];
   readonly structure?: {
@@ -156,6 +158,8 @@ export interface PanelState {
   readonly showDetails: boolean;
   readonly formats: FormatSettings;
   readonly notice?: PanelNotice;
+  /** A folder being opened; its placeholder is shown until it is listed. */
+  readonly loading?: { readonly name: string };
   readonly busy: boolean;
   readonly hasRepository: boolean;
 }
@@ -326,6 +330,20 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
     .structure-node.kind-external { border-style: dashed; border-radius: 999px; color: var(--vscode-descriptionForeground); }
     div.structure-node { cursor: default; }
     .folder-contents { margin: 18px 0; }
+    .skeleton, .skeleton-box {
+      --sk: color-mix(in srgb, var(--vscode-editor-foreground, #888) 7%, transparent);
+      --sk-hi: color-mix(in srgb, var(--vscode-editor-foreground, #888) 15%, transparent);
+      background: linear-gradient(90deg, var(--sk) 25%, var(--sk-hi) 50%, var(--sk) 75%);
+      background-size: 200% 100%; animation: shimmer 1.4s ease-in-out infinite; border-radius: 4px;
+    }
+    .skeleton { height: .85em; margin: 10px 0; }
+    .skeleton.short { width: 55%; }
+    .skeleton.heading { height: 1.3em; width: 30%; margin-top: 26px; }
+    .skeleton-map { display: flex; flex-direction: column; align-items: center; gap: 30px; margin: 18px 0 24px; }
+    .skeleton-row { display: flex; gap: 24px; }
+    .skeleton-box { width: 124px; height: 46px; }
+    @keyframes shimmer { from { background-position: 100% 0; } to { background-position: -100% 0; } }
+    @media (prefers-reduced-motion: reduce) { .skeleton, .skeleton-box { animation: none; } }
     .folder-contents > summary { cursor: pointer; font-weight: 600; }
     .structure-node:hover, .structure-node:focus-visible { border-color: var(--vscode-focusBorder); }
     .flow-scroll { overflow-x: auto; margin: 6px 0 12px; }
@@ -1300,8 +1318,33 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
      * more about a component. For the project, also a way to make or refresh
      * the map.
      */
+    /** A shimmering placeholder of a summary and a map, for content still being made or loaded. */
+    function renderSkeleton(withMap) {
+      const box = el("div", "skeleton-block");
+      box.setAttribute("aria-hidden", "true");
+      box.append(el("div", "skeleton"), el("div", "skeleton"), el("div", "skeleton short"));
+      if (withMap) {
+        box.append(el("div", "skeleton heading"));
+        const map = el("div", "skeleton-map");
+        for (const count of [1, 2, 3]) {
+          const row = el("div", "skeleton-row");
+          for (let index = 0; index < count; index++) row.append(el("div", "skeleton-box"));
+          map.append(row);
+        }
+        box.append(map);
+      }
+      return box;
+    }
+
     function renderAbout(folder) {
       const box = el("div", "folder-about");
+      if (folder.mapping) {
+        const loading = el("div", "loading");
+        loading.setAttribute("role", "status");
+        loading.append(el("span", "spinner"), el("span", "", folder.mapping + " The first time takes a minute or two."));
+        box.append(loading, renderSkeleton(true));
+        return box;
+      }
       const about = folder.about;
       // A folder's own AI summary says the same in more words, so the map's sentence steps aside.
       if (about && (folder.level === "project" || !folder.ai)) {
@@ -1424,8 +1467,9 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
       const focusedEntry = document.activeElement && document.activeElement.closest ? document.activeElement.closest(".entry") : null;
       const focusedClass = document.activeElement ? document.activeElement.className : "";
       state = next;
-      const file = next.document;
-      const folder = file ? undefined : next.folder;
+      const loading = next.loading;
+      const file = loading ? undefined : next.document;
+      const folder = file || loading ? undefined : next.folder;
       renderCrumbs(next.breadcrumbs);
       byId("model").textContent = next.provider === "mock" ? "Mock mode (placeholder output)" : "AI: " + next.model;
       byId("cancel").hidden = !next.busy;
@@ -1434,10 +1478,10 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
       const notice = byId("notice");
       notice.textContent = next.notice ? next.notice.text : "";
       notice.className = "notice" + (next.notice && next.notice.tone === "error" ? " error" : "");
-      byId("title").textContent = file ? file.fileName : folder ? folder.name : "Downside Up";
+      byId("title").textContent = loading ? loading.name : file ? file.fileName : folder ? folder.name : "Downside Up";
       byId("facts").textContent = file
         ? [file.path, file.languageId, file.lineCount + " lines"].join(" · ")
-        : folder ? [folder.path || "repository root", plural(folder.fileCount, "file")].join(" · ") : "";
+        : folder ? [folder.path || "repository root", plural(folder.fileCount, "file")].join(" · ") : loading ? "Opening…" : "";
       const summary = byId("summary");
       const aiSummary = file ? next.summary : undefined;
       summary.hidden = !aiSummary;
@@ -1449,9 +1493,9 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
       purpose.hidden = !localPurpose;
       purpose.textContent = localPurpose;
       const views = new Map((next.explanations || []).map((view) => [view.entryId, view]));
-      byId("entries").replaceChildren(...(file ? file.entries.map((entry) => renderEntry(entry, views)) : folder ? renderFolder(folder) : []));
+      byId("entries").replaceChildren(...(file ? file.entries.map((entry) => renderEntry(entry, views)) : folder ? renderFolder(folder) : loading ? [renderSkeleton(true)] : []));
       const empty = byId("empty");
-      empty.hidden = Boolean((file && file.entries.length) || (folder && folder.children.length));
+      empty.hidden = Boolean(loading || (file && file.entries.length) || (folder && folder.children.length));
       empty.textContent = file ? "Nothing to describe in this file." : folder ? "Nothing to describe in this folder." : "Open a source file to see its description here.";
       byId("limitations").textContent = file ? file.limitations.join("\\n") : folder ? folder.limitations.join("\\n") : "";
       renderOverview(next.overview);
@@ -1464,10 +1508,10 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
         const target = document.querySelector("#" + CSS.escape(focusedEntry.id) + " " + selector);
         if (target) target.focus({ preventScroll: true });
       }
-      const fileKey = file ? file.path : folder ? "folder:" + folder.path : "";
+      const fileKey = file ? file.path : folder ? "folder:" + folder.path : loading ? "loading:" + loading.name : "";
       if (fileKey !== renderedFile) {
         renderedFile = fileKey;
-        if (folder) window.scrollTo(0, 0);
+        if (folder || loading) window.scrollTo(0, 0);
         else scrollToLine(sourceLine);
       } else {
         // Re-rendering the same file keeps the reader's place.

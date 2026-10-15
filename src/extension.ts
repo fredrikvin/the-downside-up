@@ -243,6 +243,10 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
   let repositoryContext: { root: string; overview: RepositoryOverview } | undefined;
   let notice: PanelNotice | undefined;
   let repositoryJob: AbortController | undefined;
+  /** The repository the running context refresh (or project mapping) is for. */
+  let repositoryJobRoot: string | undefined;
+  /** Projects, per overview model, not mapped automatically again this session after a declined approval, a cancel, or a failure. */
+  const autoMapSkipped = new Set<string>();
   const maxConcurrentRequests = (): number => {
     const value = vscode.workspace.getConfiguration("downsideUp").get<number>("maxConcurrentRequests", 3) ?? 3;
     return Number.isFinite(value) ? Math.min(8, Math.max(1, Math.floor(value))) : 3;
@@ -267,7 +271,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     [kind, root, path, describeOverviewProvider().kind, describeOverviewProvider().modelId].join("\0");
   let folderEpoch = 0;
   /** Shown while a folder's listing loads; a file shown meanwhile, or the folder itself, replaces it. */
-  let openingFolder: { epoch: number; notice: { tone: "info"; text: string } } | undefined;
+  let openingFolder: { epoch: number; name: string } | undefined;
   let treeJob: FolderTreeJob | undefined;
   /** Set while a tree run is being checked and confirmed, before it starts. */
   let planningTree = false;
@@ -388,6 +392,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
         );
         if (action !== accept) return false;
         await cacheStore.update(root, (current) => withConsent(current, provider, consentId, Date.now()));
+        afterConsent(root);
         return true;
       });
     }
@@ -774,6 +779,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       formats: formatSettings(),
       ...(shownContext ? { overview: shownContext.overview } : {}),
       ...(notice ? { notice } : {}),
+      ...(openingFolder ? { loading: { name: openingFolder.name } } : {}),
       busy: Boolean(repositoryJob || folderJobs.size),
       hasRepository: Boolean(preview || folderPreview)
     });
@@ -848,6 +854,9 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     path: shown.path,
     level: shown.level,
     ...mapOnPage(shown, target),
+    ...(repositoryJob && repositoryJobRoot === shown.root && shown.level === "project"
+      ? { mapping: `Mapping the project with ${describeOverviewProvider().modelId || describeOverviewProvider().kind}…` }
+      : {}),
     fileCount: shown.children.reduce((total, child) => total + (child.kind === "folder" ? child.fileCount ?? 0 : 1), 0),
     children: shown.children.map((child) => {
       const summary = shown.summaries.get(child.path);
@@ -891,7 +900,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       : {}),
     describingFlows: folderJobs.has(folderJobKey("flows", shown.root, shown.path)),
     canDescribeFlows: hasFlowsInput(shown.flowsInput) && !inTreeJob(shown.root, shown.path),
-    canSummarizeTree: Boolean(shown.input) && !treeJob && !planningTree && folderJobs.size === 0
+    canSummarizeTree: Boolean(shown.input) && !treeJob && !planningTree && folderJobs.size === 0 && !repositoryJob
       && shown.children.some((child) => child.kind === "folder"),
     ...(treeJob && inTreeJob(shown.root, shown.path)
       ? {
@@ -958,9 +967,10 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     ensurePanel();
     const epoch = ++folderEpoch;
     previewEpoch++;
-    // Listing a large repository takes a while; until then, say so instead of looking unchanged.
-    openingFolder = { epoch, notice: { tone: "info", text: `Opening ${path ? basename(path) : basename(root)}…` } };
-    notice = openingFolder.notice;
+    // Listing a large repository takes a while; until then, the page shows a placeholder instead of looking unchanged.
+    const opening = path ? basename(path) : basename(root);
+    openingFolder = { epoch, name: opening };
+    if (notice?.tone !== "progress") notice = undefined;
     render();
     let listing: Awaited<ReturnType<typeof listFolder>>;
     try {
@@ -992,6 +1002,8 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       level: folderLevel(savedMap?.map, path),
       ...(savedMap ? { map: savedMap } : {})
     };
+    // The project page maps the project when it has no current map.
+    if (!path && !savedMap?.current) void mapProjectAutomatically(root);
     panel.panel.title = `Downside Up: ${path ? basename(path) : basename(root)}`;
     // The project preview shows the saved repository overview near the top.
     if (!path && repositoryContext?.root !== root) {
@@ -1631,7 +1643,6 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     // Opening a file leaves the folder preview, or the folder being opened.
     folderPreview = undefined;
     folderEpoch++;
-    if (openingFolder && notice === openingFolder.notice) notice = undefined;
     openingFolder = undefined;
     preview = { document, root, overview, ...(exclusion ? { exclusion } : {}) };
     panel.panel.title = `Downside Up: ${overview.fileName}`;
@@ -2606,6 +2617,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
         savedLookupDone.clear();
         repositoryJob?.abort();
         repositoryJob = undefined;
+        repositoryJobRoot = undefined;
         preview = undefined;
         folderPreview = undefined;
         openingFolder = undefined;
@@ -2675,9 +2687,38 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       return;
     }
     if (repositoryJob || !(await ensureLanguageModelSelected())) return;
+    await refreshContextFor(root, false);
+  };
+
+  const autoMapKey = (root: string): string => {
+    const model = describeOverviewProvider();
+    return `${root}\0${model.kind}\0${model.modelId}`;
+  };
+
+  /**
+   * Maps the project when its page opens without a current map. Opening the
+   * project page is the request: the first time, it asks for code-sharing
+   * approval like an explanation. It does nothing in an untrusted workspace,
+   * without a usable model, while another refresh runs, or after the reader
+   * declined, cancelled, or saw it fail this session (the page then offers
+   * Map this project).
+   */
+  const mapProjectAutomatically = async (root: string): Promise<void> => {
+    if (repositoryJob || autoMapSkipped.has(autoMapKey(root)) || !vscode.workspace.isTrusted) return;
+    const model = describeOverviewProvider();
+    if (model.kind === "vscode-lm" && !(await findLanguageModel(model.modelId))) return;
+    if (model.kind === "openai" && !(await context.secrets.get(API_KEY_SECRET))) return;
+    if (repositoryJob || folderPreview?.root !== root || folderPreview.path !== "" || preview) return;
+    await refreshContextFor(root, true);
+  };
+
+  /** Refreshes the repository context and project map; `automatic` when the project page asked for a missing map. */
+  const refreshContextFor = async (root: string, automatic: boolean): Promise<void> => {
+    if (repositoryJob) return;
     const controller = new AbortController();
     repositoryJob = controller;
-    notice = { tone: "progress", text: "Refreshing repository context by request…" };
+    repositoryJobRoot = root;
+    notice = { tone: "progress", text: automatic ? "Mapping the project…" : "Refreshing repository context by request…" };
     render();
     try {
       const result = await scheduler.schedule("explicit", () => {
@@ -2702,13 +2743,26 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       if (changed) scheduleRecheck();
     } catch (error) {
       if (repositoryJob !== controller) return;
-      notice = controller.signal.aborted || (error instanceof DOMException && error.name === "AbortError")
-        ? { tone: "info", text: "Repository context refresh cancelled; nothing was sent or saved." }
-        : { tone: "error", text: `Repository context refresh failed: ${errorMessage(error)}` };
+      const cancelled = controller.signal.aborted || (error instanceof DOMException && error.name === "AbortError");
+      // Not tried again on its own this session; the project page offers Map this project instead.
+      if (automatic) autoMapSkipped.add(autoMapKey(root));
+      notice = cancelled
+        ? { tone: "info", text: automatic ? "Mapping the project was cancelled; nothing was sent or saved." : "Repository context refresh cancelled; nothing was sent or saved." }
+        : { tone: "error", text: `${automatic ? "Mapping the project" : "Repository context refresh"} failed: ${errorMessage(error)}` };
     } finally {
-      if (repositoryJob === controller) repositoryJob = undefined;
+      if (repositoryJob === controller) {
+        repositoryJob = undefined;
+        repositoryJobRoot = undefined;
+      }
       render();
     }
+  };
+
+  /** Prefetching that stopped for lack of code-sharing approval starts again once it is given. */
+  const afterConsent = (root: string): void => {
+    if (!panel || !preview || preview.root !== root || prefetchSession || !prefetchSettings().enabled) return;
+    if (notice?.text.startsWith("Prefetching is waiting")) notice = undefined;
+    startPrefetch(preview.document, root);
   };
 
   const clearRepositoryCache = async (): Promise<void> => {
@@ -2729,6 +2783,8 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     for (const state of [...functions.values()]) if (state.value.root === root) forget(state);
     repositoryJob?.abort();
     repositoryJob = undefined;
+    repositoryJobRoot = undefined;
+    autoMapSkipped.clear();
     await service.clearCache(root);
     if (repositoryContext?.root === root) repositoryContext = undefined;
     notice = { tone: "info", text: "Repository cache and saved code-sharing consent cleared." };
@@ -3061,6 +3117,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
           hasOverview: repositoryContext?.root === folderPreview.root,
           level: folderPreview.level,
           mapState: folderPreview.map ? (folderPreview.map.current ? "current" : "other") : "missing",
+          mapping: Boolean(repositoryJob && repositoryJobRoot === folderPreview.root),
           mapNodes: (folderPreview.map ? mapView(folderPreview.map.map, folderPreview.path)?.nodes ?? [] : []).map((node) => `${node.name}:${node.place}`).sort(),
           members: (folderPreview.level === "project" || folderPreview.level === "group") && folderPreview.map
             ? mapMembers(folderPreview.map.map, folderPreview.path).map((part) => `${part.name}:${part.level}`)
@@ -3098,6 +3155,7 @@ export interface DownsideUpTestApi {
     hasOverview: boolean;
     level: string;
     mapState: string;
+    mapping: boolean;
     mapNodes: string[];
     members: string[];
     offers?: string;

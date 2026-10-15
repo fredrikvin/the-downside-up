@@ -16,6 +16,11 @@ behavior.
   only uses consent already given for the repository and model. Review mode
   (**Review Changes…**) is an explicit request for a set of changed functions
   the user confirms; reader movement may only reorder that set, never add to it.
+  Opening the project (repository root) preview is a request to map the
+  project when it has no current map (missing, or made with another overview
+  model or detail setting); it may ask for consent like an explanation, and
+  is not retried on its own in a session after a decline, cancel, or failure.
+  No other folder or file preview generates anything on opening.
 - Keep repository scanning bounded and respect Git ignore rules, VS Code
   exclusions, workspace trust, unsaved buffers, and secret/generated-file
   exclusions. The same exclusions apply to the file of the function being

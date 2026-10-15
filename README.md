@@ -115,10 +115,14 @@ nothing is generated or sent. The folder preview stays until you switch to
 another file.
 
 **The project map: one zoom level at a time.** When the repository is primed
-(with the first explanation, or **Map this project** in the project preview,
-which is the same as **Refresh Repository Context**), the overview model also
-maps the project: its parts, the level of each folder, and how the parts
-connect. Each folder preview then shows what fits its level:
+(with the first explanation, when the project preview opens without a current
+map, or with **Refresh Repository Context**), the overview model also maps
+the project: its parts, the level of each folder, and how the parts connect.
+Opening the project preview is the request: the first time in a repository
+it asks for code-sharing approval like an explanation, and the page shows a
+placeholder while the map is made. If you decline, cancel, or it fails, it is
+not tried again on its own until VS Code restarts; choose **Map this
+project** instead. Each folder preview then shows what fits its level:
 
 | Level | Example | The preview shows |
 |---|---|---|
@@ -352,7 +356,8 @@ up to that many functions in other files that the function you are reading
 calls, right after the function itself, so they are ready if you follow a
 call. Prefetching runs only in trusted workspaces after you have explained
 one function with the current model, which approves code sharing for the
-repository; it never asks for approval itself. Every prefetched explanation
+repository; it never asks for approval itself, and starts as soon as you
+approve. Every prefetched explanation
 counts toward your provider's usage limits or billing.
 
 ### Review mode
