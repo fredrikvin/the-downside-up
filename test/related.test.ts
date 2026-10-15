@@ -8,7 +8,7 @@ import { findCalledFunctions, gatherFunctionContext } from "../src/context/relat
 import type { FunctionTarget } from "../src/core/types";
 import { initializeGoParserAt, listGoFunctions } from "../src/languages/go/syntax";
 import { initializeRustParserAt, listRustFunctions } from "../src/languages/rust/syntax";
-import { Position, Range, Uri, workspace } from "./vscode";
+import { commands, Position, Range, Uri, workspace } from "./vscode";
 
 let root: string;
 
@@ -27,6 +27,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  commands.__setExecuteCommand(async () => []);
   workspace.__resetConfiguration();
   await rm(root, { recursive: true, force: true });
 });
@@ -65,6 +66,28 @@ async function editStorage(from: string, to: string): Promise<void> {
 }
 
 describe("Rust function context across files", () => {
+  it("tracks callers per file without depending on their line numbers or formatting", async () => {
+    const path = resolve(root, "src/caller.rs");
+    let text = 'fn caller() {\n    checkout("a  b");\n    checkout("again");\n}\n';
+    await writeFile(path, text);
+    commands.__setExecuteCommand(async (name) => name === "vscode.executeReferenceProvider"
+      ? text.split("\n").flatMap((line, index) => line.includes("checkout") ? [{
+        uri: Uri.file(path), range: new Range(index, 4, index, 12)
+      }] : [])
+      : []);
+    const original = await checkoutContext();
+    expect(original.inputs.filter((input) => input.path === "src/caller.rs")).toHaveLength(1);
+    const originalLines = original.sourceReferences.filter((ref) => ref.path === "src/caller.rs").map((ref) => ref.line);
+    text = '\n\nfn caller( ) {\n\n\tcheckout( "a  b" );\n\tcheckout( "again" );\n}\n';
+    await writeFile(path, text);
+    const formatted = await checkoutContext();
+    expect(inputsMatch(original.inputs, formatted.inputs)).toBe(true);
+    expect(formatted.sourceReferences.filter((ref) => ref.path === "src/caller.rs").map((ref) => ref.line)).not.toEqual(originalLines);
+    text = text.replace("a  b", "a b");
+    await writeFile(path, text);
+    expect(inputsMatch(original.inputs, (await checkoutContext()).inputs)).toBe(false);
+  });
+
   it("sends and tracks items used from other files at depth 1", async () => {
     const context = await checkoutContext();
     const crossFile = context.inputs.filter((input) => input.path !== "src/main.rs");
@@ -103,6 +126,14 @@ describe("Rust function context across files", () => {
     expect(inputsMatch(original.inputs, (await checkoutContext()).inputs)).toBe(false);
   });
 
+  it("keeps multiline imports and directly used declarations current through formatting", async () => {
+    const original = await checkoutContext();
+    const path = resolve(root, "src/main.rs");
+    await writeFile(path, (await readFile(path, "utf8")).replace("use inventory::{Book, Catalog};", "use inventory::{\n    Book,\n    Catalog\n};"));
+    await editStorage("pub fn persist(book: &Book)", "pub fn persist( book : &Book )");
+    expect(inputsMatch(original.inputs, (await checkoutContext()).inputs)).toBe(true);
+  });
+
   it("adds depth-2 signatures of functions that helpers in other files call", async () => {
     const inventoryPath = resolve(root, "src/inventory.rs");
     await writeFile(inventoryPath, (await readFile(inventoryPath, "utf8")) + "\npub fn audit(book: &Book) -> bool {\n    !book.title.is_empty()\n}\n");
@@ -127,6 +158,10 @@ describe("Rust function context across files", () => {
     expect(persist).toMatchObject({ description: "signature of function persist", scope: "signature", depth: 1 });
     expect(large.text).not.toContain("_unused_0");
     expect(large.limitations.join(" ")).toContain("tracked by signature only");
+
+    await editStorage("pub fn persist(book: &Book)", "pub fn persist( book : &Book )");
+    expect(inputsMatch(large.inputs, (await checkoutContext()).inputs)).toBe(true);
+    await editStorage("pub fn persist( book : &Book )", "pub fn persist(book: &Book)");
 
     await editStorage("if book.title.is_empty() {", "if book.title.len() < 2 {");
     expect(inputsMatch(large.inputs, (await checkoutContext()).inputs)).toBe(true);

@@ -602,9 +602,21 @@ export async function run(): Promise<void> {
   console.log("Downside Up integration tests: other-file prefetching and saved-explanation hovers work.");
 
   const preloadPath = resolve(goRoot, "prefetch_regression.go");
+  const callerPath = resolve(goRoot, "prefetch_caller.go");
   const preloadNames = Array.from({ length: 6 }, (_, index) => `preload${index}`);
+  let callerDocument: vscode.TextDocument | undefined;
+  const references = vscode.languages.registerReferenceProvider({ language: "go", scheme: "file" }, {
+    provideReferences(document) {
+      if (document.uri.fsPath !== preloadPath || !callerDocument) return [];
+      const offset = callerDocument.getText().search(/preload0\s*\(/);
+      const start = callerDocument.positionAt(offset);
+      return [new vscode.Location(callerDocument.uri, new vscode.Range(start, start.translate(0, 8)))];
+    }
+  });
   try {
     await writeFile(preloadPath, `package main\n\n${preloadNames.map((name) => `func ${name}() int { return 1 }`).join("\n\n")}\n`);
+    await writeFile(callerPath, "package main\n\nfunc caller() int {\n\treturn preload0()\n}\n");
+    callerDocument = await vscode.workspace.openTextDocument(vscode.Uri.file(callerPath));
     await downsideUpSettings.update("maxConcurrentRequests", 6, vscode.ConfigurationTarget.Global);
     await downsideUpSettings.update("prefetch.window", 10, vscode.ConfigurationTarget.Global);
     await downsideUpSettings.update("prefetch.dependencies", 0, vscode.ConfigurationTarget.Global);
@@ -625,12 +637,28 @@ export async function run(): Promise<void> {
     await new Promise((resolveWait) => setTimeout(resolveWait, 1_500));
     assert.equal(allPreloaded(), true, "Refocusing and clicking unchanged functions keeps every explanation current at concurrency six.");
     console.log("Downside Up integration tests: six-function preload completes without movement, and refocusing does not invalidate it.");
+    const replaceDocument = async (document: vscode.TextDocument, source: string) => {
+      const edit = new vscode.WorkspaceEdit();
+      edit.replace(document.uri, new vscode.Range(document.positionAt(0), document.positionAt(document.getText().length)), source);
+      assert.equal(await vscode.workspace.applyEdit(edit), true);
+    };
+    await replaceDocument(preloadDocument, `package main\n\n${preloadNames.map((name) => `func ${name}( ) int {\n\n    return 1\n}`).join("\n\n")}\n`);
+    await replaceDocument(callerDocument, "package main\n\n\nfunc caller( ) int {\n\n    return preload0( )\n}\n");
+    await new Promise((resolveWait) => setTimeout(resolveWait, 1_500));
+    assert.equal(allPreloaded(), true, "Formatting the selected functions and moving caller lines keeps saved explanations current.");
+    await replaceDocument(preloadDocument, preloadDocument.getText().replace("return 1", "return 2"));
+    await waitFor(async () => api.previewExplanations().some((view) =>
+      view.functionName === "preload0" && view.status === "outdated") ? true : undefined, "a real function edit to outdate its explanation");
+    assert.equal(api.previewExplanations().filter((view) => view.status === "current").length, 5, "Other functions stay current and no automatic generation occurs.");
+    console.log("Downside Up integration tests: formatting and caller-line shifts keep explanations current; a real edit outdates only the changed function.");
   } finally {
+    references.dispose();
     await downsideUpSettings.update("prefetch.enabled", undefined, vscode.ConfigurationTarget.Global);
     await downsideUpSettings.update("prefetch.window", undefined, vscode.ConfigurationTarget.Global);
     await downsideUpSettings.update("prefetch.dependencies", undefined, vscode.ConfigurationTarget.Global);
     await downsideUpSettings.update("maxConcurrentRequests", undefined, vscode.ConfigurationTarget.Global);
     await rm(preloadPath, { force: true });
+    await rm(callerPath, { force: true });
   }
 
   const legacyDocument = await vscode.workspace.openTextDocument(vscode.Uri.file(resolve(goRoot, "legacy/legacy.go")));

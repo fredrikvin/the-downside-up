@@ -1,4 +1,5 @@
 import { resolve } from "node:path";
+import { Position as EditorPosition } from "vscode";
 import { describe, expect, it, vi } from "vitest";
 import * as vscode from "./vscode";
 import { findFunctionWithEditorTools } from "../src/languages/editor/symbols";
@@ -85,6 +86,25 @@ describe("language analysis", () => {
     expect(inCallback?.qualifiedName).toBe("checkout");
     expect(inCallback?.selection).toEqual(new vscode.Range(0, 16, 0, 24));
     expect((await at(6, 4))?.qualifiedName).toBe("Catalog.add");
+  });
+
+  it("ignores safe formatting in editor-symbol functions while preserving indentation and strings", async () => {
+    const symbol = new vscode.DocumentSymbol("f", "()", vscode.SymbolKind.Function,
+      new vscode.Range(0, 0, 4, 0), new vscode.Range(0, 4, 0, 5));
+    vi.spyOn(vscode.commands, "executeCommand").mockResolvedValue([symbol]);
+    let source = 'def f():\n    return "two  spaces"\n';
+    const document = {
+      uri: vscode.Uri.file("/repo/f.py"), languageId: "python", getText: () => source
+    } as import("vscode").TextDocument;
+    const at = () => findFunctionWithEditorTools(document, new EditorPosition(0, 4));
+    const original = (await at())!;
+    source = 'def f(): \r\n\r\n    return "two  spaces"  \r\n';
+    expect((await at())!.structuralFingerprint).toBe(original.structuralFingerprint);
+    expect((await at())!.symbolId).toBe(original.symbolId);
+    source = 'def f():\n  return "two  spaces"\n';
+    expect((await at())!.structuralFingerprint).not.toBe(original.structuralFingerprint);
+    source = 'def f():\n    return "two spaces"\n';
+    expect((await at())!.structuralFingerprint).not.toBe(original.structuralFingerprint);
   });
 
   it("returns no function when the installed editor has no symbol provider", async () => {

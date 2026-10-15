@@ -1,5 +1,5 @@
 import * as vscode from "vscode";
-import { cacheKey, fingerprint } from "../../core/fingerprint";
+import { cacheKey, formatTolerantFingerprint } from "../../core/fingerprint";
 import type { FunctionTarget } from "../../core/types";
 
 /**
@@ -95,7 +95,7 @@ export async function findFunctionWithEditorTools(
     signature,
     source,
     symbolId,
-    structuralFingerprint: fingerprint(source),
+    structuralFingerprint: formatTolerantFingerprint(source),
     analysis: "vscode-symbols"
   };
 }

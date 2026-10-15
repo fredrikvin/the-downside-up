@@ -72,11 +72,12 @@ export function allChildren(node: SyntaxNode): SyntaxNode[] {
 
 /** Token text and node types without whitespace, so formatting-only edits keep the same fingerprint. */
 export function structuralTokens(node: SyntaxNode): string {
+  if (!node.type.trim() && !node.text.trim()) return "";
   if (node.type.endsWith("_literal")) {
     return `${node.type}:${node.text.length}:${node.text};`;
   }
   if (node.childCount === 0) return `${node.type}:${node.text.length}:${node.text};`;
-  return allChildren(node).map((entry) => structuralTokens(entry)).join("");
+  return `${node.type}[${allChildren(node).map((entry) => structuralTokens(entry)).join("")}]`;
 }
 
 /**

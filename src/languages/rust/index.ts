@@ -1,5 +1,4 @@
 import {
-  lineScanPreamble,
   UNRESOLVED_DEPENDENCIES,
   type Dependency,
   type LanguageSupport
@@ -7,7 +6,9 @@ import {
 import { findRustDependencies } from "./dependencies";
 import { rustFileImports } from "./imports";
 import { describeRustSource } from "./outline";
-import { findRustDeclarations, findRustFunction, initializeRustParserAt, listRustFunctions } from "./syntax";
+import { findRustDeclarations, findRustFunction, initializeRustParserAt, listRustFunctions, withRustSyntaxTree } from "./syntax";
+import { fingerprint } from "../../core/fingerprint";
+import { namedChildren, structuralTokens } from "../treeSitter";
 
 const escape = (name: string) => name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
@@ -71,9 +72,25 @@ export const rustSupport: LanguageSupport = {
   findFunction: findRustFunction,
   listFunctions: (source) => listRustFunctions({ getText: () => source }),
   describeSource: describeRustSource,
+  async textFingerprint(source) {
+    const tokens = await withRustSyntaxTree(source, structuralTokens);
+    return fingerprint(tokens ?? source);
+  },
   async preamble(source) {
-    const functions = await listRustFunctions({ getText: () => source }).catch(() => []);
-    return lineScanPreamble(source, functions);
+    return (await withRustSyntaxTree(source, (root) => {
+      const parts: string[] = [];
+      const visit = (node: typeof root) => {
+        if (["use_declaration", "extern_crate_declaration", "const_item", "line_comment", "block_comment"].includes(node.type)) {
+          parts.push(node.text);
+        } else if (node.type === "mod_item") {
+          const body = node.childForFieldName("body");
+          if (body) namedChildren(body).forEach(visit);
+          else parts.push(node.text);
+        }
+      };
+      namedChildren(root).forEach(visit);
+      return parts.slice(0, 120).join("\n");
+    })) ?? "";
   },
   async findDependencies(request) {
     const local = await sameFileItems(request.path, request.text, request.line, request.name);

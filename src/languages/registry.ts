@@ -4,6 +4,7 @@ import { goSupport } from "./go";
 import { javascriptSupport } from "./javascript";
 import { rustSupport } from "./rust";
 import type { LanguageSupport } from "./support";
+import { formatTolerantFingerprint } from "../core/fingerprint";
 
 /**
  * Languages with bundled analysis. To add one, create a folder that exports
@@ -30,6 +31,11 @@ export function bundledLanguageFor(file: LanguageFile): LanguageSupport | undefi
 /** The bundled language for a file, or the editor-tooling fallback. */
 export function languageFor(file: LanguageFile): LanguageSupport {
   return bundledLanguageFor(file) ?? editorSupport;
+}
+
+export function sourceFingerprint(source: string, file: LanguageFile): Promise<string> {
+  const support = languageFor(file);
+  return support.textFingerprint?.(source, file.path ?? "") ?? Promise.resolve(formatTolerantFingerprint(source));
 }
 
 /** The language ID recorded for a bundled language's file extension. */

@@ -1,6 +1,6 @@
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import * as vscode from "vscode";
-import { fingerprint } from "../../core/fingerprint";
+import { formatTolerantFingerprint } from "../../core/fingerprint";
 import type { FunctionTarget } from "../../core/types";
 import type { Dependency, DependencyItem, DependencyRequest, DependencyResult } from "../support";
 import { findFunctionWithEditorTools } from "./symbols";
@@ -247,7 +247,7 @@ export async function findEditorDependencies(request: DependencyRequest): Promis
         source: callee.source,
         signature: callee.signature,
         fingerprint: callee.structuralFingerprint,
-        signatureFingerprint: fingerprint(callee.signature)
+        signatureFingerprint: formatTolerantFingerprint(callee.signature)
       };
     }
   });

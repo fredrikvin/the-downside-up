@@ -450,8 +450,9 @@ unless a current one is saved; this uses the same request slots and consent
 and never prompts. The request contains the file's text (up to 24 KiB,
 truncated with a note beyond that), its path and language, and the repository
 overview's purpose. Excluded files are never summarized. Summaries are cached
-per file, provider, model, and prompt version, with a whitespace-insensitive
-fingerprint of the file text: after other edits the preview shows the old
+per file, provider, model, and prompt version, with the same language-aware
+formatting fingerprint used for explanation evidence (including literal
+contents and syntax-sensitive newlines): after meaningful edits the preview shows the old
 summary marked outdated until a function in the file is explained again.
 Opening a file only reads the cache. When an AI summary is shown, it replaces
 the file's leading doc comment at the top of the preview.
@@ -771,8 +772,15 @@ their `impl` type and trait (for example `Catalog::add` or
 `<StoreError as Display>::fmt`), so same-named methods in different `impl`
 blocks have separate explanations; explanations of Rust methods saved by
 versions before 0.4.0 are therefore not reused. Rust structural fingerprints
-preserve meaningful tokens and literals; languages using VS Code symbols use
-conservative source matching and may invalidate on formatting changes.
+preserve meaningful tokens, syntax structure, and literals. Go, Rust, JavaScript,
+and TypeScript ignore formatting whitespace in functions, imports, dependency
+signatures, and caller evidence. Pure newline tokens in Go are omitted, but syntax
+structure is retained so a newline changing control flow is not ignored.
+Rust imports are collected as complete syntax nodes, including multiline imports.
+Languages using VS Code symbols conservatively normalize CRLF, trailing horizontal
+whitespace, and blank lines; indentation and in-line spacing remain meaningful.
+Potential multiline literals, block comments, or continuations keep exact text
+rather than risking removal of meaningful whitespace.
 
 Unchanged explanations are reused across extension restarts without a provider
 call. An explanation is outdated only when its own tracked inputs change (the
@@ -788,21 +796,31 @@ overview has changed since an explanation was made, the explanation stays
 current and notes under **More detail** that an earlier overview was used;
 regenerating it uses the latest one. Unrelated edits do not by
 themselves discard a valid explanation. Unsaved buffers participate in
-freshness checks, and results are not saved as current if source changes during
-generation.
+freshness checks, and results are not saved as current if relevant inputs change
+meaningfully during generation. The selected function is re-resolved against
+the current document before saving explanations or extra formats; an unrelated
+edit, or a formatting-only edit to tracked source, does not reject the result.
+Exclusions, cancellation, and Clear Cache fences still apply.
 
 Within a session, up to 64 recent function-context lookups reuse their evidence
-while the bounded repository snapshot, selected source, and eligible dirty
-buffers are unchanged. Opening a clean file, focusing the editor, or moving the
+while the selected document and the snapshot entries and eligible dirty buffers
+of its recorded inputs are unchanged. Unrelated file edits also reuse that evidence.
+Opening a clean file, focusing the editor, or moving the
 cursor does not change that identity. Language tools timing out or discovering
 additional callers on a later lookup must not be mistaken for a source edit.
-An actual snapshot or dirty-buffer change gathers context again and applies the
+An actual tracked-file or selected-document change gathers context again and applies the
 usual tracked-input checks; clearing the cache also fences this reuse.
 
 Each explanation records what it was built from, so tracking matches what the
 model saw. Every tracked input notes its depth (0 for the function itself, 1
 for items it uses directly, 2 for functions those call) and whether it covers
-the whole item or only its signature. A function's explanation
+the whole item or only its signature. Related callers are tracked once per file,
+without line numbers, using that eligible file's formatting fingerprint; a
+meaningful edit elsewhere in the caller file can therefore outdate the result.
+Only the existing bounded excerpts are sent, not the whole caller file, and
+their navigation references are refreshed from current language-tool locations.
+On-demand related files, including open buffers, remain capped at 256 KiB.
+A function's explanation
 becomes outdated when its own source, its file's imports, or any directly used
 item changes (for languages without bundled analysis, the functions it calls),
 including items in other files, or when the signature of a
@@ -825,6 +843,12 @@ explanations of functions in other languages that call
 functions in the repository are likewise shown as outdated once, because the
 called functions are now part of their context; functions whose editor symbol
 details were previously unread may also need one new explanation.
+
+The formatting-aware tracked-input and line-anchor format has its own explanation
+prompt-version bump, so earlier explanations and file summaries need regeneration
+once. Step links record both ends of their source range and tolerate spacing
+outside quoted text and blank-line shifts; when reflow changes an anchor so it
+cannot be resolved, that item has no source range rather than using an old offset.
 
 Invalidation never regenerates automatically. Use the preview's
 **Regenerate** link, or select text in the function and run **Open Preview to

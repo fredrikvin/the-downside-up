@@ -13,10 +13,10 @@ function normalizeItems<T extends LineLinked>(items: readonly T[], lines: readon
     const end = Math.min(item.endLine, lines.length);
     const anchor = Number.isInteger(start) && start >= 1 && start <= lines.length ? lines[start - 1]!.trim() : "";
     if (!anchor || !Number.isInteger(end) || end < start) {
-      const { anchor: _ignored, ...rest } = item;
+      const { anchor: _ignored, endAnchor: _ignoredEnd, ...rest } = item;
       return { ...rest, startLine: 0, endLine: 0 } as T;
     }
-    return { ...item, startLine: start, endLine: end, anchor };
+    return { ...item, startLine: start, endLine: end, anchor, endAnchor: lines[end - 1]!.trim() };
   });
 }
 
@@ -58,17 +58,33 @@ export function stepRanges(
   currentSource: string,
   functionStartLine: number
 ): Array<StepRange | undefined> {
-  const lines = currentSource.split(/\r?\n/).map((line) => line.trim());
+  const normalized = (line: string) => line.trim()
+    .split(/("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\])*`)/)
+    .map((part, index) => index % 2 ? part : part.replace(/[ \t]+/g, " ")).join("");
+  const lines = currentSource.split(/\r?\n/).map(normalized);
   return steps.map((step) => {
     if (!step.anchor || step.startLine < 1) return undefined;
+    const anchor = normalized(step.anchor);
     const expected = step.startLine - 1;
-    let found = lines[expected] === step.anchor ? expected : -1;
+    let found = lines[expected] === anchor ? expected : -1;
     for (let distance = 1; found < 0 && distance < lines.length; distance++) {
-      if (lines[expected - distance] === step.anchor) found = expected - distance;
-      else if (lines[expected + distance] === step.anchor) found = expected + distance;
+      if (lines[expected - distance] === anchor) found = expected - distance;
+      else if (lines[expected + distance] === anchor) found = expected + distance;
     }
     if (found < 0) return undefined;
-    const end = Math.min(lines.length - 1, found + (step.endLine - step.startLine));
+    let end = Math.min(lines.length - 1, found + (step.endLine - step.startLine));
+    if (step.endAnchor) {
+      const last = normalized(step.endAnchor);
+      if (lines[end] !== last) {
+        let matched = -1;
+        for (let distance = 1; matched < 0 && distance < lines.length; distance++) {
+          if (end - distance >= found && lines[end - distance] === last) matched = end - distance;
+          else if (lines[end + distance] === last) matched = end + distance;
+        }
+        if (matched < 0) return undefined;
+        end = matched;
+      }
+    }
     return { start: functionStartLine + found, end: functionStartLine + end };
   });
 }

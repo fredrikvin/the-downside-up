@@ -1,6 +1,7 @@
 import type { LanguageSupport } from "../support";
 import { javascriptFileImports } from "./imports";
-import { namedChildren } from "../treeSitter";
+import { namedChildren, structuralTokens } from "../treeSitter";
+import { fingerprint } from "../../core/fingerprint";
 import { findJavaScriptDependencies } from "./dependencies";
 import { javascriptGuidance } from "./guidance";
 import { describeJavaScriptSource } from "./outline";
@@ -26,6 +27,10 @@ export const javascriptSupport: LanguageSupport = {
   findFunction: findJavaScriptFunction,
   listFunctions: listJavaScriptFunctions,
   describeSource: describeJavaScriptSource,
+  async textFingerprint(source, path) {
+    const tokens = await withJavaScriptSyntaxTree(source, path, structuralTokens);
+    return fingerprint(tokens ?? source);
+  },
   async preamble(source, path) {
     return (await withJavaScriptSyntaxTree(source, path, (root) => namedChildren(root)
       .filter((node) => node.type === "import_statement" ||

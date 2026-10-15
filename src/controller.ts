@@ -33,7 +33,7 @@ import {
 } from "./context/related";
 import { addLocalSymbolOutline } from "./context/symbolIndex";
 import { currentPolicy } from "./context/policy";
-import { languageFor } from "./languages/registry";
+import { languageFor, sourceFingerprint } from "./languages/registry";
 import { normalizeStepLines } from "./presentation/stepLines";
 import {
   EXPLANATION_PROMPT_VERSION,
@@ -214,10 +214,6 @@ function folderInputFingerprint(input: FolderSummaryPromptInput): string {
   return fingerprint(JSON.stringify([input.path, input.parts, input.imports, input.readme ?? "", input.level ?? "", input.contracts ?? []]));
 }
 
-/** Whitespace-insensitive, so reformatting alone does not outdate a file summary. */
-function fileTextFingerprint(text: string): string {
-  return fingerprint(text.replace(/\s+/g, " ").trim());
-}
 const EXPLANATION_SETTINGS = "experienced-programmer-v1";
 
 function assertNotCancelled(signal?: AbortSignal): void {
@@ -301,16 +297,24 @@ function withOverview(
   };
 }
 
+interface ContextLookup {
+  readonly context: Promise<FunctionContext>;
+  readonly identity: string;
+  readonly snapshot: Readonly<Record<string, string>>;
+  readonly dirty: ReadonlyMap<string, string>;
+  paths?: readonly string[];
+}
+
 export class ExplanationService {
   private readonly inFlight = new Map<string, Promise<ExplanationResult>>();
   private readonly generationFences = new Map<string, number>();
-  private readonly contexts = new Map<string, Promise<FunctionContext>>();
+  private readonly contexts = new Map<string, ContextLookup>();
 
   constructor(private readonly options: ExplanationServiceOptions) {}
 
   /**
    * Tooling can time out or discover additional callers without any source edit.
-   * Reuse the same evidence for an unchanged repository snapshot and dirty buffers,
+   * Reuse the same evidence while the selected document and tracked files are unchanged,
    * rather than treating a different tooling answer as a code change.
    */
   private functionContext(
@@ -325,24 +329,55 @@ export class ExplanationService {
         return Object.hasOwn(inventory.snapshot, path) ? [[path, fingerprint(open.getText())]] : [];
       })
       .sort(([left], [right]) => left.localeCompare(right));
-    const key = fingerprint(JSON.stringify([
+    const identity = fingerprint(JSON.stringify([
       inventory.root, this.fence(inventory.root), target.symbolId, target.languageId, target.structuralFingerprint,
-      fingerprint(document.getText()),
-      Object.entries(inventory.snapshot).sort(([left], [right]) => left.localeCompare(right)), dirty
+      fingerprint(document.getText())
     ]));
-    const hit = this.contexts.get(key);
+    const key = fingerprint(JSON.stringify([
+      identity, Object.entries(inventory.snapshot).sort(([left], [right]) => left.localeCompare(right)), dirty
+    ]));
+    const dirtyMap = new Map(dirty);
+    const hit = this.contexts.get(key) ?? [...this.contexts.values()].find((entry) =>
+      entry.identity === identity && entry.paths?.every((path) =>
+        inventory.snapshot[path] !== undefined &&
+        inventory.snapshot[path] === entry.snapshot[path] &&
+        dirtyMap.get(path) === entry.dirty.get(path)));
     if (hit) {
-      this.contexts.delete(key);
+      for (const [oldKey, entry] of this.contexts) if (entry === hit) this.contexts.delete(oldKey);
       this.contexts.set(key, hit);
-      return hit;
+      return hit.context;
     }
     const context = gatherFunctionContext(target, document, inventory);
-    this.contexts.set(key, context);
+    const entry: ContextLookup = { context, identity, snapshot: inventory.snapshot, dirty: dirtyMap };
+    this.contexts.set(key, entry);
     if (this.contexts.size > 64) this.contexts.delete(this.contexts.keys().next().value!);
-    void context.catch(() => {
-      if (this.contexts.get(key) === context) this.contexts.delete(key);
-    });
+    void context.then(
+      (result) => { entry.paths = [...new Set(result.inputs.map((input) => input.path))]; },
+      () => { if (this.contexts.get(key) === entry) this.contexts.delete(key); }
+    );
     return context;
+  }
+
+  private async refreshedTarget(
+    target: FunctionTarget,
+    document: vscode.TextDocument,
+    previousSource: string
+  ): Promise<FunctionTarget | undefined> {
+    if (document.getText() === previousSource) return target;
+    const language = languageFor({ languageId: target.languageId, path: target.uri.fsPath });
+    if (language.listFunctions) {
+      const functions = await language.listFunctions(document.getText(), target.uri.fsPath);
+      const matches = functions.filter((entry) => entry.qualifiedName === target.qualifiedName);
+      if (matches.length !== 1) return undefined;
+      const found = matches[0]!;
+      const line = document.getText().split(/\r?\n/)[found.startLine] ?? "";
+      const nameColumn = line.indexOf(found.name);
+      const position = new vscode.Position(found.startLine, nameColumn >= 0 ? nameColumn : Math.max(0, line.search(/\S/)));
+      const resolved = await language.findFunction(document, position);
+      return resolved?.qualifiedName === target.qualifiedName ? resolved : undefined;
+    }
+    const found = await language.findFunction(document, target.selection.start);
+    return found?.symbolId === target.symbolId ? found : undefined;
   }
 
   /** Saved records across all models; no source scanning or freshness checks. */
@@ -486,6 +521,7 @@ export class ExplanationService {
     onProgress?: (progress: ExplanationProgress) => void
   ): Promise<ExplanationResult> {
     const startingFence = this.fence(root);
+    const sourceAtStart = document.getText();
     const progress = (stage: ProgressStage, detail: string, usage?: Usage) =>
       onProgress?.({ stage, detail, ...(usage ? { usage } : {}) });
     progress("checking", "Checking source, repository context, and local cache.");
@@ -636,9 +672,13 @@ export class ExplanationService {
 
     progress("checking", "Rechecking source and tracked inputs before saving.");
     const latestInventory = await gatherInventory(root, inventory.snapshot);
-    const latestContext = await this.functionContext(target, document, latestInventory);
+    const latestTarget = await this.refreshedTarget(target, document, sourceAtStart);
+    const latestContext = latestTarget && await this.functionContext(latestTarget, document, latestInventory);
+    const excluded = await sharingExclusion(root, target.uri.fsPath);
     if (
-      latestInventory.changedPaths.length > 0 ||
+      excluded ||
+      !latestContext ||
+      context.inputs.some((input) => !Object.hasOwn(latestInventory.snapshot, input.path)) ||
       !inputsMatch(context.inputs, latestContext.inputs) ||
       this.fence(root) !== startingFence
     ) {
@@ -681,7 +721,7 @@ export class ExplanationService {
     return {
       explanation,
       overview: overviewRecord.value,
-      context,
+      context: latestContext,
       provider: descriptor,
       ...(usage ? { usage } : {}),
       cached: false,
@@ -843,6 +883,7 @@ export class ExplanationService {
     signal?: AbortSignal
   ): Promise<ExplanationResult> {
     const startingFence = this.fence(root);
+    const sourceAtStart = document.getText();
     const descriptor = this.options.describeProvider();
     const exclusion = await sharingExclusion(root, target.uri.fsPath);
     if (exclusion) throw new Error(`This file is excluded from AI explanations because ${exclusion}.`);
@@ -869,8 +910,10 @@ export class ExplanationService {
     const generated = await (await this.options.createProvider(descriptor)).explainFormat(input, signal);
     assertNotCancelled(signal);
     const added = normalizeStepLines(generated.value, target.source);
-    const latest = await this.findCachedExplanation(root, target, document);
-    if (!latest || this.fence(root) !== startingFence || !inputsMatch(saved.context.inputs, latest.context.inputs)) {
+    const latestTarget = await this.refreshedTarget(target, document, sourceAtStart);
+    const latest = latestTarget && await this.findCachedExplanation(root, latestTarget, document);
+    if (!latest || await sharingExclusion(root, target.uri.fsPath) ||
+        this.fence(root) !== startingFence || !inputsMatch(saved.context.inputs, latest.context.inputs)) {
       throw new Error("The function changed while the view was generating. It was not saved; try again.");
     }
     const key = explanationCacheKey(
@@ -898,7 +941,7 @@ export class ExplanationService {
     const path = relative(root, document.uri.fsPath).split(sep).join("/");
     const record = (await this.options.store.read(root)).fileSummaries?.[fileSummaryKey(path, descriptor)];
     if (!record) return undefined;
-    return { summary: record.summary, current: record.fingerprint === fileTextFingerprint(document.getText()) };
+    return { summary: record.summary, current: record.fingerprint === await sourceFingerprint(document.getText(), { path, languageId: document.languageId }) };
   }
 
   /** Saved one-sentence file summaries for the explanation model, current or not, by path. */
@@ -1064,7 +1107,7 @@ export class ExplanationService {
       const record = saved[fileSummaryKey(path, descriptor)];
       if (!record) continue;
       const current = await text(path).catch(() => undefined);
-      found.set(path, { summary: record.summary, current: current !== undefined && record.fingerprint === fileTextFingerprint(current) });
+      found.set(path, { summary: record.summary, current: current !== undefined && record.fingerprint === await sourceFingerprint(current, { path }) });
     }
     return found;
   }
@@ -1086,7 +1129,7 @@ export class ExplanationService {
     const existing = await this.findFileSummary(root, document);
     if (existing?.current) return { summary: existing.summary };
     const text = document.getText();
-    const startingFingerprint = fileTextFingerprint(text);
+    const startingFingerprint = await sourceFingerprint(text, { path: document.uri.fsPath, languageId: document.languageId });
     const bytes = Buffer.from(text, "utf8");
     const truncated = bytes.length > MAX_FILE_SUMMARY_SOURCE_BYTES;
     const path = relative(root, document.uri.fsPath).split(sep).join("/");
@@ -1108,7 +1151,8 @@ export class ExplanationService {
     }
     const generated = await (await this.options.createProvider(descriptor)).summarizeFile(input, signal);
     assertNotCancelled(signal);
-    if (this.fence(root) !== startingFence || fileTextFingerprint(document.getText()) !== startingFingerprint) {
+    if (this.fence(root) !== startingFence ||
+        await sourceFingerprint(document.getText(), { path, languageId: document.languageId }) !== startingFingerprint) {
       return undefined;
     }
     const record: FileSummaryRecord = {

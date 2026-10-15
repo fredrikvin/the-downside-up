@@ -1,11 +1,11 @@
 import { readFile, realpath, stat } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import * as vscode from "vscode";
-import { cacheKey, fingerprint } from "../core/fingerprint";
+import { cacheKey } from "../core/fingerprint";
 import type { ContextInput, FunctionTarget, TrackedInput } from "../core/types";
 import type { RepositoryInventory } from "./inventory";
 import { isEligibleRelativePath } from "./inventory";
-import { languageFor } from "../languages/registry";
+import { languageFor, sourceFingerprint } from "../languages/registry";
 import {
   isCallable,
   lineScanPreamble,
@@ -62,7 +62,10 @@ async function loadAllowedSource(
   const open = vscode.workspace.textDocuments.find(
     (document) => document.uri.scheme === "file" && resolve(document.uri.fsPath) === canonical
   );
-  if (open) return { uri: open.uri, text: open.getText() };
+  if (open) {
+    const text = open.getText();
+    return Buffer.byteLength(text, "utf8") <= 256 * 1024 ? { uri: open.uri, text } : undefined;
+  }
   const size = (await stat(canonical)).size;
   if (size > 256 * 1024) return undefined;
   try {
@@ -242,6 +245,7 @@ export async function gatherFunctionContext(
   if (!targetPath) throw new Error("The selected function is outside the selected repository root.");
   const lineUris = new Map<string, string>();
   const contextSnippets = new Map<string, string>();
+  const pendingInputs: Array<() => Promise<TrackedInput>> = [];
 
   const addInput = (
     path: string,
@@ -250,12 +254,13 @@ export async function gatherFunctionContext(
     structuralHash?: string,
     tracking: Pick<TrackedInput, "depth" | "scope"> = {}
   ) => {
-    inputs.push({
-      path,
-      description,
-      fingerprint: structuralHash ?? fingerprint(text),
+    pendingInputs.push(async () => ({
+      path, description,
+      fingerprint: tracking.scope === "signature" || !structuralHash
+        ? await sourceFingerprint(text, { path })
+        : structuralHash,
       ...tracking
-    });
+    }));
     contextSnippets.set(`${path}\0${description}`, `--- ${path} (${description}) ---\n${text}`);
   };
 
@@ -310,6 +315,7 @@ export async function gatherFunctionContext(
     limitations.push("The editor's reference provider was unavailable; related callers may be missing.");
   }
 
+  const callerInputs = new Map<string, string>();
   for (const location of languageLocations.slice(0, 20)) {
     const path = pathFromUri(inventory.root, location.uri);
     if (!path || path === targetPath || lineUris.has(`${path}:${location.range.start.line}`)) continue;
@@ -333,7 +339,13 @@ export async function gatherFunctionContext(
       endCharacter: location.range.end.character,
       description: `Reference to ${target.name}`
     });
-    addInput(path, `reference to ${target.name} near line ${relativeLine + 1}`, excerpt);
+    contextSnippets.set(`${path}\0${relativeLine}`, `--- ${path} (reference to ${target.name} near line ${relativeLine + 1}) ---\n${excerpt}`);
+    callerInputs.set(path, loaded.text);
+  }
+  for (const [path, text] of [...callerInputs].sort(([left], [right]) => left.localeCompare(right))) {
+    pendingInputs.push(async () => ({
+      path, description: `references to ${target.qualifiedName}`, fingerprint: await sourceFingerprint(text, { path })
+    }));
   }
   if (languageLocations.length === 0) {
     limitations.push("No related callers were resolved by VS Code language tooling.");
@@ -350,6 +362,7 @@ export async function gatherFunctionContext(
   sourceReferences.unshift(targetReference);
   referenceUris.set(targetReference.id, target.uri);
 
+  inputs.push(...await Promise.all(pendingInputs.map((compute) => compute())));
   const normalizedInputs = [...new Map(
     inputs.map((input) => [`${input.path}\0${input.description}`, input])
   ).values()];

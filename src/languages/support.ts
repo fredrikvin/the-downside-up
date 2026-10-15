@@ -28,6 +28,8 @@ export interface LanguageSupport {
    * Without it, import-like lines are taken from the text.
    */
   preamble?(source: string, path: string): Promise<string>;
+  /** Formatting-insensitive evidence, preserving literals and syntax-sensitive whitespace. */
+  textFingerprint?(source: string, path: string): Promise<string>;
   /** Items the function uses directly, for explanation context, tracking, hovers, and prefetching. */
   findDependencies(request: DependencyRequest): Promise<DependencyResult>;
   /**

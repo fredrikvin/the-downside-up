@@ -1,13 +1,14 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { FileRepositoryCacheStore, MemoryRepositoryCacheStore } from "../src/cache/store";
 import type { FunctionTarget } from "../src/core/types";
 import { ExplanationService } from "../src/controller";
 import { MockProvider } from "../src/generation/mock";
 import { COMPONENT_GUIDANCE } from "../src/languages/javascript/guidance";
 import { initializeJavaScriptParsersAt } from "../src/languages/javascript/syntax";
+import { javascriptSupport } from "../src/languages/javascript";
 import { Range, Position, Uri, workspace } from "./vscode";
 
 const harness = vi.hoisted(() => ({
@@ -149,6 +150,7 @@ function createService(
 }
 
 describe("ExplanationService", () => {
+  beforeAll(() => initializeJavaScriptParsersAt(resolve(".")));
   beforeEach(() => {
     setHarness();
     workspace.__resetConfiguration();
@@ -285,6 +287,9 @@ describe("ExplanationService", () => {
       expect((await service.findCachedExplanation(root, selected, fakeDocument))?.cached).toBe(true);
     }
     expect(provider.requests).toBe(requests);
+    expect([...calls.values()]).toEqual(Array(6).fill(1));
+    harness.unrelatedHash = "unrelated-edit";
+    for (const selected of targets) expect(await service.findCachedExplanation(root, selected, fakeDocument)).toBeDefined();
     expect([...calls.values()]).toEqual(Array(6).fill(1));
     harness.storageHash = "edited-related-source";
     for (const selected of targets) expect(await service.findCachedExplanation(root, selected, fakeDocument)).toBeUndefined();
@@ -598,6 +603,47 @@ describe("ExplanationService", () => {
     expect(Object.keys((await store.read(root)).explanations)).toHaveLength(0);
   });
 
+  it("saves an explanation despite an unrelated file edit during generation", async () => {
+    const provider = new MockProvider();
+    const service = createService(new MemoryRepositoryCacheStore(), provider);
+    const original = provider.explainFunction.bind(provider);
+    vi.spyOn(provider, "explainFunction").mockImplementation((input, signal) => {
+      harness.unrelatedHash = "unrelated-edit";
+      return original(input, signal);
+    });
+    expect((await service.explain(root, target(), fakeDocument)).cached).toBe(false);
+  });
+
+  it.each([
+    ["formatting", "export function checkout( catalog, title ) {\n\n    return catalog.find( title );\n}", true],
+    ["an unrelated same-file function", harness.source + "\nfunction other() { return 42; }", true],
+    ["meaningful source", "export function checkout(catalog, title) { return null; }", false]
+  ])("checks %s changes while generating against the actual current function", async (_label, changed, accepted) => {
+    const selected = (await javascriptSupport.findFunction(fakeDocument, target().selection.start))!;
+    harness.gatherFunctionContext = (...args: unknown[]) => {
+      const current = args[0] as FunctionTarget;
+      const context = makeContext(current);
+      context.inputs[0]!.fingerprint = current.structuralFingerprint;
+      return context;
+    };
+    const provider = new MockProvider();
+    const store = new MemoryRepositoryCacheStore();
+    const original = provider.explainFunction.bind(provider);
+    vi.spyOn(provider, "explainFunction").mockImplementation((input, signal) => {
+      harness.source = changed;
+      harness.functionHash = "changed-file";
+      return original(input, signal);
+    });
+    const request = createService(store, provider).explain(root, selected, fakeDocument);
+    if (accepted) {
+      expect((await request).cached).toBe(false);
+      expect(Object.keys((await store.read(root)).explanations)).toHaveLength(1);
+    } else {
+      await expect(request).rejects.toThrow(/changed while/);
+      expect(Object.keys((await store.read(root)).explanations)).toHaveLength(0);
+    }
+  });
+
   it("deduplicates concurrent equivalent requests", async () => {
     const provider = new MockProvider();
     provider.delayMs = 10;
@@ -609,6 +655,31 @@ describe("ExplanationService", () => {
     expect(first.cached).toBe(false);
     expect(second.cached).toBe(false);
     expect(provider.requests).toBe(2);
+  });
+
+  it.each([
+    ["formatting", "export function checkout( catalog, title ) {\n    return catalog.find(title);\n}", true],
+    ["a real edit", "export function checkout(catalog, title) { return null; }", false]
+  ])("rechecks the actual current function after adding a view through %s", async (_label, changed, accepted) => {
+    const selected = (await javascriptSupport.findFunction(fakeDocument, target().selection.start))!;
+    harness.gatherFunctionContext = (...args: unknown[]) => {
+      const current = args[0] as FunctionTarget;
+      const context = makeContext(current);
+      context.inputs[0]!.fingerprint = current.structuralFingerprint;
+      return context;
+    };
+    const provider = new MockProvider();
+    const service = createService(new MemoryRepositoryCacheStore(), provider);
+    await service.explain(root, selected, fakeDocument);
+    const original = provider.explainFormat.bind(provider);
+    vi.spyOn(provider, "explainFormat").mockImplementation((input, signal) => {
+      harness.source = changed;
+      harness.functionHash = "edited";
+      return original(input, signal);
+    });
+    const request = service.addExplanationFormat(root, selected, fakeDocument, "flowchart");
+    if (accepted) expect((await request).explanation.flowchart).toBeDefined();
+    else await expect(request).rejects.toThrow(/function changed while the view/);
   });
 
   it("supports cancellation, surfaces provider failures, and fences Clear Cache", async () => {
@@ -704,6 +775,16 @@ describe("ExplanationService", () => {
       "checkout.js is excluded from AI explanations because a .gitignore or .copilotignore file excludes it. Nothing was sent"
     );
     expect(provider.requests).toBe(0);
+  });
+
+  it("does not reuse a file summary after changing whitespace inside a string", async () => {
+    harness.source = 'export function label() { return "two  spaces"; }';
+    const provider = new MockProvider();
+    const service = createService(new MemoryRepositoryCacheStore(), provider);
+    await service.summarizeFile(root, fakeDocument);
+    harness.source = 'export function label() { return "two spaces"; }';
+    expect((await service.findFileSummary(root, fakeDocument))?.current).toBe(false);
+    expect(provider.requests).toBe(1);
   });
 
   it("never requests external code after consent is declined", async () => {

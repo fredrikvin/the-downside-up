@@ -405,10 +405,23 @@ Background work never asks for approval on its own. Loading explanations
 show skeleton lines inline as they are queued or generated. Every prefetched explanation
 counts toward your provider's usage limits or billing.
 
-Recent function context is reused within the session while the repository
-snapshot and relevant unsaved buffers are unchanged. Clicking or refocusing the
+Recent function context is reused within the session while the selected document
+and its tracked files and unsaved buffers are unchanged. Clicking or refocusing the
 editor does not invalidate explanations just because language tools answer
 differently under load; actual source edits still trigger freshness checks.
+
+**Formatting changes:** Go, Rust, JavaScript, and TypeScript use syntax-aware
+fingerprints for functions, imports, dependency signatures, caller files, and
+file summaries. Indentation, spacing, and blank lines do not outdate them;
+literal contents, comments, and syntax-sensitive newlines remain meaningful.
+Other languages conservatively ignore line-ending differences, trailing spaces,
+and blank lines while preserving indentation and in-line spacing; potential
+multiline literals or continuations fall back to exact text.
+Caller evidence is tracked per file, not by line number; a meaningful change
+elsewhere in that caller file can also outdate an explanation. Formatting and
+unrelated file edits do not discard an explanation already being generated.
+Line links follow spacing and blank-line shifts when their anchors still match;
+reflowed or unresolvable links are left unlinked rather than guessed.
 
 ### Review mode
 

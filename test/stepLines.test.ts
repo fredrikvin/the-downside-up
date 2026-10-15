@@ -54,6 +54,20 @@ describe("step lines", () => {
     expect(stepsAt(ranges, 24, 25)).toEqual([0, 2]);
     expect(stepsAt(ranges, 30, 30)).toEqual([]);
   });
+
+  it("keeps anchors through spacing changes, but never collapses string contents", () => {
+    const before = '  value = "two  spaces";';
+    const steps = normalizeStepLines(explanation([[1, 1]]), before).steps;
+    expect(stepRanges(steps, '    value  =  "two  spaces";', 0)).toEqual([{ start: 0, end: 0 }]);
+    expect(stepRanges(steps, '    value  =  "two spaces";', 0)).toEqual([undefined]);
+  });
+
+  it("follows both ends of a linked range when blank lines are inserted inside it", () => {
+    const before = "first();\nsecond();\nthird();";
+    const steps = normalizeStepLines(explanation([[1, 3]]), before).steps;
+    expect(stepRanges(steps, "first();\n\nsecond();\n\nthird();", 10)).toEqual([{ start: 10, end: 14 }]);
+    expect(stepRanges(steps, "first();\nsecond();\nreplaced();", 10)).toEqual([undefined]);
+  });
 });
 
 describe("cursor matching and pseudocode layout", () => {

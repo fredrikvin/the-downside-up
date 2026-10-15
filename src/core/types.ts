@@ -48,6 +48,8 @@ export interface LineLinked {
   readonly endLine: number;
   /** Trimmed text of the first line, recorded by the extension to find the item again after lines shift. */
   readonly anchor?: string;
+  /** Last source line, so formatting within the range does not leave its end at an old offset. */
+  readonly endAnchor?: string;
 }
 
 export interface PseudocodeLine extends LineLinked {
