@@ -33,8 +33,11 @@ export interface StructureLayout {
  * passes. Within each row, a few barycenter sweeps order nodes and waypoints
  * under their neighbors to reduce crossings. Self-contained, so it can run
  * in the webview as well as in tests.
+ * `maxRowItems` limits real boxes per layer; narrow waypoint lanes are added
+ * afterwards so long edges still have a route between the reflowed boxes.
  */
-export function structureLayout(input: LayoutInput): StructureLayout {
+export function structureLayout(input: LayoutInput, maxRowItems = Infinity): StructureLayout {
+  const rowLimit = Number.isFinite(maxRowItems) ? Math.max(1, Math.floor(maxRowItems)) : Infinity;
   const ids = input.nodes.map((node) => node.id);
   const order = new Map(ids.map((id, index) => [id, index]));
   const key = (edge: { from: string; to: string }) => edge.from + "\u0000" + edge.to;
@@ -84,8 +87,13 @@ export function structureLayout(input: LayoutInput): StructureLayout {
   const remaining = new Map<string, number>(layered.map((id) => [id, 0]));
   for (const edge of forward) remaining.set(edge.to, remaining.get(edge.to)! + 1);
   const queue = layered.filter((id) => remaining.get(id) === 0);
+  const occupied = new Map<number, number>();
   while (queue.length) {
     const id = queue.shift()!;
+    let row = rank.get(id)!;
+    while ((occupied.get(row) ?? 0) >= rowLimit) row++;
+    rank.set(id, row);
+    occupied.set(row, (occupied.get(row) ?? 0) + 1);
     for (const edge of forward) {
       if (edge.from !== id) continue;
       rank.set(edge.to, Math.max(rank.get(edge.to)!, rank.get(id)! + 1));
@@ -95,7 +103,7 @@ export function structureLayout(input: LayoutInput): StructureLayout {
   }
   const layers: string[][] = [];
   for (const id of layered) (layers[rank.get(id)!] = layers[rank.get(id)!] || []).push(id);
-  for (const row of layers) row.sort((left, right) => order.get(left)! - order.get(right)!);
+  for (const row of layers) row?.sort((left, right) => order.get(left)! - order.get(right)!);
   // Waypoints for edges that skip rows; the segments between them take part in ordering.
   const routes: Record<string, string[]> = {};
   const segments: Array<{ from: string; to: string }> = [];
@@ -107,7 +115,7 @@ export function structureLayout(input: LayoutInput): StructureLayout {
     for (let row = start + 1; row < end; row++) {
       const id = "\u0001" + waypoint++;
       order.set(id, order.get(edge.from)!);
-      layers[row]!.push(id);
+      (layers[row] = layers[row] || []).push(id);
       chain.push(id);
     }
     if (chain.length) routes[key(edge)] = chain;

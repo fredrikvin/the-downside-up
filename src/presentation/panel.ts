@@ -12,7 +12,6 @@ export type ExplanationStatus = "loading" | "current" | "outdated" | "cancelled"
 export interface ExplanationView {
   readonly entryId: string;
   readonly functionName: string;
-  readonly expanded: boolean;
   readonly status: ExplanationStatus;
   readonly detail: string;
   readonly error?: string;
@@ -158,6 +157,7 @@ export interface PanelState {
   readonly showDetails: boolean;
   readonly formats: FormatSettings;
   readonly notice?: PanelNotice;
+  readonly prefetchConsent?: { readonly models: readonly string[]; readonly approving: boolean };
   /** A folder being opened; its placeholder is shown until it is listed. */
   readonly loading?: { readonly name: string };
   readonly busy: boolean;
@@ -166,7 +166,7 @@ export interface PanelState {
 
 export type PanelAction =
   | { readonly type: "expand"; readonly entryId: string }
-  | { readonly type: "collapse"; readonly entryId: string }
+  | { readonly type: "approveSharing" }
   | { readonly type: "regenerate"; readonly entryId: string }
   | { readonly type: "cancelEntry"; readonly entryId: string }
   | { readonly type: "cancel" }
@@ -261,20 +261,10 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
     .notes { list-style: none; padding: 0; margin: -6px 0 12px; font-size: .9em; color: var(--vscode-descriptionForeground); }
 
     .ai-section { margin: 0 0 14px; }
-    .ai-toggle {
-      display: inline-flex; align-items: center; gap: 8px;
-      background: none; border: 0; padding: 2px 0; margin: 0;
-      font: inherit; font-size: .85em; font-weight: 600; letter-spacing: .04em; text-transform: uppercase;
-      color: var(--vscode-textLink-foreground); cursor: pointer;
-    }
-    .ai-toggle:hover .ai-label { text-decoration: underline; }
-    .ai-hint { font-weight: 400; text-transform: none; letter-spacing: 0; color: var(--vscode-descriptionForeground); }
-    .chevron {
-      display: inline-block; width: 6px; height: 6px;
-      border-right: 2px solid currentColor; border-bottom: 2px solid currentColor;
-      transform: rotate(-45deg); transition: transform .12s ease; margin: 0 2px;
-    }
-    .ai-section.expanded .chevron { transform: rotate(45deg) translate(-2px, -2px); }
+    .explain { flex: none; font: inherit; font-size: 12px; color: var(--vscode-textLink-foreground); background: none; border: 1px solid var(--separator); border-radius: 4px; padding: 2px 8px; cursor: pointer; }
+    .prefetch-consent { max-width: 860px; box-sizing: border-box; margin: 12px 0; padding: 10px 14px; border: 1px solid var(--vscode-textLink-foreground); border-radius: 4px; }
+    .prefetch-consent p { margin-bottom: 6px; }
+    .prefetch-consent button { font: inherit; cursor: pointer; }
     .ai-body {
       margin: 6px 0 4px; padding: 10px 16px 4px;
       border-left: 2px solid var(--vscode-textLink-foreground);
@@ -296,7 +286,7 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
     .step.active, .pseudo-line.active { background: var(--vscode-editor-selectionHighlightBackground, rgba(128, 128, 128, .22)); }
     .flow-head { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; margin: 16px 0 6px; }
     .flow-head h5 { margin: 0; }
-    .tabs { display: flex; gap: 2px; font-size: .85em; }
+    .tabs { display: flex; flex-wrap: wrap; gap: 2px; font-size: .85em; }
     .tab { background: none; border: 0; border-bottom: 2px solid transparent; padding: 2px 8px; font: inherit; color: var(--vscode-descriptionForeground); cursor: pointer; }
     .tab[aria-selected="true"] { color: var(--vscode-editor-foreground); border-bottom-color: var(--vscode-textLink-foreground); }
     .pseudo { font-family: var(--vscode-editor-font-family, monospace); font-size: .92em; line-height: 1.55; margin: 4px 0 12px; }
@@ -312,16 +302,17 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
     .folder-list .child-name { font-weight: 600; }
     .folder-list .child-meta { margin-left: 8px; }
     .folder-list .child-summary { margin: 2px 0 0; }
-    .structure-scroll { overflow-x: auto; margin: 6px 0 16px; }
-    .structure { position: relative; display: inline-flex; flex-direction: column; align-items: center; gap: 34px; min-width: 100%; padding: 4px 4px 8px; box-sizing: border-box; }
+    .structure-scroll, .flow-scroll { position: relative; overflow: hidden; width: 100%; box-sizing: border-box; }
+    .structure-scroll { margin: 6px 0 16px; }
+    .structure { position: relative; display: inline-flex; flex-direction: column; align-items: center; gap: 72px; width: max-content; min-width: 100%; padding: 4px 4px 8px; box-sizing: border-box; }
     .structure.has-loops { padding-left: 48px; }
     .structure-row { display: flex; justify-content: center; gap: 24px; }
-    .structure-row.unconnected, .structure-row.shared { flex-wrap: wrap; gap: 10px 16px; max-width: 760px; }
+    .structure-row.unconnected, .structure-row.shared { flex-wrap: wrap; gap: 14px 16px; }
     .flow-ref { margin-top: 3px; font-size: .78em; color: var(--vscode-textLink-foreground); overflow-wrap: anywhere; }
     .flow-title { margin: 14px 0 2px; font-size: 1em; }
     .structure-waypoint { width: 10px; height: 2px; align-self: center; }
     .structure-row { align-items: center; }
-    .structure-caption { font-size: .8em; color: var(--vscode-descriptionForeground); margin-bottom: -26px; }
+    .structure-caption { font-size: .8em; color: var(--vscode-descriptionForeground); margin-bottom: -58px; }
     .structure-node { cursor: pointer; text-align: center; max-width: 190px; font: inherit; color: inherit; }
     .structure-node .node-name { font-weight: 600; overflow-wrap: anywhere; }
     .structure-node .node-meta { font-size: .78em; color: var(--vscode-descriptionForeground); }
@@ -346,8 +337,8 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
     @media (prefers-reduced-motion: reduce) { .skeleton, .skeleton-box { animation: none; } }
     .folder-contents > summary { cursor: pointer; font-weight: 600; }
     .structure-node:hover, .structure-node:focus-visible { border-color: var(--vscode-focusBorder); }
-    .flow-scroll { overflow-x: auto; margin: 6px 0 12px; }
-    .flow { position: relative; display: inline-grid; grid-auto-columns: max-content; column-gap: 32px; row-gap: 34px; align-items: center; padding: 4px 16px 8px 4px; }
+    .flow-scroll { margin: 6px 0 12px; }
+    .flow { position: relative; display: inline-grid; width: max-content; grid-auto-columns: max-content; column-gap: 32px; row-gap: 64px; align-items: center; padding: 4px 16px 8px 4px; }
     .flow.has-loops { padding-left: 56px; }
     .flow-node {
       position: relative; z-index: 1; justify-self: center; max-width: 170px; padding: 6px 12px; text-align: center; font-size: .9em; line-height: 1.35;
@@ -369,7 +360,7 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
     }
     .flow-node.holds { max-width: none; padding: 4px 8px 8px; }
     .flow-node.holds > .flow-node-label { margin-bottom: 2px; }
-    .flow.flow-inner { display: inline-grid; column-gap: 20px; row-gap: 24px; padding: 6px 8px 2px 2px; text-align: center; }
+    .flow.flow-inner { display: inline-grid; column-gap: 20px; row-gap: 52px; padding: 6px 8px 2px 2px; text-align: center; }
     .flow.flow-inner.has-loops { padding-left: 40px; }
     .flow-node.kind-start, .flow-node.kind-end { color: var(--vscode-descriptionForeground, inherit); }
     .flow-node.linked { cursor: pointer; }
@@ -388,7 +379,7 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
       animation: spin .8s linear infinite;
     }
     @keyframes spin { to { transform: rotate(360deg); } }
-    @media (prefers-reduced-motion: reduce) { .spinner { animation-duration: 2.4s; } .chevron { transition: none; } }
+    @media (prefers-reduced-motion: reduce) { .spinner { animation-duration: 2.4s; } }
     .repo { margin-top: 40px; border-top: 1px solid var(--separator); padding-top: 8px; }
     .repo summary { cursor: pointer; font-weight: 600; }
     .repo p { white-space: pre-line; }
@@ -405,6 +396,7 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
     <a id="clearCache" role="button" tabindex="0">Clear cache</a>
   </nav>
   <p id="notice" class="notice" role="status" aria-live="polite"></p>
+  <aside id="prefetchConsent" class="prefetch-consent" aria-label="Background explanation approval" hidden></aside>
   <main id="doc">
     <nav id="crumbs" class="crumbs muted small" aria-label="Location" hidden></nav>
     <h1 id="title">Downside Up</h1>
@@ -419,7 +411,7 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
       <div id="repoBody"></div>
     </details>
     <footer class="muted small">
-      <p>Function headings and other items come from the code itself. AI explanations and the file summary are generated by the selected model, only after you consent to sharing code; open a function's AI explanation to create one. Which items are listed is set by "Downside Up › Preview: Include". Double-click any item to jump to its source.</p>
+      <p>Function headings and other items come from the code itself. AI explanations and the file summary are generated by the selected model, only after you consent to sharing code; press Explain beside a function to create one. Background explanations must also be enabled in user settings. Which items are listed is set by "Downside Up › Preview: Include". Double-click any item to jump to its source.</p>
     </footer>
   </main>
   <script nonce="${nonce}">
@@ -444,6 +436,7 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
     let scrollFrame = 0;
     let revealFrame = 0;
     let ignoreScrollUntil = 0;
+    const chartObservers = [];
 
     function el(tag, className, text) {
       const node = document.createElement(tag);
@@ -560,14 +553,69 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
       return block;
     }
 
-    /**
-     * Places flowchart nodes in rows: each node's row is its longest distance
-     * from the start along forward edges, so the main path runs downward. An
-     * early exit (an end or show node reached only from a node that also
-     * continues) sits on its source's row, to the right. Edges that loop back
-     * are drawn on the left.
-     */
-    function layoutFlow(chart) {
+    function fitChart(chart, viewport) {
+      chart.style.position = "absolute";
+      chart.style.transform = "";
+      const scale = Math.min(1, viewport.clientWidth / Math.max(1, chart.offsetWidth));
+      chart.style.transformOrigin = "0 0";
+      chart.style.transform = "scale(" + scale + ")";
+      viewport.style.height = Math.ceil(chart.offsetHeight * scale) + "px";
+      return scale;
+    }
+
+    function observeChart(viewport, draw) {
+      requestAnimationFrame(() => { if (viewport.isConnected) draw(); });
+      if (typeof ResizeObserver !== "function") return;
+      let width = -1;
+      const observer = new ResizeObserver(() => {
+        if (viewport.clientWidth === width) return;
+        width = viewport.clientWidth;
+        requestAnimationFrame(() => { if (viewport.isConnected) draw(); });
+      });
+      observer.observe(viewport);
+      chartObservers.push(observer);
+    }
+
+    /** Straight entry and exit segments keep arrowheads aligned with their curves. */
+    function downwardPath(points) {
+      let d = "M" + points[0].x + "," + points[0].y;
+      for (let index = 1; index < points.length; index++) {
+        const from = points[index - 1];
+        const to = points[index];
+        const inset = Math.min(12, Math.max(0, (to.y - from.y) / 4));
+        const middle = (from.y + to.y) / 2;
+        d += " V" + (from.y + inset) + " C" + from.x + "," + middle + " " + to.x + "," + middle + " " + to.x + "," + (to.y - inset) + " V" + to.y;
+      }
+      return d;
+    }
+
+    /** Keep labels beside their own edge, away from boxes and earlier labels. */
+    function placeEdgeLabels(items, obstacles) {
+      const placed = [];
+      const overlaps = (a, b) => a.x < b.x + b.width + 6 && a.x + a.width + 6 > b.x && a.y < b.y + b.height + 4 && a.y + a.height + 4 > b.y;
+      for (const { path, label } of items) {
+        let positioned = false;
+        for (const fraction of [.25, .4, .55, .7, .85, .15]) {
+          const point = path.getPointAtLength(path.getTotalLength() * fraction);
+          for (const shift of [0, -16, 16, -32, 32]) {
+            label.setAttribute("x", String(point.x + shift));
+            label.setAttribute("y", String(point.y - 6));
+            const rect = label.getBBox();
+            const svg = label.ownerSVGElement;
+            if (rect.x < 0 || rect.x + rect.width > Number(svg.getAttribute("width"))) continue;
+            if ([...obstacles, ...placed].some((other) => overlaps(rect, other))) continue;
+            placed.push(rect);
+            positioned = true;
+            break;
+          }
+          if (positioned) break;
+        }
+        if (!positioned) placed.push(label.getBBox());
+      }
+    }
+
+    /** Forward ranks are capacity-limited on narrow columns; loops route up the left. */
+    function layoutFlow(chart, maxRowItems = Infinity) {
       const order = new Map(chart.nodes.map((node, index) => [node.id, index]));
       const outgoing = new Map(chart.nodes.map((node) => [node.id, []]));
       for (const edge of chart.edges) outgoing.get(edge.from).push(edge);
@@ -600,15 +648,22 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
       for (const edge of forward) indegree.set(edge.to, indegree.get(edge.to) + 1);
       const rank = new Map(chart.nodes.map((node) => [node.id, 0]));
       const queue = chart.nodes.filter((node) => indegree.get(node.id) === 0).map((node) => node.id);
+      const occupied = new Map();
       while (queue.length) {
         const id = queue.shift();
+        let row = rank.get(id);
+        while ((occupied.get(row) || 0) >= maxRowItems) row++;
+        rank.set(id, row);
+        occupied.set(row, (occupied.get(row) || 0) + 1);
         for (const edge of forward.filter((candidate) => candidate.from === id)) {
           rank.set(edge.to, Math.max(rank.get(edge.to), rank.get(id) + 1));
           indegree.set(edge.to, indegree.get(edge.to) - 1);
           if (indegree.get(edge.to) === 0) queue.push(edge.to);
         }
       }
-      for (const [exit, source] of sideExit) rank.set(exit, rank.get(source));
+      if (maxRowItems === Infinity) {
+        for (const [exit, source] of sideExit) rank.set(exit, rank.get(source));
+      }
       const rows = [];
       for (const node of chart.nodes) {
         const row = rank.get(node.id);
@@ -630,12 +685,13 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
     function renderFlowchart(chart, view, links) {
       const scroll = el("div", "flow-scroll");
       const levels = [];
+      let rowLimit = Infinity;
       const build = (parentId) => {
         const nodes = chart.nodes.filter((node) => (node.parent || "") === parentId);
         const ids = new Set(nodes.map((node) => node.id));
         const edges = chart.edges.filter((edge) => ids.has(edge.from) && ids.has(edge.to));
         const level = el("div", parentId ? "flow flow-inner" : "flow");
-        const { rows, back } = layoutFlow({ nodes, edges });
+        const { rows, back } = layoutFlow({ nodes, edges }, rowLimit);
         // Room on the left only for flows with loops, which are routed there.
         if (back.size) level.classList.add("has-loops");
         const boxes = new Map();
@@ -662,29 +718,6 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
         levels.push({ flow: level, boxes, edges, back, index: levels.length });
         return level;
       };
-      const flow = build("");
-      flow.setAttribute("role", "group");
-      flow.setAttribute("aria-label", "Flowchart");
-      scroll.append(flow);
-      /**
-       * Shrinks a chart wider than its column (down to 60%) so the whole flow
-       * stays visible; negative margins give back the space the scaling frees.
-       */
-      const fit = () => {
-        flow.style.transform = "";
-        flow.style.marginRight = "";
-        flow.style.marginBottom = "";
-        const natural = flow.offsetWidth;
-        const available = scroll.clientWidth;
-        const scale = natural > available && available > 0 ? Math.max(0.6, available / natural) : 1;
-        if (scale < 1) {
-          flow.style.transformOrigin = "0 0";
-          flow.style.transform = "scale(" + scale + ")";
-          flow.style.marginRight = -Math.ceil(natural * (1 - scale)) + "px";
-          flow.style.marginBottom = -Math.ceil(flow.offsetHeight * (1 - scale)) + "px";
-        }
-        return scale;
-      };
       /** Draws one level's edges in an SVG inside that level; positions are converted back from the chart's scale. */
       const drawLevel = (level, scale) => {
         const { flow: holder, boxes, edges, back } = level;
@@ -700,10 +733,11 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
         const markerId = "arrow-" + view.entryId + "-" + level.index;
         marker.setAttribute("id", markerId);
         marker.setAttribute("viewBox", "0 0 8 8");
-        marker.setAttribute("refX", "7");
+        marker.setAttribute("refX", "8");
         marker.setAttribute("refY", "4");
         marker.setAttribute("markerWidth", "7");
         marker.setAttribute("markerHeight", "7");
+        marker.setAttribute("markerUnits", "userSpaceOnUse");
         marker.setAttribute("orient", "auto-start-reverse");
         const tip = document.createElementNS(SVG, "path");
         tip.setAttribute("d", "M0,0 L8,4 L0,8 z");
@@ -724,6 +758,7 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
         // Loops go up the left of the main path; exits use the right, so they never cross.
         const left = Math.min(...[...boxes.keys()].map((id) => rect(id).left));
         let lane = 0;
+        const labels = [];
         for (const edge of edges) {
           const from = rect(edge.from);
           const to = rect(edge.to);
@@ -733,10 +768,10 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
             d = "M" + from.right + "," + from.y + " H" + to.left;
           } else if (!back.has(edge) && to.top > from.bottom && to.left > from.right) {
             // A branch to the side leaves from the right and bends down into the target.
-            d = "M" + from.right + "," + from.y + " C" + to.x + "," + from.y + " " + to.x + "," + from.y + " " + to.x + "," + to.top;
+            const end = to.top - Math.min(12, (to.top - from.bottom) / 4);
+            d = "M" + from.right + "," + from.y + " C" + to.x + "," + from.y + " " + to.x + "," + from.y + " " + to.x + "," + end + " V" + to.top;
           } else if (!back.has(edge) && to.top > from.bottom) {
-            const middle = (from.bottom + to.top) / 2;
-            d = "M" + from.x + "," + from.bottom + " C" + from.x + "," + middle + " " + to.x + "," + middle + " " + to.x + "," + to.top;
+            d = downwardPath([{ x: from.x, y: from.bottom }, { x: to.x, y: to.top }]);
           } else {
             const x = Math.max(4, left - 16 - 10 * lane++);
             d = "M" + from.left + "," + from.y + " H" + x + " V" + to.y + " H" + to.left;
@@ -748,41 +783,46 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
           if (edge.label) {
             const label = document.createElementNS(SVG, "text");
             label.setAttribute("class", "flow-label");
+            label.setAttribute("text-anchor", "middle");
             label.textContent = edge.label;
             svg.append(label);
-            requestAnimationFrame(() => {
-              const near = path.getPointAtLength(Math.min(22, path.getTotalLength() / 2));
-              label.setAttribute("x", String(near.x + 5));
-              label.setAttribute("y", String(near.y - 5));
-            });
+            labels.push({ path, label });
           }
         }
         holder.prepend(svg);
+        placeEdgeLabels(labels, [...boxes.keys()].map((id) => {
+          const box = rect(id);
+          return { x: box.left, y: box.top, width: box.right - box.left, height: box.bottom - box.top };
+        }));
       };
       const draw = () => {
-        const scale = fit();
+        if (!scroll.clientWidth) return;
+        let flow;
+        rowLimit = Infinity;
+        do {
+          levels.length = 0;
+          flow = build("");
+          flow.style.position = "absolute";
+          scroll.replaceChildren(flow);
+          if (flow.offsetWidth <= scroll.clientWidth || rowLimit === 1) break;
+          const widest = Math.max(1, ...levels.flatMap((level) => [...level.boxes.values()].map((box) => Number(box.style.gridColumn))));
+          rowLimit = rowLimit === Infinity
+            ? Math.max(1, Math.floor(widest * scroll.clientWidth / flow.offsetWidth))
+            : rowLimit - 1;
+        } while (true);
+        flow.setAttribute("role", "group");
+        flow.setAttribute("aria-label", "Flowchart");
+        const scale = fitChart(flow, scroll);
         for (const level of levels) drawLevel(level, scale);
       };
-      requestAnimationFrame(draw);
-      if (typeof ResizeObserver === "function") {
-        let lastWidth = 0;
-        new ResizeObserver(() => {
-          // Redraw when the column width changes, not when fitting changes the height.
-          if (scroll.clientWidth === lastWidth) return;
-          lastWidth = scroll.clientWidth;
-          requestAnimationFrame(draw);
-        }).observe(scroll);
-      }
+      observeChart(scroll, draw);
       return scroll;
     }
 
     function missingFormat(view, format) {
       const box = el("div");
       if (view.loadingFormat === format) {
-        const loading = el("div", "loading");
-        loading.setAttribute("role", "status");
-        loading.append(el("span", "spinner"), el("span", "", "Generating the " + format + "…"));
-        box.append(loading);
+        box.append(explanationSkeleton("Generating the " + format + "…"));
         return box;
       }
       if (view.formatError) box.append(el("p", "error", view.formatError));
@@ -869,15 +909,26 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
       }
     }
 
+    function explanationSkeleton(detail, cancel) {
+      const box = el("div", "explanation-loading");
+      box.setAttribute("aria-busy", "true");
+      const status = el("div", "loading small");
+      status.setAttribute("role", "status");
+      status.append(el("span", "", detail));
+      if (cancel) status.append(action("Cancel", cancel));
+      box.append(status);
+      const lines = el("div");
+      lines.setAttribute("aria-hidden", "true");
+      for (const className of ["skeleton", "skeleton", "skeleton", "skeleton short"]) lines.append(el("div", className));
+      box.append(lines);
+      return box;
+    }
+
     function renderAiBody(view) {
       const body = el("div", "ai-body");
       body.id = view.entryId + "-ai";
       if (view.status === "loading") {
-        const loading = el("div", "loading");
-        loading.setAttribute("role", "status");
-        loading.append(el("span", "spinner"), el("span", "", view.detail || "Working…"));
-        loading.append(action("Cancel", () => post({ type: "cancelEntry", entryId: view.entryId })));
-        body.append(loading);
+        body.append(explanationSkeleton(view.detail || "Preparing explanation…", () => post({ type: "cancelEntry", entryId: view.entryId })));
       } else if (view.status !== "current" || !view.explanation) {
         body.append(statusLine(view));
       }
@@ -913,30 +964,6 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
       return body;
     }
 
-    function renderAiSection(entry, view) {
-      const expanded = Boolean(view && view.expanded);
-      const section = el("div", "ai-section" + (expanded ? " expanded" : ""));
-      const toggle = el("button", "ai-toggle");
-      toggle.type = "button";
-      toggle.setAttribute("aria-expanded", String(expanded));
-      toggle.append(el("span", "chevron"), el("span", "ai-label", "AI explanation"));
-      if (!expanded && view) {
-        const hint = view.status === "loading" ? "generating…" : view.status === "current" ? "ready" : view.status === "outdated" ? "outdated" : "";
-        if (hint) toggle.append(el("span", "ai-hint", hint));
-      }
-      toggle.title = expanded ? "Hide the AI explanation" : "Show the AI explanation (generates one if none is saved)";
-      toggle.addEventListener("click", (event) => {
-        event.stopPropagation();
-        post({ type: expanded ? "collapse" : "expand", entryId: entry.id });
-      });
-      section.append(toggle);
-      if (expanded) {
-        toggle.setAttribute("aria-controls", entry.id + "-ai");
-        section.append(renderAiBody(view));
-      }
-      return section;
-    }
-
     function renderEntry(entry, views) {
       const section = el("section", "entry depth-" + Math.min(entry.depth, 4) + " kind-" + entry.kind);
       section.id = entry.id;
@@ -965,6 +992,13 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
         nameLink.title = entry.explainable ? "Show the AI explanation of " + entry.name : "Go to source";
         nameLink.append(el("code", "", entry.kind === "impl" ? entry.qualifiedName : entry.name));
         heading.append(nameLink);
+        if (entry.explainable && !view) {
+          const explain = el("button", "explain", "Explain");
+          explain.type = "button";
+          explain.setAttribute("aria-label", "Explain " + entry.name + " with AI");
+          explain.addEventListener("click", () => post({ type: "expand", entryId: entry.id }));
+          heading.append(explain);
+        }
         section.append(heading);
         if (entry.documentation) section.append(el("blockquote", "", entry.documentation));
         if (entry.description.length) section.append(segments(el("p"), entry.description));
@@ -979,7 +1013,12 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
         for (const note of entry.notes) notes.append(segments(el("li"), note));
         section.append(notes);
       }
-      if (entry.explainable) section.append(renderAiSection(entry, view));
+      if (view) {
+        const ai = el("div", "ai-section");
+        ai.setAttribute("aria-label", "AI explanation of " + entry.name);
+        ai.append(renderAiBody(view));
+        section.append(ai);
+      }
       return section;
     }
 
@@ -1027,64 +1066,67 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
      */
     function renderStructure(structure, children, options) {
       const opts = options || {};
-      const layout = structureLayout(structure);
+      let layout;
       const byPath = new Map(children.map((child) => [child.path, child]));
       const scroll = el("div", "structure-scroll");
       const chart = el("div", "structure");
       chart.setAttribute("role", "group");
       chart.setAttribute("aria-label", opts.label || "Structure diagram: what imports what");
-      if (layout.back.length) chart.classList.add("has-loops");
       scroll.append(chart);
       const boxes = new Map();
       const waypoints = new Map();
-      layout.rows.forEach((row, index) => {
-        const kind = layout.rowKinds[index];
-        if (kind === "shared") chart.append(el("div", "structure-caption", "Used by most of the others"));
-        if (kind === "unconnected") chart.append(el("div", "structure-caption", opts.unconnected || "No imports to or from the others"));
-        const line = el("div", "structure-row " + kind);
-        for (const id of row) {
-          if (id.startsWith("\\u0001")) {
-            // A waypoint keeps a lane free for an edge passing this row.
-            const spacer = el("span", "structure-waypoint");
-            waypoints.set(id, spacer);
-            line.append(spacer);
-            continue;
+      const build = (limit) => {
+        layout = structureLayout(structure, limit);
+        chart.replaceChildren();
+        boxes.clear();
+        waypoints.clear();
+        chart.classList.toggle("has-loops", Boolean(layout.back.length));
+        layout.rows.forEach((row, index) => {
+          const kind = layout.rowKinds[index];
+          if (kind === "shared") chart.append(el("div", "structure-caption", "Used by most of the others"));
+          if (kind === "unconnected") chart.append(el("div", "structure-caption", opts.unconnected || "No imports to or from the others"));
+          const line = el("div", "structure-row " + kind);
+          if (kind !== "layer") line.style.maxWidth = Math.max(1, scroll.clientWidth - 56) + "px";
+          for (const id of row) {
+            if (id.startsWith("\\u0001")) {
+              // A waypoint keeps a lane free for an edge passing this row.
+              const spacer = el("span", "structure-waypoint");
+              waypoints.set(id, spacer);
+              line.append(spacer);
+              continue;
+            }
+            const child = byPath.get(id);
+            if (!child) continue;
+            const box = el(child.target ? "button" : "div", "flow-node structure-node kind-" + child.kind);
+            if (child.target) box.type = "button";
+            box.title = opts.title ? opts.title(child) : (child.kind === "folder" ? "Preview " : "Open ") + child.path;
+            box.append(el("div", "node-name", child.name + (child.kind === "folder" ? "/" : "")));
+            const own = opts.meta ? opts.meta(child) : childMeta(child);
+            const meta = layout.usedBy[id] ? "used by " + layout.usedBy[id] + (own ? " · " + own : "") : own;
+            if (meta) box.append(el("div", "node-meta", meta));
+            if (child.target) box.addEventListener("click", () => post({ type: "navigate", referenceId: child.target }));
+            boxes.set(id, box);
+            line.append(box);
           }
-          const child = byPath.get(id);
-          if (!child) continue;
-          const box = el(child.target ? "button" : "div", "flow-node structure-node kind-" + child.kind);
-          if (child.target) box.type = "button";
-          box.title = opts.title ? opts.title(child) : (child.kind === "folder" ? "Preview " : "Open ") + child.path;
-          box.append(el("div", "node-name", child.name + (child.kind === "folder" ? "/" : "")));
-          const own = opts.meta ? opts.meta(child) : childMeta(child);
-          const meta = layout.usedBy[id] ? "used by " + layout.usedBy[id] + (own ? " · " + own : "") : own;
-          if (meta) box.append(el("div", "node-meta", meta));
-          if (child.target) box.addEventListener("click", () => post({ type: "navigate", referenceId: child.target }));
-          boxes.set(id, box);
-          line.append(box);
-        }
-        chart.append(line);
-      });
-      const hidden = new Set(layout.hidden);
-      const back = new Set(layout.back);
-      const fit = () => {
-        chart.style.transform = "";
-        chart.style.marginRight = "";
-        chart.style.marginBottom = "";
-        const natural = chart.offsetWidth;
-        const available = scroll.clientWidth;
-        const scale = natural > available && available > 0 ? Math.max(0.6, available / natural) : 1;
-        if (scale < 1) {
-          chart.style.transformOrigin = "0 0";
-          chart.style.transform = "scale(" + scale + ")";
-          chart.style.marginRight = -Math.ceil(natural * (1 - scale)) + "px";
-          chart.style.marginBottom = -Math.ceil(chart.offsetHeight * (1 - scale)) + "px";
-        }
-        return scale;
+          chart.append(line);
+        });
       };
       const draw = () => {
-        for (const old of chart.querySelectorAll(":scope > .flow-edges")) old.remove();
-        const scale = fit();
+        if (!scroll.clientWidth) return;
+        chart.style.position = "absolute";
+        chart.style.transform = "";
+        let limit = Infinity;
+        do {
+          build(limit);
+          if (chart.offsetWidth <= scroll.clientWidth || limit === 1) break;
+          const widest = Math.max(1, ...layout.rows.filter((_, index) => layout.rowKinds[index] === "layer").map((row) => row.filter((id) => !id.startsWith("\\u0001")).length));
+          limit = limit === Infinity
+            ? Math.max(1, Math.floor(widest * scroll.clientWidth / chart.offsetWidth))
+            : limit - 1;
+        } while (true);
+        const hidden = new Set(layout.hidden);
+        const back = new Set(layout.back);
+        const scale = fitChart(chart, scroll);
         const base = chart.getBoundingClientRect();
         if (!base.width) return;
         const svg = document.createElementNS(SVG, "svg");
@@ -1096,10 +1138,11 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
         const markerId = "structure-arrow";
         marker.setAttribute("id", markerId);
         marker.setAttribute("viewBox", "0 0 8 8");
-        marker.setAttribute("refX", "7");
+        marker.setAttribute("refX", "8");
         marker.setAttribute("refY", "4");
         marker.setAttribute("markerWidth", "7");
         marker.setAttribute("markerHeight", "7");
+        marker.setAttribute("markerUnits", "userSpaceOnUse");
         marker.setAttribute("orient", "auto-start-reverse");
         const tip = document.createElementNS(SVG, "path");
         tip.setAttribute("d", "M0,0 L8,4 L0,8 z");
@@ -1147,7 +1190,7 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
         spread(downward, (edge) => edge.to, lastBefore, ":in");
         let lane = 0;
         // Paths are measured once the diagram is in the page.
-        const placeLabels = [];
+        const labels = [];
         for (const edge of shown) {
           const key = keyOf(edge);
           const from = rect(edge.from);
@@ -1162,49 +1205,33 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
               ...(layout.routes[key] || []).map((id) => ({ x: rect(id).x, y: rect(id).y })),
               { x: ports.get(key + ":in"), y: to.top }
             ];
-            d = "M" + points[0].x + "," + points[0].y;
-            for (let index = 1; index < points.length; index++) {
-              const previous = points[index - 1];
-              const next = points[index];
-              const middle = (previous.y + next.y) / 2;
-              d += " C" + previous.x + "," + middle + " " + next.x + "," + middle + " " + next.x + "," + next.y;
-            }
+            d = downwardPath(points);
           }
           const path = document.createElementNS(SVG, "path");
           path.setAttribute("d", d);
           path.setAttribute("class", "flow-edge");
-          path.setAttribute("stroke-width", String(1.2 + Math.min(2.4, Math.log2(edge.weight))));
+          path.style.strokeWidth = String(1.2 + Math.min(2.4, Math.log2(edge.weight)));
           path.setAttribute("marker-end", "url(#" + markerId + ")");
           const title = document.createElementNS(SVG, "title");
           title.textContent = edge.label || plural(edge.weight, "import");
           path.append(title);
           svg.append(path);
           if (opts.labels && edge.label) {
-            // Labels sit at the middle of their arrow, where arrows from one box have spread apart.
             const label = document.createElementNS(SVG, "text");
             label.setAttribute("class", "flow-label");
             label.setAttribute("text-anchor", "middle");
             label.textContent = edge.label;
             svg.append(label);
-            placeLabels.push(() => {
-              const middle = path.getPointAtLength(path.getTotalLength() / 2);
-              label.setAttribute("x", String(middle.x));
-              label.setAttribute("y", String(middle.y - 4));
-            });
+            labels.push({ path, label });
           }
         }
         chart.prepend(svg);
-        for (const place of placeLabels) place();
+        placeEdgeLabels(labels, [...boxes.keys()].map((id) => {
+          const box = rect(id);
+          return { x: box.left, y: box.top, width: box.right - box.left, height: box.bottom - box.top };
+        }));
       };
-      requestAnimationFrame(draw);
-      if (typeof ResizeObserver === "function") {
-        let lastWidth = 0;
-        new ResizeObserver(() => {
-          if (scroll.clientWidth === lastWidth) return;
-          lastWidth = scroll.clientWidth;
-          requestAnimationFrame(draw);
-        }).observe(scroll);
-      }
+      observeChart(scroll, draw);
       return scroll;
     }
 
@@ -1464,6 +1491,15 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
 
     function render(next) {
       const previousScroll = window.scrollY;
+      const entries = [...document.querySelectorAll(".entry")];
+      const inset = stickyInset();
+      const anchor = entries.find((entry) => {
+        const top = entry.getBoundingClientRect().top;
+        return top >= inset && top < window.innerHeight;
+      }) || entries.find((entry) => entry.getBoundingClientRect().bottom > inset);
+      const anchorId = anchor?.id;
+      const anchorTop = anchor?.getBoundingClientRect().top;
+      for (const observer of chartObservers.splice(0)) observer.disconnect();
       const focusedEntry = document.activeElement && document.activeElement.closest ? document.activeElement.closest(".entry") : null;
       const focusedClass = document.activeElement ? document.activeElement.className : "";
       state = next;
@@ -1478,6 +1514,17 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
       const notice = byId("notice");
       notice.textContent = next.notice ? next.notice.text : "";
       notice.className = "notice" + (next.notice && next.notice.tone === "error" ? " error" : "");
+      const consent = byId("prefetchConsent");
+      consent.hidden = !next.prefetchConsent;
+      consent.replaceChildren();
+      if (next.prefetchConsent) {
+        consent.append(el("p", "", "Background explanations are on, but waiting for your approval to share code from this repository with " + next.prefetchConsent.models.join(" and ") + "."));
+        const approve = el("button", "", next.prefetchConsent.approving ? "Waiting for approval…" : "Approve sharing");
+        approve.type = "button";
+        approve.disabled = next.prefetchConsent.approving;
+        approve.addEventListener("click", () => post({ type: "approveSharing" }));
+        consent.append(approve, el("p", "small muted", "Approval is saved for this repository and model. Background requests use your provider's usage limits or billing. You can also press Explain beside a function to approve its first request."));
+      }
       byId("title").textContent = loading ? loading.name : file ? file.fileName : folder ? folder.name : "Downside Up";
       byId("facts").textContent = file
         ? [file.path, file.languageId, file.lineCount + " lines"].join(" · ")
@@ -1503,7 +1550,7 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
       highlightSteps(activeSteps);
       updateStuck();
       if (focusedEntry && focusedEntry.id) {
-        const focusedKind = focusedClass.split(" ")[0] || "ai-toggle";
+        const focusedKind = focusedClass.split(" ")[0] || "explain";
         const selector = focusedKind === "tab" ? '.tab[aria-selected="true"]' : "." + focusedKind;
         const target = document.querySelector("#" + CSS.escape(focusedEntry.id) + " " + selector);
         if (target) target.focus({ preventScroll: true });
@@ -1516,7 +1563,13 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
       } else {
         // Re-rendering the same file keeps the reader's place.
         ignoreScrollUntil = performance.now() + 100;
-        window.scrollTo(0, previousScroll);
+        const restore = () => {
+          if (state !== next) return;
+          const kept = anchorId ? byId(anchorId) : null;
+          window.scrollTo(0, kept && anchorTop !== undefined ? window.scrollY + kept.getBoundingClientRect().top - anchorTop : previousScroll);
+        };
+        restore();
+        requestAnimationFrame(restore);
       }
     }
 
@@ -1683,9 +1736,9 @@ export class ExplanationPanel {
         const type = fields.type;
         if (type === "ready") {
           this.replay();
-        } else if (type === "cancel" || type === "refreshContext" || type === "clearCache" || type === "chooseModel" || type === "summarizeFolder" || type === "summarizeTree" || type === "describeFlows") {
+        } else if (type === "cancel" || type === "refreshContext" || type === "clearCache" || type === "chooseModel" || type === "summarizeFolder" || type === "summarizeTree" || type === "describeFlows" || type === "approveSharing") {
           onAction({ type });
-        } else if (type === "expand" || type === "collapse" || type === "regenerate" || type === "cancelEntry") {
+        } else if (type === "expand" || type === "regenerate" || type === "cancelEntry") {
           const entryId = stringField("entryId");
           if (entryId) onAction({ type, entryId });
         } else if (type === "navigate") {

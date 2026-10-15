@@ -182,15 +182,11 @@ export async function run(): Promise<void> {
   assert.deepEqual(api.previewExplanations(), [], "Closing the preview clears in-memory explanation state.");
   await vscode.window.showTextDocument(jsDocument, vscode.ViewColumn.One);
   await vscode.commands.executeCommand("downsideUp.showFileOverview");
-  const reopened = await waitFor(async () => {
+  await waitFor(async () => {
     const views = api.previewExplanations();
     const ready = views.filter((view) => view.status === "current").map((view) => view.functionName);
     return ready.includes("checkout") && ready.includes("describeCatalog") ? views : undefined;
   }, "saved explanations listed as ready after reopening the preview");
-  assert.ok(
-    reopened.filter((view) => view.status === "current").every((view) => view.expanded),
-    "Current saved explanations open by default, like a document."
-  );
   assert.deepEqual(
     api.shownOutline().map((entry) => entry.kindLabel),
     ["Function", "Function"],
@@ -440,7 +436,28 @@ export async function run(): Promise<void> {
   const downsideUpSettings = vscode.workspace.getConfiguration("downsideUp");
   await downsideUpSettings.update("prefetch.window", 1, vscode.ConfigurationTarget.Global);
   await downsideUpSettings.update("prefetch.dependencies", 0, vscode.ConfigurationTarget.Global);
+  const beforeApproval = api.allExplanations().length;
+  await downsideUpSettings.update("provider", "openai", vscode.ConfigurationTarget.Global);
+  await downsideUpSettings.update("openai.model", "test-explanation-model", vscode.ConfigurationTarget.Global);
   await downsideUpSettings.update("prefetch.enabled", true, vscode.ConfigurationTarget.Global);
+  await waitFor(
+    async () => api.prefetchApproval()?.includes("test-explanation-model") ? true : undefined,
+    "a persistent background-sharing approval banner without a provider request"
+  );
+  await downsideUpSettings.update("openai.overviewModel", "test-overview-model", vscode.ConfigurationTarget.Global);
+  await waitFor(
+    async () => api.prefetchApproval()?.length === 2 ? true : undefined,
+    "the banner to include the separate overview model that prefetching also needs"
+  );
+  assert.deepEqual(api.prefetchApproval(), ["test-explanation-model", "test-overview-model"]);
+  assert.equal(api.allExplanations().length, beforeApproval, "Waiting for approval never queues AI explanations.");
+  await downsideUpSettings.update("prefetch.enabled", false, vscode.ConfigurationTarget.Global);
+  await waitFor(async () => !api.prefetchApproval() ? true : undefined, "disabling prefetch to hide the approval banner");
+  await downsideUpSettings.update("provider", "mock", vscode.ConfigurationTarget.Global);
+  await downsideUpSettings.update("openai.model", undefined, vscode.ConfigurationTarget.Global);
+  await downsideUpSettings.update("openai.overviewModel", undefined, vscode.ConfigurationTarget.Global);
+  await downsideUpSettings.update("prefetch.enabled", true, vscode.ConfigurationTarget.Global);
+  assert.equal(api.prefetchApproval(), undefined, "Mock mode does not ask for external-sharing approval.");
   const statusOf = (name: string) => api.previewExplanations().find((view) => view.functionName === name);
   const prefetchEditor = await vscode.window.showTextDocument(lookupDocument, vscode.ViewColumn.One);
   const lineOf = (text: string) => lookupDocument.positionAt(lookupDocument.getText().indexOf(text)).line;
@@ -449,7 +466,6 @@ export async function run(): Promise<void> {
     async () => statusOf("Catalog.FindAvailable")?.status === "current" ? true : undefined,
     "the function nearest the cursor to be prefetched"
   );
-  assert.equal(statusOf("Catalog.FindAvailable")?.expanded, true, "Prefetched explanations open when ready.");
   await new Promise((resolveWait) => setTimeout(resolveWait, 1_500));
   assert.equal(statusOf("Catalog.MarkUnavailable"), undefined, "Functions outside the prefetch window are not requested.");
   prefetchEditor.selection = new vscode.Selection(lineOf(") MarkUnavailable("), 0, lineOf(") MarkUnavailable("), 0);

@@ -38,10 +38,11 @@ Preview to the Side** (or use the preview button in the editor title bar).
   still. A function's heading stays pinned at the top while you read its
   explanation.
   Double-click an item to jump to its source.
-- **AI explanations.** Each function has an **AI explanation** section.
-  Open it (or click the function's name) to show its saved explanation, or to
-  generate one if none is current; a spinner shows while it loads, and the
-  chevron collapses it again. An explanation gives the function a short
+- **AI explanations.** Press **Explain** beside a function's name (or click
+  the name) to show its saved explanation, or to generate one if none is
+  current. Explanations appear inline, without a repeated accordion label;
+  skeleton lines show while they load, with **Cancel** beside the status.
+  An explanation gives the function a short
   title (such as "Fetch a wearer"), says what it is for, and lists its inputs,
   its result, the main steps in order, and extras such as cleanup only when
   relevant. When parts of a function run at different times, such as a React
@@ -61,10 +62,13 @@ Preview to the Side** (or use the preview button in the editor title bar).
   open the tab and choose **Generate**. **More detail** adds where it fits, edge cases, language notes,
   and related code; **Explanations: Show Details**
   (`downsideUp.explanations.showDetails`) opens it by default. Current
-  explanations are shown open, so the preview reads like a document, unless
-  you collapse them. Several can be open at once, and up to three
+  explanations stay visible, so the preview reads like a document.
+  Several can load at once, and up to three
   generations run at the same time (see **Max Concurrent Requests** below).
   Each explanation links to the related code the extension found.
+  Maps and flowcharts fit the preview's reading column: wide rows reflow
+  vertically before scaling, with more room for arrows and labels and no
+  sideways scrollbar. Very narrow columns may still need smaller text.
   The explanation also uses the functions the function calls, including from
   other files, plus the signatures of the functions those call, and is marked
   outdated when any of them change. For Rust and Go, it also uses the types,
@@ -363,10 +367,14 @@ function. **Prefetch: Dependencies**
 (`downsideUp.prefetch.dependencies`, default 3, `0` for none) also prefetches
 up to that many functions in other files that the function you are reading
 calls, right after the function itself, so they are ready if you follow a
-call. Prefetching runs only in trusted workspaces after you have explained
-one function with the current model, which approves code sharing for the
-repository; it never asks for approval itself, and starts as soon as you
-approve. Every prefetched explanation
+call. Prefetching runs only in trusted workspaces with code sharing approved
+for the repository and model (and the overview model, if separate). Until
+then, a persistent banner offers **Approve sharing**. Clicking it explicitly
+opens the sharing dialog for each model still needing approval; accepting
+starts prefetching. You can also approve by explaining a function first.
+Declining keeps the banner available without retrying the prompt.
+Background work never asks for approval on its own. Loading explanations
+show skeleton lines inline as they are queued or generated. Every prefetched explanation
 counts toward your provider's usage limits or billing.
 
 ### Review mode

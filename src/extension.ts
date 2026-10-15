@@ -96,7 +96,7 @@ interface PreviewFile {
   readonly exclusion?: string;
 }
 
-type StoredView = Omit<ExplanationView, "entryId" | "expanded">;
+type StoredView = Omit<ExplanationView, "entryId">;
 
 /** Background prefetching for the file shown in the preview. */
 interface PrefetchSession {
@@ -204,9 +204,6 @@ interface FunctionAi {
   value: SelectedFunction;
   view: StoredView;
   result?: ExplanationResult;
-  expanded: boolean;
-  /** Set when the reader collapsed the section, so it is not reopened automatically. */
-  collapsedByUser?: boolean;
   /** An extra view being added on request, and the last error doing so. */
   loadingFormat?: ExplanationFormat;
   formatError?: string;
@@ -281,6 +278,8 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
   const prefetchSignals = new WeakSet<AbortSignal>();
   /** One code-sharing prompt per repository and model, shared by parallel requests. */
   const consentPrompts = new Map<string, Promise<boolean>>();
+  let prefetchConsent: { root: string; key: string; descriptors: ProviderDescriptor[] } | undefined;
+  let approvingSharing = false;
   /** The AI summary of the previewed file, if one is saved. */
   let fileSummary: { uri: string; text: string; current: boolean } | undefined;
   const summaryRuns = new Map<string, Promise<void>>();
@@ -366,41 +365,45 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
         const consentId = await consentModelId(descriptor);
         return consentId !== undefined && hasConsent(await cacheStore.read(root), descriptor.kind, consentId);
       }
-      if (descriptor.kind === "mock") return true;
-      if (!vscode.workspace.isTrusted) {
-        await vscode.window.showErrorMessage(
-          "External code sharing is disabled in an untrusted workspace. Trust the workspace before using a language model provider."
-        );
-        return false;
-      }
-      const model = descriptor.kind === "vscode-lm" ? await findLanguageModel(descriptor.modelId) : undefined;
-      if (descriptor.kind === "vscode-lm" && !model) throw new Error(missingLanguageModelMessage(descriptor.modelId));
-      // Language model consent names the vendor, so a same-named model from another vendor asks again.
-      const consentId = model ? languageModelConsentId(model) : descriptor.modelId;
-      if (hasConsent(await cacheStore.read(root), descriptor.kind, consentId)) return true;
-      const provider = descriptor.kind;
-      // Parallel requests share one prompt for the same repository and model.
-      return singleFlight(consentPrompts, `${root}\0${descriptor.kind}\0${consentId}`, async () => {
-        const approximateTokens = Math.ceil(estimatedBytes / 4);
-        const destination = model
-          ? `Provider: VS Code language model from “${model.vendor}”\nModel: ${model.name}`
-          : `Provider: OpenAI Responses API\nModel: ${descriptor.modelId}`;
-        const terms = descriptor.kind === "vscode-lm"
-          ? "Requests use your existing subscription with that provider (for GitHub Copilot, your Copilot plan) and may count toward its usage limits. Data handling follows that provider's terms and your organization's policies. VS Code may also ask you to allow The Downside Up to use language models."
-          : "Your API usage is billed separately. Review OpenAI's data controls; store:false does not guarantee zero provider-side retention.";
-        const accept = descriptor.kind === "vscode-lm" ? "Send code to language model" : "Send code to OpenAI";
-        const action = await vscode.window.showWarningMessage(
-          `Downside Up will send selected functions, relevant snippets, repository documentation, and (for one-sentence file summaries) the text of files whose functions you explain, from:\n\n${root}\n\n${destination}\nEstimated context: about ${approximateTokens.toLocaleString()} tokens (byte-based estimate)\n\n${terms} This consent is saved for this repository and model. Clear the repository cache to revoke it.`,
-          { modal: true },
-          accept
-        );
-        if (action !== accept) return false;
-        await cacheStore.update(root, (current) => withConsent(current, provider, consentId, Date.now()));
-        afterConsent(root);
-        return true;
-      });
+      return askSharingConsent(root, descriptor, estimatedBytes);
     }
   });
+
+  const askSharingConsent = async (root: string, descriptor: ProviderDescriptor, estimatedBytes?: number): Promise<boolean> => {
+    if (descriptor.kind === "mock") return true;
+    if (!vscode.workspace.isTrusted) {
+      await vscode.window.showErrorMessage(
+        "External code sharing is disabled in an untrusted workspace. Trust the workspace before using a language model provider."
+      );
+      return false;
+    }
+    const model = descriptor.kind === "vscode-lm" ? await findLanguageModel(descriptor.modelId) : undefined;
+    if (descriptor.kind === "vscode-lm" && !model) throw new Error(missingLanguageModelMessage(descriptor.modelId));
+    // Language model consent names the vendor, so a same-named model from another vendor asks again.
+    const consentId = model ? languageModelConsentId(model) : descriptor.modelId;
+    if (hasConsent(await cacheStore.read(root), descriptor.kind, consentId)) return true;
+    const provider = descriptor.kind;
+    // Parallel requests share one prompt for the same repository and model.
+    return singleFlight(consentPrompts, `${root}\0${descriptor.kind}\0${consentId}`, async () => {
+      const estimate = estimatedBytes === undefined ? "" : `\nEstimated context: about ${Math.ceil(estimatedBytes / 4).toLocaleString()} tokens (byte-based estimate)`;
+      const destination = model
+        ? `Provider: VS Code language model from “${model.vendor}”\nModel: ${model.name}`
+        : `Provider: OpenAI Responses API\nModel: ${descriptor.modelId}`;
+      const terms = descriptor.kind === "vscode-lm"
+        ? "Requests use your existing subscription with that provider (for GitHub Copilot, your Copilot plan) and may count toward its usage limits. Data handling follows that provider's terms and your organization's policies. VS Code may also ask you to allow The Downside Up to use language models."
+        : "Your API usage is billed separately. Review OpenAI's data controls; store:false does not guarantee zero provider-side retention.";
+      const accept = descriptor.kind === "vscode-lm" ? "Send code to language model" : "Send code to OpenAI";
+      const action = await vscode.window.showWarningMessage(
+        `Downside Up will send selected functions, relevant snippets, repository documentation, and (for one-sentence file summaries) the text of files whose functions you explain, from:\n\n${root}\n\n${destination}${estimate}\n\n${terms} This consent is saved for this repository and model. Clear the repository cache to revoke it.`,
+        { modal: true },
+        accept
+      );
+      if (action !== accept) return false;
+      await cacheStore.update(root, (current) => withConsent(current, provider, consentId, Date.now()));
+      afterConsent(root);
+      return true;
+    });
+  };
 
   const availableLanguageModels = async (): Promise<vscode.LanguageModelChat[]> => {
     try {
@@ -620,7 +623,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     }
     const line = current.active.line;
     const match = previewStates()
-      .filter(({ state }) => state.expanded && state.value.target.range.start.line <= line && state.value.target.range.end.line >= line)
+      .filter(({ state }) => state.value.target.range.start.line <= line && state.value.target.range.end.line >= line)
       .sort((left, right) =>
         (left.state.value.target.range.end.line - left.state.value.target.range.start.line) -
         (right.state.value.target.range.end.line - right.state.value.target.range.start.line)
@@ -724,7 +727,6 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
         ...state.view,
         references,
         entryId: entry.id,
-        expanded: state.expanded,
         ...(ranges
           ? {
               linked: { steps: ranges.steps.map(Boolean), pseudocode: ranges.pseudocode.map(Boolean), nodes: ranges.nodes.map(Boolean) },
@@ -771,6 +773,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     const shownContext = shownRoot !== undefined && repositoryContext?.root === shownRoot ? repositoryContext : undefined;
     panel.setReferenceHandlers(handlers);
     const summary = preview && fileSummary?.uri === preview.document.uri.toString() ? fileSummary : undefined;
+    const approval = pendingPrefetchConsent();
     panel.update({
       provider: descriptor.kind,
       model: descriptor.modelId || "no model selected",
@@ -783,6 +786,12 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       formats: formatSettings(),
       ...(shownContext ? { overview: shownContext.overview } : {}),
       ...(notice ? { notice } : {}),
+      ...(approval ? {
+        prefetchConsent: {
+          models: approval.descriptors.map((model) => model.modelId || "the selected language model"),
+          approving: approvingSharing
+        }
+      } : {}),
       ...(openingFolder ? { loading: { name: openingFolder.name } } : {}),
       busy: Boolean(repositoryJob || folderJobs.size),
       hasRepository: Boolean(preview || folderPreview)
@@ -1524,8 +1533,6 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
         ...(result.provider.kind === "mock" ? [MOCK_LIMITATION] : [])
       ])]
     };
-    // Current explanations read like a document, so they open unless the reader closed them.
-    if (!state.collapsedByUser) state.expanded = true;
     repositoryContext = { root: state.value.root, overview: result.overview };
     installRootWatcher(state.value.root);
   };
@@ -1565,7 +1572,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     const key = stateKey(value.root, value.target);
     let state = functions.get(key);
     if (!state) {
-      state = { key, value, view: emptyView(value.target), expanded: false, epoch: 0 };
+      state = { key, value, view: emptyView(value.target), epoch: 0 };
       functions.set(key, state);
     } else {
       state.value = value;
@@ -1596,7 +1603,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
   /**
    * Marks functions of the shown file that have a current saved explanation as
    * ready, so they survive closing the preview or restarting VS Code. This is a
-   * local cache lookup only; misses stay collapsed and never generate.
+   * local cache lookup only; misses keep their Explain button and never generate.
    */
   const markSavedExplanations = async (document: vscode.TextDocument, root: string): Promise<void> => {
     const lookup = ++savedLookupEpoch;
@@ -1798,7 +1805,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
 
   /**
    * Generates (or loads a still-current saved) explanation for an explicit
-   * request, or for prefetching, which keeps the section collapsed, never
+   * request, or for prefetching, which shows a skeleton, never
    * prompts, and is dropped if `shouldStart` is false when its turn comes.
    */
   const generate = async (
@@ -1811,8 +1818,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     const controller = new AbortController();
     const epoch = ++state.epoch;
     state.controller = controller;
-    if (!prefetching) state.expanded = true;
-    else prefetchSignals.add(controller.signal);
+    if (prefetching) prefetchSignals.add(controller.signal);
     installRootWatcher(state.value.root);
     state.view = loadingView(
       state,
@@ -1880,9 +1886,8 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     }
   };
 
-  /** Expands a function's AI section: shows a saved explanation, or generates one when none is current. */
+  /** An explicit Explain action: shows a saved explanation, or generates one when none is current. */
   const openExplanation = async (state: FunctionAi): Promise<void> => {
-    state.expanded = true;
     if (state.controller || state.view.explanation || state.view.status === "failed" || state.view.status === "cancelled") {
       render();
       return;
@@ -1899,12 +1904,6 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     if (state.epoch !== epoch || !functions.has(state.key)) return;
     if (cached) {
       applyResult(state, cached);
-      render();
-      return;
-    }
-    if (!state.expanded) {
-      // Collapsed again before anything was generated: treat it as never opened.
-      forget(state);
       render();
       return;
     }
@@ -2010,11 +2009,49 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
 
   /** Whether prefetching may send code now, decided without any prompt. */
   const prefetchAllowed = async (root: string): Promise<boolean> => {
-    const descriptor = describeProvider();
-    if (descriptor.kind === "mock") return true;
-    if (!vscode.workspace.isTrusted) return false;
-    const consentId = await consentModelId(descriptor);
-    return consentId !== undefined && hasConsent(await cacheStore.read(root), descriptor.kind, consentId);
+    return vscode.workspace.isTrusted && (await unapprovedPrefetchModels(root)).length === 0;
+  };
+
+  const prefetchModelKey = (): string =>
+    [describeProvider(), describeOverviewProvider()].map((model) => `${model.kind}\0${model.modelId}`).join("\0");
+
+  const unapprovedPrefetchModels = async (root: string): Promise<ProviderDescriptor[]> => {
+    const cache = await cacheStore.read(root);
+    const missing: ProviderDescriptor[] = [];
+    const seen = new Set<string>();
+    for (const descriptor of [describeProvider(), describeOverviewProvider()]) {
+      if (descriptor.kind === "mock") continue;
+      const consentId = await consentModelId(descriptor);
+      const key = `${descriptor.kind}\0${consentId ?? descriptor.modelId}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      if (consentId === undefined || !hasConsent(cache, descriptor.kind, consentId)) missing.push(descriptor);
+    }
+    return missing;
+  };
+
+  const pendingPrefetchConsent = () =>
+    prefetchConsent && preview?.root === prefetchConsent.root && !preview.exclusion
+    && prefetchConsent.key === prefetchModelKey() && prefetchSettings().enabled && vscode.workspace.isTrusted
+      ? prefetchConsent : undefined;
+
+  const approvePrefetchSharing = async (): Promise<void> => {
+    const pending = pendingPrefetchConsent();
+    if (!pending || approvingSharing) return;
+    approvingSharing = true;
+    render();
+    try {
+      for (const descriptor of pending.descriptors) {
+        if (preview?.root !== pending.root || pending.key !== prefetchModelKey() || !prefetchSettings().enabled) return;
+        if (!(await askSharingConsent(pending.root, descriptor))) return;
+      }
+      afterConsent(pending.root);
+    } catch (error) {
+      notice = { tone: "error", text: `Could not approve background explanations: ${errorMessage(error)}` };
+    } finally {
+      approvingSharing = false;
+      render();
+    }
   };
 
   /**
@@ -2190,12 +2227,8 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       }
       if (!(await prefetchAllowed(session.root))) {
         if (!active()) return;
-        notice = {
-          tone: "info",
-          text: "Prefetching is waiting: it runs only in a trusted workspace after you have explained one function with the current model, which approves code sharing for this repository."
-        };
-        render();
         stopPrefetch();
+        render();
         return;
       }
       if (!active()) return;
@@ -2216,6 +2249,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
   /** Starts prefetching for the shown file when the user setting allows it. */
   const startPrefetch = (document: vscode.TextDocument, root: string): void => {
     stopPrefetch();
+    prefetchConsent = undefined;
     if (!panel || !preview || !sameUri(preview.document.uri, document.uri) || preview.exclusion || !prefetchSettings().enabled) return;
     const names = new Set(preview.overview.entries.filter((entry) => entry.explainable).map((entry) => entry.qualifiedName));
     if (names.size === 0) return;
@@ -2231,8 +2265,29 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       woken: false
     };
     prefetchSession = session;
-    void runPrefetch(session).catch(() => {
-      if (prefetchSession === session) stopPrefetch();
+    const modelKey = prefetchModelKey();
+    void (async () => {
+      if (!vscode.workspace.isTrusted) {
+        notice = { tone: "info", text: "Background explanations require a trusted workspace. Nothing was sent." };
+        stopPrefetch();
+        render();
+        return;
+      }
+      const descriptors = await unapprovedPrefetchModels(root);
+      if (prefetchSession !== session || modelKey !== prefetchModelKey()) return;
+      if (descriptors.length) {
+        prefetchConsent = { root, key: modelKey, descriptors };
+        stopPrefetch();
+        render();
+        return;
+      }
+      render();
+      await runPrefetch(session);
+    })().catch((error: unknown) => {
+      if (prefetchSession !== session) return;
+      notice = { tone: "error", text: `Background explanations stopped: ${errorMessage(error)}` };
+      stopPrefetch();
+      render();
     });
   };
 
@@ -2534,24 +2589,15 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
 
   async function handlePanelAction(action: PanelAction): Promise<void> {
     switch (action.type) {
+      case "approveSharing":
+        await approvePrefetchSharing();
+        return;
       case "navigate":
         await panel?.navigate(action.referenceId);
         return;
       case "expand": {
         const state = await resolveEntryState(action.entryId);
-        if (state) {
-          state.collapsedByUser = false;
-          await openExplanation(state);
-        }
-        return;
-      }
-      case "collapse": {
-        const state = existingStateForEntry(action.entryId);
-        if (state) {
-          state.expanded = false;
-          state.collapsedByUser = true;
-          render();
-        }
+        if (state) await openExplanation(state);
         return;
       }
       case "regenerate": {
@@ -2654,10 +2700,6 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     if (!target || !target.range.contains(selection.start) || !target.range.contains(selection.end)) return;
     const existing = functions.get(stateKey(root, target));
     if (existing && (existing.controller || existing.view.explanation)) {
-      if (!existing.expanded) {
-        existing.expanded = true;
-        render();
-      }
       return;
     }
     const cached = await service.findCachedExplanation(root, target, document);
@@ -2665,7 +2707,6 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     const state = stateFor({ root, target, document });
     if (state.controller) return;
     state.epoch++;
-    state.expanded = true;
     applyResult(state, cached);
     render();
   };
@@ -2765,7 +2806,6 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
   /** Prefetching that stopped for lack of code-sharing approval starts again once it is given. */
   const afterConsent = (root: string): void => {
     if (!panel || !preview || preview.root !== root || prefetchSession || !prefetchSettings().enabled) return;
-    if (notice?.text.startsWith("Prefetching is waiting")) notice = undefined;
     startPrefetch(preview.document, root);
   };
 
@@ -3025,6 +3065,11 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       if (!prefetchSettings().enabled) stopPrefetch();
       else if (prefetchSession) wakePrefetch();
       else if (panel && preview) startPrefetch(preview.document, preview.root);
+      render();
+    }
+    if (event.affectsConfiguration("downsideUp.languageModel.overviewModel") || event.affectsConfiguration("downsideUp.openai.overviewModel")) {
+      if (panel && preview) startPrefetch(preview.document, preview.root);
+      render();
     }
     if (
       !event.affectsConfiguration("downsideUp.provider") &&
@@ -3086,9 +3131,9 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
   return {
     previewExplanations: () => previewStates().map(({ state }) => ({
       functionName: state.view.functionName,
-      status: state.view.status,
-      expanded: state.expanded
+      status: state.view.status
     })),
+    prefetchApproval: () => pendingPrefetchConsent()?.descriptors.map((model) => model.modelId),
     stepHighlight: () => lastStepHighlight,
     revealedLines: () => revealed ? { start: revealed.start, end: revealed.end } : undefined,
     revealStep: async (functionName: string, step: number, kind: LinkedKind = "step") => {
@@ -3175,7 +3220,8 @@ export interface DownsideUpTestApi {
   reviewChanges(base: string): Promise<number>;
   reviewItems(): Array<{ qualifiedName: string; path: string; status: string }>;
   stopReview(): void;
-  previewExplanations(): Array<{ functionName: string; status: string; expanded: boolean }>;
+  previewExplanations(): Array<{ functionName: string; status: string }>;
+  prefetchApproval(): string[] | undefined;
   allExplanations(): Array<{ functionName: string; status: string; path: string; error?: string }>;
   shownOutline(): Array<{ kindLabel: string; name: string }>;
   stepHighlight(): { functionName: string; steps: number[]; pseudocode: number[]; nodes: number[] } | undefined;

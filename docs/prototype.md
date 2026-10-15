@@ -110,21 +110,29 @@ flowchart itself from HTML boxes and SVG lines, with every label set as text:
 the main path runs downward in the first column, an early exit sits to the
 right of the node it leaves from, and edges that loop back are routed up the
 left side, so loops and exits never cross. Room for loops is reserved only when
-a chart has them, and a chart wider than its column is scaled down (to at least
-60%) so the whole flow stays visible; below that it scrolls sideways. A show
+a chart has them. A chart wider than its column is laid out again with fewer
+boxes per row, moving side exits below their source when necessary; only
+then is it scaled down, without a minimum scale. Charts fit the reading
+column (at most 860px) without horizontal or nested vertical scrollbars;
+the document scrolls vertically. Rows have more vertical room for arrows
+and labels, labels are positioned away from boxes and other labels, and
+fixed-size arrowheads meet straight path endings at the box boundary. A show
 node with nodes inside it holds a smaller flow laid out the same way, and
 boxes in its row line up with its top. Clicking a node inside it selects only
 that node's lines. No diagram library or HTML parsing is involved.
 
-Every function has an **AI explanation** section. Opening it,
+Every unexplained function has an **Explain** button beside its name. Pressing it,
 clicking the function name, or running **Open Preview to the Side** (the
 editor title-bar button) while text inside the function is selected is an
 explicit request (with a selection, an outdated, failed, or cancelled
 explanation is regenerated); with only a cursor, opening the preview never
 generates. For a request, the extension first looks
 for a current saved explanation (local only) and generates one only when none
-exists and the section is still open. Loading shows a spinner and can be
-cancelled. Several sections can be open, and up to
+exists. Explanations are always shown inline rather than in an accordion.
+Loading, including queued and prefetched requests, shows skeleton lines
+using the existing theme-aware shimmer (static with reduced motion), a
+status, and Cancel. Loading an extra format uses the same skeleton lines.
+**More detail** remains collapsible. Several explanations can load, and up to
 `downsideUp.maxConcurrentRequests` provider requests (default 3, 1–8, user
 settings only) run at once. Building or reviewing the repository overview is
 exclusive per repository, so parallel requests wait for it and reuse it
@@ -133,9 +141,11 @@ prompt per repository and model. Explicit requests always start before
 waiting prefetches. When the preview shows a file, it checks the local cache once for that
 file's functions and shows those with a current saved explanation, open,
 so saved explanations remain visible after the preview is closed and reopened
-or VS Code restarts; misses stay collapsed. Current explanations, saved or
-prefetched, open automatically unless the reader collapsed that section;
-outdated ones are not reopened. Repository and
+or VS Code restarts; misses retain their Explain button. Saved, generated,
+and prefetched explanations stay inline, with outdated, failed, and cancelled
+states and their existing Regenerate or Try again actions visible.
+When content above the reader changes, the preview preserves the visible entry's
+position, including after charts finish fitting. Repository and
 function context are gathered only for functions that have a saved record.
 Selecting non-empty text inside a function in the editor only checks for a
 fresh saved explanation and opens its section when one exists. A cache miss
@@ -164,8 +174,8 @@ explanation count toward the number, so at most that many are considered per
 function read. Prefetching starts after saved explanations are marked
 ready, fills the request slots explicit requests leave free (never the last
 one, unless the limit is 1), choosing the function nearest the reader each time
-a slot frees, opens each explanation when it is ready (unless the reader
-collapsed it), and does not regenerate outdated, failed, or cancelled
+a slot frees, shows skeletons while it loads and each explanation when ready,
+and does not regenerate outdated, failed, or cancelled
 explanations or functions added by later edits. Switching files drops
 prefetches that have not been sent; one already sent finishes and is saved.
 Closing the preview, Cancel, Clear Repository Cache, or turning the setting
@@ -173,8 +183,16 @@ off stops it. A failed request is retried once after a five-second pause,
 for example after a rate limit; a second failure stops prefetching with a
 notice. It runs only in a
 trusted workspace and only after code sharing was approved for the repository
-and model by an explicit explanation; it never asks for approval itself and
-shows a notice when it is waiting for one. When approval is given for the
+and model, including the separate overview model when configured; it never
+asks for approval itself. A persistent banner names the models still needing
+approval and offers **Approve sharing**: only that explicit click opens the
+existing per-repository, per-model dialog (without a token estimate, since no
+request has been assembled yet). Each missing model is approved separately;
+declining leaves the banner available and never retries the prompt automatically.
+Approval can also be given by an explicit explanation. The banner is separate
+from transient status notices and is hidden when prefetch is disabled, the
+file is excluded, the workspace is untrusted, or a folder is shown; model
+and repository changes recheck it without prompting. When approval is given for the
 shown file's repository (by explaining a function or mapping the project),
 prefetching that was waiting starts. Prefetching uses the provider's
 usage limits or billing for every function it explains.
@@ -197,7 +215,7 @@ confirms the number of functions; running the command is an explicit
 request, so if code sharing is not yet approved for the repository and model,
 the first function is explained as an ordinary request, which asks. The rest
 are explained like prefetching: with the free request slots (never the last
-one), keeping sections collapsed, never prompting, skipping functions with a
+one), showing explanations inline for the shown file, never prompting, skipping functions with a
 current explanation or an explicit request in progress, and in the file being
 read nearest the reader first, otherwise in path and line order. A failed
 function is retried once after five seconds; after three failures review
@@ -525,7 +543,13 @@ drawn edges in a row of their own, breaks cycles by depth-first search and
 routes their closing edges up the left, gives edges that skip rows an
 invisible waypoint in each row so they run between boxes, and orders rows with
 barycenter sweeps to reduce crossings. Arrows are spread along box edges and
-drawn thicker for more imports.
+drawn thicker for more imports. On resize, a wide diagram is rebuilt with a
+smaller real-box capacity per layer while keeping every forward edge downward;
+waypoints are recomputed for the new ranks and remain narrow routing lanes,
+not boxes counted toward that capacity. Unconnected and shared rows wrap.
+If the boxes and routing lanes still cannot fit, the whole diagram scales
+to the column. Diagram ResizeObservers are disconnected when the document
+is rendered again.
 
 Folder summaries are AI-generated only on an explicit **Summarize this
 folder** (or **Regenerate**) in the folder preview, which may ask for
@@ -818,7 +842,10 @@ same-named Rust methods in different `impl` blocks, document-ordered outlines,
 explanations requested by selecting text and opening the preview, preview creation, selection changes during an in-flight
 request, saved explanations listed as ready after closing and reopening the
 preview, steps that follow the cursor and select their lines when clicked, a flowchart
-added on request whose nodes follow the cursor and select their lines, prefetching that starts at the cursor, stays within its window, and
+added on request whose nodes follow the cursor and select their lines,
+the persistent prefetch approval state for separate explanation and overview
+models without starting generation, and clearing that state when prefetch is
+disabled or mock mode is selected, prefetching that starts at the cursor, stays within its window, and
 follows the cursor, prefetching of a called function in another package,
 saved-explanation hovers that appear only when an explanation is saved and
 never generate, a folder preview of the Go repository root (excluded

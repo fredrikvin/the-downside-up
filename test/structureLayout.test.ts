@@ -44,5 +44,38 @@ describe("structure diagram layout", () => {
   it("runs on its own, as the webview needs", () => {
     const standalone = new Function(`return (${structureLayout.toString()})`)() as typeof structureLayout;
     expect(standalone(graph(["a", "b"], [["a", "b"]])).rows).toEqual([["a"], ["b"]]);
+    expect(boxes(standalone(graph(["a", "b", "c"], [["a", "c"], ["b", "c"]]), 1).rows)).toEqual([["a"], ["b"], ["c"]]);
+  });
+
+  it("reflows wide layers without reversing forward edges or losing routes", () => {
+    const input = graph(
+      ["root", "a", "b", "c", "d", "a-end", "b-end", "c-end", "d-end"],
+      [["root", "a"], ["root", "b"], ["root", "c"], ["root", "d"],
+        ["a", "a-end"], ["b", "b-end"], ["c", "c-end"], ["d", "d-end"], ["d", "root"]]
+    );
+    for (const limit of [1, 2, 3]) {
+      const layout = structureLayout(input, limit);
+      const rows = new Map(layout.rows.flatMap((row, index) => row.map((id) => [id, index] as const)));
+      for (const row of layout.rows) expect(row.filter((id) => !id.startsWith("\u0001")).length).toBeLessThanOrEqual(limit);
+      expect([...rows.keys()].filter((id) => !id.startsWith("\u0001")).sort()).toEqual(input.nodes.map((node) => node.id).sort());
+      expect(layout.back).toEqual(["d\u0000root"]);
+      for (const edge of input.edges) {
+        const key = `${edge.from}\u0000${edge.to}`;
+        if (layout.back.includes(key)) continue;
+        const from = rows.get(edge.from)!;
+        const to = rows.get(edge.to)!;
+        expect(to).toBeGreaterThan(from);
+        expect((layout.routes[key] ?? []).map((id) => rows.get(id))).toEqual(
+          Array.from({ length: to - from - 1 }, (_, index) => from + index + 1)
+        );
+      }
+    }
+  });
+
+  it("normalizes an invalid row capacity without looping", () => {
+    const input = graph(["a", "b", "c"], [["a", "c"], ["b", "c"]]);
+    expect(structureLayout(input, 0)).toEqual(structureLayout(input, 1));
+    expect(structureLayout(input, -2)).toEqual(structureLayout(input, 1));
+    expect(structureLayout(input, NaN)).toEqual(structureLayout(input));
   });
 });

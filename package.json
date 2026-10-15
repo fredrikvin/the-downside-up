@@ -255,7 +255,7 @@
             "type": "boolean",
             "default": false,
             "scope": "application",
-            "markdownDescription": "Generate AI explanations in the background for functions in the file shown in the preview, starting where you are reading and spreading outward. Uses your provider and its usage limits or billing without a click per function. Runs only in trusted workspaces and only after code sharing was approved for the repository and model by explaining a function once; it never asks for approval itself. Can only be set in user settings.",
+            "markdownDescription": "Generate AI explanations in the background for functions in the file shown in the preview, starting where you are reading and spreading outward. Uses your provider and its usage limits or billing without a click per function. Runs only in trusted workspaces after code sharing was approved for the repository and model (and the overview model, if separate). The preview offers an Approve sharing button while waiting; you can also explain a function first. Background work never asks for approval on its own. Can only be set in user settings.",
             "order": 2
           },
           "downsideUp.prefetch.window": {
