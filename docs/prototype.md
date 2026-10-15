@@ -5,8 +5,12 @@
 The Downside Up helps people understand what code does without knowing the
 language. The side-by-side Downside Up preview reads like rendered Markdown.
 By default it is concise: the file name, an AI summary of the file (see
-below), and one heading per function or method in source order, with its doc
-comment. `downsideUp.preview.include` adds local descriptions of imports,
+below), and one heading per function or method in source order. Attached function
+and method doc comments are hidden by default; `downsideUp.preview.include.functionComments`
+shows them independently of standalone comments and function signature details.
+This is display-only: source outlines, generation context, and saved explanations
+are unchanged, and toggling it renders immediately without provider requests.
+`downsideUp.preview.include` adds local descriptions of imports,
 types (structs, enums, interfaces, traits, aliases, implementations, fields),
 values outside functions, locals, standalone comments, modules and macros, and
 each function's one-line signature description and notes; nesting is

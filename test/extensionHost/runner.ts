@@ -479,6 +479,22 @@ export async function run(): Promise<void> {
     async () => api.shownFolder() === undefined && api.shownOutline().some((entry) => entry.name === "FindAvailable") ? true : undefined,
     "opening a file to leave the folder preview"
   );
+  assert.ok(api.shownOutline().every((entry) => !entry.documentation), "Function comments are hidden in the default concise preview.");
+  const includeSettings = vscode.workspace.getConfiguration("downsideUp");
+  const previousInclude = includeSettings.inspect("preview.include")?.globalValue;
+  const beforeCommentToggle = api.allExplanations().length;
+  try {
+    await includeSettings.update("preview.include", { functionComments: true }, vscode.ConfigurationTarget.Global);
+    await waitFor(async () => api.shownOutline().find((entry) => entry.name === "FindAvailable")?.documentation
+      ? true : undefined, "function comments to appear after enabling the display setting");
+    assert.equal(api.allExplanations().length, beforeCommentToggle, "Showing comments does not request AI explanations.");
+    await includeSettings.update("preview.include", { functionComments: false }, vscode.ConfigurationTarget.Global);
+    await waitFor(async () => api.shownOutline().every((entry) => !entry.documentation)
+      ? true : undefined, "function comments to hide immediately");
+    assert.equal(api.allExplanations().length, beforeCommentToggle, "Hiding comments does not request AI explanations.");
+  } finally {
+    await includeSettings.update("preview.include", previousInclude, vscode.ConfigurationTarget.Global);
+  }
   await vscode.commands.executeCommand("workbench.action.closeActiveEditor");
   await vscode.window.showTextDocument(goDocument, goEditor.viewColumn);
   await waitFor(

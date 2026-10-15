@@ -12,6 +12,8 @@ export interface OutlineInclude {
   readonly locals: boolean;
   /** Standalone comments. */
   readonly comments: boolean;
+  /** Source documentation attached to functions and methods. */
+  readonly functionComments: boolean;
   /** Modules, packages, and macros. */
   readonly modules: boolean;
   /** The local one-line signature description and notes under each function. */
@@ -24,6 +26,7 @@ export const CONCISE_OUTLINE: OutlineInclude = {
   values: false,
   locals: false,
   comments: false,
+  functionComments: false,
   modules: false,
   functionDetails: false
 };
@@ -37,6 +40,7 @@ export function outlineInclude(value: unknown): OutlineInclude {
     values: flag("values"),
     locals: flag("locals"),
     comments: flag("comments"),
+    functionComments: flag("functionComments"),
     modules: flag("modules"),
     functionDetails: flag("functionDetails")
   };
@@ -49,7 +53,7 @@ function contains(outer: OutlineEntry, inner: OutlineEntry): boolean {
 /**
  * Keeps the entries the settings ask for, in order, and re-indents each by
  * the number of visible entries that enclose it. Functions are always kept;
- * without `functionDetails`, their local description and notes are dropped.
+ * Their local details and attached documentation have independent display flags.
  */
 export function visibleOutline(entries: readonly OutlineEntry[], include: OutlineInclude): OutlineEntry[] {
   const ancestors: OutlineEntry[] = [];
@@ -78,6 +82,7 @@ export function visibleOutline(entries: readonly OutlineEntry[], include: Outlin
       visible.push({
         ...entry,
         depth,
+        ...(entry.kind === "function" && !include.functionComments ? { documentation: undefined } : {}),
         ...(detailed ? {} : { description: [], notes: [] })
       });
       visibleIds.add(entry.id);

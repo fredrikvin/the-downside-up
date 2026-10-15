@@ -24,6 +24,7 @@ const source = [
   "",
   "// A standalone comment.",
   "",
+  "// Grow increases the size of the box.",
   "func (b *Box) Grow(by int) int {",
   "\tnext := b.size + by",
   "\treturn next",
@@ -47,12 +48,13 @@ describe("concise outline", () => {
       ["Function", "Show", 0]
     ]);
     expect(visible.every((entry) => entry.description.length === 0 && entry.notes.length === 0)).toBe(true);
+    expect(visible.every((entry) => entry.documentation === undefined)).toBe(true);
   });
 
   it("adds each kind of detail on request and keeps nesting relative to visible items", async () => {
     const all = await entries();
     const everything = visibleOutline(all, outlineInclude({
-      imports: true, types: true, values: true, locals: true, comments: true, modules: true, functionDetails: true
+      imports: true, types: true, values: true, locals: true, comments: true, functionComments: true, modules: true, functionDetails: true
     }));
     expect(everything.map((entry) => [entry.kindLabel, entry.depth])).toEqual(all.map((entry) => [entry.kindLabel, entry.depth]));
     expect(everything.find((entry) => entry.name === "Grow")!.description.length).toBeGreaterThan(0);
@@ -71,6 +73,22 @@ describe("concise outline", () => {
   it("treats missing or invalid settings as concise", () => {
     expect(outlineInclude(undefined)).toEqual(CONCISE_OUTLINE);
     expect(outlineInclude({ imports: "yes" })).toEqual(CONCISE_OUTLINE);
+    expect(outlineInclude({ functionComments: "yes" })).toEqual(CONCISE_OUTLINE);
+  });
+
+  it("toggles attached function comments independently without changing the source outline", async () => {
+    const all = await entries();
+    const original = all.find((entry) => entry.name === "Grow")!;
+    expect(original.documentation).toBe("Grow increases the size of the box.");
+    const shown = visibleOutline(all, outlineInclude({ functionComments: true }));
+    expect(shown.find((entry) => entry.name === "Grow")!.documentation).toBe(original.documentation);
+    expect(shown.every((entry) => entry.description.length === 0 && entry.notes.length === 0)).toBe(true);
+    expect(shown.some((entry) => entry.kind === "comment")).toBe(false);
+    const hidden = visibleOutline(all, outlineInclude({ comments: true, functionDetails: true }));
+    expect(hidden.find((entry) => entry.name === "Grow")!.documentation).toBeUndefined();
+    expect(hidden.some((entry) => entry.kind === "comment")).toBe(true);
+    expect(original.documentation).toBe("Grow increases the size of the box.");
+    expect(visibleOutline(all, outlineInclude({ functionComments: true }))).toEqual(shown);
   });
 });
 

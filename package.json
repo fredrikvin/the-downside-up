@@ -115,6 +115,10 @@
                 "type": "boolean",
                 "description": "Standalone comments."
               },
+              "functionComments": {
+                "type": "boolean",
+                "description": "Source doc comments attached to functions and methods. Display only; comments remain available as AI context when hidden."
+              },
               "modules": {
                 "type": "boolean",
                 "description": "Modules, packages, and macros."
@@ -131,6 +135,7 @@
               "values": false,
               "locals": false,
               "comments": false,
+              "functionComments": false,
               "modules": false,
               "functionDetails": false
             },

@@ -3384,7 +3384,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     },
     explanationOf: (functionName: string) =>
       previewStates().find(({ state }) => state.view.functionName === functionName)?.state.view.explanation,
-    shownOutline: () => shownEntries().map((entry) => ({ kindLabel: entry.kindLabel, name: entry.name })),
+    shownOutline: () => shownEntries().map((entry) => ({ kindLabel: entry.kindLabel, name: entry.name, documentation: entry.documentation })),
     fileSummary: () => fileSummary && preview && fileSummary.uri === preview.document.uri.toString()
       ? { text: fileSummary.text, current: fileSummary.current }
       : undefined,
@@ -3464,7 +3464,7 @@ export interface DownsideUpTestApi {
   previewExplanations(): Array<{ functionName: string; status: string }>;
   prefetchApproval(): string[] | undefined;
   allExplanations(): Array<{ functionName: string; status: string; path: string; error?: string }>;
-  shownOutline(): Array<{ kindLabel: string; name: string }>;
+  shownOutline(): Array<{ kindLabel: string; name: string; documentation?: string }>;
   stepHighlight(): { functionName: string; steps: number[]; pseudocode: number[]; nodes: number[] } | undefined;
   revealStep(functionName: string, index: number, kind?: LinkedKind): Promise<void>;
   revealedLines(): { start: number; end: number } | undefined;
