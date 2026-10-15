@@ -337,6 +337,15 @@ team/app
 tools/*
 ```
 
+### Request size
+
+**Max Request Size** (`downsideUp.maxRequestSize`, default 96 KiB, 32 to
+512) caps each explanation, added view, file or folder summary, and main
+flows request. A request that would be larger is not sent, and the error
+says how large it would be. Raise it for very large functions with much
+related code; lower it to cap what each request costs. The model's own input
+limit still applies, and mapping the project has its own limit of 128 KiB.
+
 ### Prefetching (optional)
 
 By default, explanations are generated only when you ask for one. To have them

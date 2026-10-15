@@ -345,6 +345,10 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       }
       return new OpenAIProvider(descriptor.modelId, key);
     },
+    maxRequestBytes: () => {
+      const kib = vscode.workspace.getConfiguration("downsideUp").get<number>("maxRequestSize", 96);
+      return (typeof kib === "number" && Number.isFinite(kib) ? Math.min(512, Math.max(32, Math.round(kib))) : 96) * 1024;
+    },
     projectMapDetail: (): ProjectMapDetail =>
       vscode.workspace.getConfiguration("downsideUp").get<string>("projectMap.detail", "brief") === "detailed" ? "detailed" : "brief",
     explanationFormats: () => {

@@ -344,6 +344,24 @@ describe("ExplanationService", () => {
     expect(provider.requests).toBe(calls + 2);
   });
 
+  it("sends nothing when an explanation request is over the size limit, and says which setting raises it", async () => {
+    const provider = new MockProvider();
+    const store = new MemoryRepositoryCacheStore();
+    let limit = 8 * 1024;
+    const service = new ExplanationService({
+      store,
+      describeProvider: () => ({ kind: "mock", modelId: provider.modelId }),
+      createProvider: async () => provider,
+      authorizeExternalData: async () => true,
+      maxRequestBytes: () => limit
+    });
+    const large = { ...target(), source: `export function checkout() {\n${"  catalog.find(title);\n".repeat(400)}}` } as FunctionTarget;
+    await expect(service.explain(root, large, fakeDocument)).rejects.toThrow(/about \d+ KiB, more than the 8 KiB limit; no code was sent\. Raise “Downside Up: Max Request Size”/);
+    expect(provider.requests).toBe(0);
+    limit = 64 * 1024;
+    expect((await service.explain(root, large, fakeDocument)).cached).toBe(false);
+  });
+
   it("maps the project while priming and saves the map apart from the overview", async () => {
     const provider = new MockProvider();
     const store = new MemoryRepositoryCacheStore();

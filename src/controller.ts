@@ -121,11 +121,24 @@ export interface ExplanationServiceOptions {
   readonly explanationFormats?: () => readonly ExplanationFormat[];
   /** How much the project map describes each component; brief when omitted. */
   readonly projectMapDetail?: () => ProjectMapDetail;
+  /** The largest explanation, added view, summary, or flows request, in bytes; DEFAULT_MAX_REQUEST_BYTES when omitted. */
+  readonly maxRequestBytes?: () => number;
+}
+
+/** Default limit for every request but priming, which has its own. */
+export const DEFAULT_MAX_REQUEST_BYTES = 96 * 1024;
+
+const kib = (bytes: number): string => `${Math.ceil(bytes / 1024)} KiB`;
+
+/** Why a request was not sent, naming its size, the limit, and the setting that changes it. */
+function tooLarge(what: string, bytes: number, limit: number): Error {
+  return new Error(
+    `The ${what} request would be about ${kib(bytes)}, more than the ${kib(limit)} limit; no code was sent. Raise “Downside Up: Max Request Size” (downsideUp.maxRequestSize) to send it.`
+  );
 }
 
 /** Priming holds the bounded inventory, symbol and folder outlines, and, when reviewing, the previous overview and map. */
 const MAX_PRIMING_BYTES = 128 * 1024;
-const MAX_EXPLANATION_BYTES = 48 * 1024;
 const MAX_FILE_SUMMARY_SOURCE_BYTES = 24 * 1024;
 
 function fileSummaryKey(path: string, descriptor: ProviderDescriptor): string {
@@ -472,12 +485,11 @@ export class ExplanationService {
       const baseInventory = await gatherInventory(root, cache.overview?.checkedSnapshot);
       const inventory = await addLocalSymbolOutline(baseInventory);
       const context = await gatherFunctionContext(target, document, inventory);
-      if (
-        Buffer.byteLength(inventory.inventoryText, "utf8") > MAX_PRIMING_BYTES ||
-        Buffer.byteLength(context.text, "utf8") > MAX_EXPLANATION_BYTES
-      ) {
-        throw new Error("Selected source context exceeds the prototype's request-size limit; no code was sent.");
+      if (Buffer.byteLength(inventory.inventoryText, "utf8") > MAX_PRIMING_BYTES) {
+        throw new Error("Repository inventory exceeds the priming budget; no code was sent.");
       }
+      const contextBytes = Buffer.byteLength(context.text, "utf8") + Buffer.byteLength(target.source, "utf8");
+      if (contextBytes > this.maxRequestBytes()) throw tooLarge("explanation", contextBytes, this.maxRequestBytes());
       assertNotCancelled(signal);
       // A current saved explanation is returned without reviewing the overview first.
       if (cache.overview && isCurrent(cache.explanations[key], context.inputs)) {
@@ -554,9 +566,7 @@ export class ExplanationService {
     };
     const [systemPrompt, userPrompt] = explanationPrompt(prompt);
     const explanationBytes = Buffer.byteLength(systemPrompt + userPrompt, "utf8");
-    if (explanationBytes > MAX_EXPLANATION_BYTES) {
-      throw new Error("The complete explanation request exceeds 48 KiB; no code was sent.");
-    }
+    if (explanationBytes > this.maxRequestBytes()) throw tooLarge("explanation", explanationBytes, this.maxRequestBytes());
     const generated = await providerCallForRequest(
       explanationBytes,
       (provider) => provider.explainFunction(prompt, signal)
@@ -628,6 +638,12 @@ export class ExplanationService {
   ): Promise<{ overview: RepositoryOverview; usage: Usage }> {
     // Exclusive with explanations' overview phase, so the overview is never rebuilt twice at once.
     return this.exclusive(root, () => this.refreshRepositoryContextNow(root, signal, onProgress));
+  }
+
+  /** The size limit for every request but priming. */
+  private maxRequestBytes(): number {
+    const limit = this.options.maxRequestBytes?.();
+    return limit !== undefined && Number.isFinite(limit) && limit > 0 ? limit : DEFAULT_MAX_REQUEST_BYTES;
   }
 
   /** The model for the repository overview and folder summaries. */
@@ -787,9 +803,7 @@ export class ExplanationService {
     };
     const [system, user] = formatPrompt(input);
     const requestBytes = Buffer.byteLength(system + user, "utf8");
-    if (requestBytes > MAX_EXPLANATION_BYTES) {
-      throw new Error("The function is too large for this view; no code was sent.");
-    }
+    if (requestBytes > this.maxRequestBytes()) throw tooLarge(input.format, requestBytes, this.maxRequestBytes());
     assertNotCancelled(signal);
     if (descriptor.kind !== "mock" && !(await this.options.authorizeExternalData(root, descriptor, requestBytes, signal))) {
       throw new DOMException("External code sharing was not authorized.", "AbortError");
@@ -886,7 +900,7 @@ export class ExplanationService {
     if (restricted) throw new Error(`Nothing was sent because ${restricted}.`);
     const [system, user] = request.kind === "parts" ? partFlowsPrompt(request.input) : projectFlowsPrompt(request.input);
     const requestBytes = Buffer.byteLength(system + user, "utf8");
-    if (requestBytes > MAX_EXPLANATION_BYTES) throw new Error("The folder has too much to describe in one request; nothing was sent.");
+    if (requestBytes > this.maxRequestBytes()) throw tooLarge("flows", requestBytes, this.maxRequestBytes());
     assertNotCancelled(signal);
     if (descriptor.kind !== "mock" && !(await this.options.authorizeExternalData(root, descriptor, requestBytes, signal))) {
       throw new DOMException("External code sharing was not authorized.", "AbortError");
@@ -950,7 +964,7 @@ export class ExplanationService {
     const prompt: FolderSummaryPromptInput = { ...input, ...(repositoryPurpose ? { repositoryPurpose } : {}) };
     const [system, user] = folderSummaryPrompt(prompt);
     const requestBytes = Buffer.byteLength(system + user, "utf8");
-    if (requestBytes > MAX_EXPLANATION_BYTES) throw new Error("The folder has too much to summarize in one request; nothing was sent.");
+    if (requestBytes > this.maxRequestBytes()) throw tooLarge("folder summary", requestBytes, this.maxRequestBytes());
     assertNotCancelled(signal);
     if (descriptor.kind !== "mock" && !(await this.options.authorizeExternalData(root, descriptor, requestBytes, signal))) {
       throw new DOMException("External code sharing was not authorized.", "AbortError");
@@ -1029,7 +1043,7 @@ export class ExplanationService {
     };
     const [system, user] = fileSummaryPrompt(input);
     const requestBytes = Buffer.byteLength(system + user, "utf8");
-    if (requestBytes > MAX_EXPLANATION_BYTES) return undefined;
+    if (requestBytes > this.maxRequestBytes()) return undefined;
     assertNotCancelled(signal);
     if (descriptor.kind !== "mock" && !(await this.options.authorizeExternalData(root, descriptor, requestBytes, signal))) {
       throw new DOMException("External code sharing was not authorized.", "AbortError");

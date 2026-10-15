@@ -259,13 +259,13 @@ export async function gatherFunctionContext(
     contextSnippets.set(`${path}\0${description}`, `--- ${path} (${description}) ---\n${text}`);
   };
 
-  addInput(
-    targetPath,
-    `selected ${target.qualifiedName}`,
-    target.source,
-    target.structuralFingerprint,
-    { depth: 0 }
-  );
+  // The function itself is tracked here but sent once, as the numbered source the prompt explains.
+  inputs.push({
+    path: targetPath,
+    description: `selected ${target.qualifiedName}`,
+    fingerprint: target.structuralFingerprint,
+    depth: 0
+  });
 
   const language = languageFor({ languageId: target.languageId, path: targetPath });
   const request = dependencyRequest(target, targetPath, document, inventory, {

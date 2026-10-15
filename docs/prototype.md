@@ -326,8 +326,14 @@ configuration. Explaining another function in an unchanged repository reuses the
 same overview; a bounded review/re-prime happens only when tracked repository
 changes make the existing overview potentially stale.
 Priming and explanation inputs are bounded by byte budgets; the complete
-priming/review request is limited to 128 KiB and the complete explanation request
-to 48 KiB. The scanner lists at most 2,000 eligible files, breadth-first, so
+priming/review request is limited to 128 KiB. Every other request (an
+explanation, an added view, a file or folder summary, or main flows) is
+limited by `downsideUp.maxRequestSize` (user settings only; default 96 KiB,
+32 to 512 KiB), checked before anything is sent; a larger request fails with
+its size, the limit, and the setting's name. The selected function is sent
+once, as the numbered source to explain, and not again among the related
+code, although it is still tracked there. For VS Code language models, the
+model's own input-token limit is checked as well. The scanner lists at most 2,000 eligible files, breadth-first, so
 in a larger repository every area is listed at its top levels rather than
 only the first folders in alphabetical order (the walk also stops after
 50,000 folder entries), and excludes files over 256 KiB. Listing only uses

@@ -77,6 +77,9 @@ describe("Rust function context across files", () => {
       ["src/storage.rs", "function persist", 1, "body"]
     ]);
     expect(context.text).toContain("--- src/storage.rs (function persist) ---\npub fn persist(book: &Book)");
+    // The function is tracked but sent once, as the source the prompt explains.
+    expect(context.inputs[0]).toMatchObject({ path: "src/main.rs", description: "selected checkout", depth: 0 });
+    expect(context.text).not.toContain("(selected checkout)");
   });
 
   it("reads the files it uses on demand, even ones priming did not read", async () => {
