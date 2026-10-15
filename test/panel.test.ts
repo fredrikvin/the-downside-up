@@ -85,6 +85,9 @@ describe("preview webview document", () => {
     expect(html).toContain('class="tool-button danger"');
     expect(html).toContain('post({ type: "regenerateOutdated" })');
     expect(html).toContain('button.addEventListener("click", () => post({ type }))');
+    expect(html.indexOf('<button id="chooseOverviewModel"')).toBeLessThan(html.indexOf('<button id="chooseModel"'));
+    expect(html).toContain('background: transparent; border: 0;');
+    expect(html).toContain('button:not(:disabled):is(:hover, :focus-visible, :active)');
   });
 
   it("shows both model roles, saved counts, scoped outdated status, and an explicit batch action", () => {
@@ -99,6 +102,10 @@ describe("preview webview document", () => {
     expect(element("chooseOverviewModel").title).toContain("Project priming and repository context reviews");
     expect(element("chooseOverviewModel").title).toContain("folder summaries, and main flows");
     expect(element("chooseOverviewModel").attributes.get("aria-label")).toBe("Choose project overview model; current: Strong");
+    expect(element("modelsIcon").elements().filter((node) => node.tagName === "svg")).toHaveLength(1);
+    for (const id of ["chooseOverviewModel", "chooseModel"]) {
+      expect(element(id).elements().filter((node) => node.tagName === "svg")).toHaveLength(1);
+    }
     const stats = element("stats").elements();
     expect(stats.map((node) => node.textContent)).toEqual(expect.arrayContaining(["12 explanations", "1 file summary", "2 folder summaries", "3 flow sets", "2 outdated in this file"]));
     expect(stats.find((node) => node.id === "regenerateOutdated")?.disabled).toBe(false);

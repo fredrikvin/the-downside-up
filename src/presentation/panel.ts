@@ -241,24 +241,26 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
     .muted { color: var(--vscode-descriptionForeground); }
     .small { font-size: .85em; }
     [hidden] { display: none !important; }
-    .header { container-type: inline-size; padding: 12px 0 10px; margin-bottom: 12px; border-bottom: 1px solid var(--separator); }
-    .toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 12px; }
+    .header { container-type: inline-size; padding: 8px 0; margin-bottom: 10px; border-bottom: 1px solid var(--separator); }
+    .toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; font-size: 12px; }
     .toolbar .spacer { flex: 1; }
-    .header button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; font: inherit; color: var(--vscode-button-secondaryForeground, var(--vscode-editor-foreground)); background: var(--vscode-button-secondaryBackground, rgba(128,128,128,.12)); border: 1px solid var(--vscode-contrastBorder, transparent); border-radius: 5px; padding: 5px 9px; cursor: pointer; min-height: 30px; box-sizing: border-box; }
-    .header button:hover { background: var(--vscode-button-secondaryHoverBackground, rgba(128,128,128,.22)); }
+    .header button { display: inline-flex; align-items: center; justify-content: center; gap: 5px; font: inherit; color: inherit; background: transparent; border: 0; border-radius: 4px; padding: 3px 6px; cursor: pointer; min-height: 28px; box-sizing: border-box; }
+    .header button:not(:disabled):is(:hover, :focus-visible, :active) { background: var(--vscode-toolbar-hoverBackground, rgba(128,128,128,.14)); }
     .header button:disabled { opacity: .5; cursor: default; }
-    .header .danger { color: var(--vscode-errorForeground, #c33); border-color: var(--vscode-inputValidation-errorBorder, var(--vscode-errorForeground, #c33)); background: transparent; }
-    .model-selectors { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; flex: 1 1 400px; min-width: 0; max-width: 640px; }
-    .header .model-button { min-width: 0; text-align: left; padding: 7px 10px; gap: 8px; }
-    .model-copy { display: flex; flex-direction: column; flex: 1; min-width: 0; line-height: 1.4; }
-    .model-role { font-size: 11px; color: var(--vscode-descriptionForeground); }
-    .model-name { font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }
+    .header .danger:not(:disabled):is(:hover, :focus-visible, :active) { color: var(--vscode-errorForeground, #c33); }
+    .model-selectors { display: flex; align-items: center; gap: 4px; min-width: 0; max-width: 100%; }
+    .model-options { display: flex; flex-wrap: wrap; gap: 0 6px; min-width: 0; }
+    .header .model-button { min-width: 0; max-width: 100%; text-align: left; }
+    .model-copy { display: flex; flex-wrap: wrap; gap: 0 5px; min-width: 0; line-height: 1.5; }
+    .model-role { color: var(--vscode-descriptionForeground); }
+    .model-name { font-weight: 500; overflow-wrap: anywhere; min-width: 0; }
+    #modelsIcon { display: inline-flex; flex: none; color: var(--vscode-descriptionForeground); }
     .icon { width: 16px; height: 16px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.25; stroke-linecap: round; stroke-linejoin: round; vertical-align: middle; }
-    .stats { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; margin-top: 8px; font-size: 11px; color: var(--vscode-descriptionForeground); }
+    .stats { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; margin-top: 4px; font-size: 11px; color: var(--vscode-descriptionForeground); }
     .stats .outdated { color: var(--vscode-editorWarning-foreground, var(--vscode-descriptionForeground)); }
     .stats button { font-size: 11px; padding: 2px 6px; min-height: 24px; }
-    @container (max-width: 600px) { .model-selectors { flex-basis: 100%; max-width: none; } .toolbar .spacer { display: none; } }
-    @container (max-width: 420px) { .toolbar .btn-label { display: none; } .toolbar .tool-button { width: 32px; padding: 6px; } .model-selectors { grid-template-columns: minmax(0, 1fr); } }
+    @container (max-width: 600px) { .toolbar .spacer { display: none; } }
+    @container (max-width: 420px) { .toolbar .btn-label { display: none; } .toolbar .tool-button { width: 28px; padding: 6px; } .model-options { flex-direction: column; } }
     .notice { margin: 8px 0 0; font-size: .9em; white-space: pre-line; }
     .notice.error, .error { color: var(--vscode-errorForeground); }
     .entry { position: relative; margin: 0; padding: 0 0 2px 12px; border-left: 2px solid transparent; }
@@ -424,8 +426,11 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
   <header class="header">
     <nav class="toolbar" aria-label="Downside Up actions">
       <div class="model-selectors" role="group" aria-label="AI models">
-        <button id="chooseModel" class="model-button" type="button" aria-label="Choose function explanation model"></button>
-        <button id="chooseOverviewModel" class="model-button" type="button" aria-label="Choose project overview model"></button>
+        <span id="modelsIcon" aria-hidden="true"></span>
+        <div class="model-options">
+          <button id="chooseOverviewModel" class="model-button" type="button" aria-label="Choose project overview model"></button>
+          <button id="chooseModel" class="model-button" type="button" aria-label="Choose function explanation model"></button>
+        </div>
       </div>
       <span class="spacer"></span>
       <button id="cancel" class="tool-button" type="button" title="Cancel requests" aria-label="Cancel requests" hidden><span class="btn-label">Cancel</span></button>
@@ -564,15 +569,16 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
       const modelKey = JSON.stringify([next.provider, models]);
       if (modelKey !== renderedModels) {
         renderedModels = modelKey;
-        for (const [id, role, name, glyph, purpose] of [
-          ["chooseModel", "Functions", models.explanation, "model", "Function explanations, added explanation formats, and file summaries."],
-          ["chooseOverviewModel", "Project overview", models.overview || models.explanation, "project", "Project priming and repository context reviews, architecture maps, folder summaries, and main flows."]
+        byId("modelsIcon").replaceChildren(icon("model"));
+        for (const [id, role, name, purpose] of [
+          ["chooseOverviewModel", "Project overview", models.overview || models.explanation, "Project priming and repository context reviews, architecture maps, folder summaries, and main flows."],
+          ["chooseModel", "Functions", models.explanation, "Function explanations, added explanation formats, and file summaries."]
         ]) {
           const button = byId(id);
           const model = next.provider === "mock" ? "Mock mode" : name;
           const copy = el("span", "model-copy");
           copy.append(el("span", "model-role", role), el("span", "model-name", model));
-          button.replaceChildren(icon(glyph), copy, icon("chevron"));
+          button.replaceChildren(copy, icon("chevron"));
           button.title = role + ": " + model + "\\n" + purpose + "\\nClick to change model";
           button.setAttribute("aria-label", "Choose " + role.toLowerCase() + " model; current: " + model);
         }

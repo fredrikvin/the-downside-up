@@ -158,14 +158,17 @@ and marked outdated when their recorded inputs no longer match.
 The preview header has two separate buttons opening their model pickers
 directly: **Functions** (function explanations, added explanation formats, and
 file summaries) and **Project overview** (project priming, repository context
-reviews, architecture maps, folder summaries, and main flows). Each shows its
-role above its model name, including when both use the same model. Names wrap
-and buttons stack in narrow columns without hiding either role. Tooltips
+reviews, architecture maps, folder summaries, and main flows). A single sparkle
+icon groups both controls, with **Project overview** first. Each shows its role
+beside its model name on a compact line, including when both use the same model.
+Names wrap and buttons stack in narrow columns without hiding either role. Tooltips
 describe the responsibilities, rather than calling project-level work only
 "map". Changing a model still uses the existing settings and consent rules.
 Refresh context and Clear cache are
 native icon-and-label buttons, collapsing to labelled-for-accessibility icons
-in narrow columns; Clear has a danger outline and keeps its modal confirmation.
+in narrow columns. Header buttons are borderless and transparent at rest, with
+background highlighting on hover, keyboard focus, or press; Clear also turns red
+on interaction and keeps its modal confirmation. Keyboard focus retains its outline.
 Icons are fixed inline SVG paths, with no font, asset, or CSP changes.
 
 Local header statistics count saved explanation, file-summary, folder-summary,
