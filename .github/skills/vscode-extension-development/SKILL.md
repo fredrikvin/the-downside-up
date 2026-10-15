@@ -63,3 +63,8 @@ contract and project-specific constraints.
 3. Run `npm run package` for package changes. Verify the VSIX includes the
    external `web-tree-sitter` dependency and required WASM assets but excludes
    fixtures, test code, development files, and credentials.
+4. Never repackage a version that was already built. For a build to install
+   or test, increment the version first with
+   `npm version <x.y.z> --no-git-tag-version` (patch for fixes, minor for new
+   features or settings), update the install line in `README.md`, package,
+   and commit the bump separately as `Release <x.y.z>`.

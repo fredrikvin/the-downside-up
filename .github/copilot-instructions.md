@@ -55,5 +55,13 @@ behavior.
   `npm test`, `npm run test:extension`, and `npm run package` when changes
   affect their corresponding layers. Keep production dependencies in the
   VSIX: Tree-sitter's runtime is external to the bundle.
+- Never rebuild a VSIX under a version number that was already packaged.
+  When a build is meant for installing or testing, first increment the
+  version with `npm version <x.y.z> --no-git-tag-version` (a patch for fixes,
+  a minor version for new features or settings), update the
+  `code --install-extension the-downside-up-<x.y.z>.vsix` line in
+  `README.md`, then run `npm run package`. Commit the bump separately as
+  `Release <x.y.z>` (changing only `package.json`, `package-lock.json`, and
+  `README.md`), after the commits with the changes it ships.
 - Update `README.md` and `docs/prototype.md` when setup, privacy, cache
   behavior, supported tooling, or limitations change.
