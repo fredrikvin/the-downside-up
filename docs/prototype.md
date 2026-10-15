@@ -155,9 +155,15 @@ prefetching (below). After edits, file changes,
 or a model change, open explanations are rechecked against the cache locally
 and marked outdated when their recorded inputs no longer match.
 
-The preview header has a model chip opening a choice between the explanation
-and overview/project-map model pickers. It shows the separate overview model
-when different; the tooltip names both. Refresh context and Clear cache are
+The preview header has two separate buttons opening their model pickers
+directly: **Functions** (function explanations, added explanation formats, and
+file summaries) and **Project overview** (project priming, repository context
+reviews, architecture maps, folder summaries, and main flows). Each shows its
+role above its model name, including when both use the same model. Names wrap
+and buttons stack in narrow columns without hiding either role. Tooltips
+describe the responsibilities, rather than calling project-level work only
+"map". Changing a model still uses the existing settings and consent rules.
+Refresh context and Clear cache are
 native icon-and-label buttons, collapsing to labelled-for-accessibility icons
 in narrow columns; Clear has a danger outline and keeps its modal confirmation.
 Icons are fixed inline SVG paths, with no font, asset, or CSP changes.

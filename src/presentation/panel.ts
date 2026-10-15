@@ -187,7 +187,8 @@ export type PanelAction =
   | { readonly type: "describeFlows" }
   | { readonly type: "refreshContext" }
   | { readonly type: "clearCache" }
-  | { readonly type: "chooseModels" }
+  | { readonly type: "chooseModel" }
+  | { readonly type: "chooseOverviewModel" }
   | { readonly type: "regenerateOutdated" }
   | { readonly type: "navigate"; readonly referenceId: string }
   | { readonly type: "revealLine"; readonly line: number }
@@ -247,15 +248,17 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
     .header button:hover { background: var(--vscode-button-secondaryHoverBackground, rgba(128,128,128,.22)); }
     .header button:disabled { opacity: .5; cursor: default; }
     .header .danger { color: var(--vscode-errorForeground, #c33); border-color: var(--vscode-inputValidation-errorBorder, var(--vscode-errorForeground, #c33)); background: transparent; }
-    .header .model-chip { min-width: 0; max-width: 100%; text-align: left; }
-    .model-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .map-model { color: var(--vscode-descriptionForeground); }
+    .model-selectors { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; flex: 1 1 400px; min-width: 0; max-width: 640px; }
+    .header .model-button { min-width: 0; text-align: left; padding: 7px 10px; gap: 8px; }
+    .model-copy { display: flex; flex-direction: column; flex: 1; min-width: 0; line-height: 1.4; }
+    .model-role { font-size: 11px; color: var(--vscode-descriptionForeground); }
+    .model-name { font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }
     .icon { width: 16px; height: 16px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.25; stroke-linecap: round; stroke-linejoin: round; vertical-align: middle; }
     .stats { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; margin-top: 8px; font-size: 11px; color: var(--vscode-descriptionForeground); }
     .stats .outdated { color: var(--vscode-editorWarning-foreground, var(--vscode-descriptionForeground)); }
     .stats button { font-size: 11px; padding: 2px 6px; min-height: 24px; }
-    @container (max-width: 600px) { .model-chip { flex-basis: 100%; } .toolbar .spacer { display: none; } }
-    @container (max-width: 420px) { .toolbar .btn-label { display: none; } .toolbar .tool-button { width: 32px; padding: 6px; } .map-model { display: none; } }
+    @container (max-width: 600px) { .model-selectors { flex-basis: 100%; max-width: none; } .toolbar .spacer { display: none; } }
+    @container (max-width: 420px) { .toolbar .btn-label { display: none; } .toolbar .tool-button { width: 32px; padding: 6px; } .model-selectors { grid-template-columns: minmax(0, 1fr); } }
     .notice { margin: 8px 0 0; font-size: .9em; white-space: pre-line; }
     .notice.error, .error { color: var(--vscode-errorForeground); }
     .entry { position: relative; margin: 0; padding: 0 0 2px 12px; border-left: 2px solid transparent; }
@@ -420,7 +423,10 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
 <body>
   <header class="header">
     <nav class="toolbar" aria-label="Downside Up actions">
-      <button id="chooseModels" class="model-chip" type="button" title="Choose explanation or overview model" aria-label="Choose explanation or overview model"></button>
+      <div class="model-selectors" role="group" aria-label="AI models">
+        <button id="chooseModel" class="model-button" type="button" aria-label="Choose function explanation model"></button>
+        <button id="chooseOverviewModel" class="model-button" type="button" aria-label="Choose project overview model"></button>
+      </div>
       <span class="spacer"></span>
       <button id="cancel" class="tool-button" type="button" title="Cancel requests" aria-label="Cancel requests" hidden><span class="btn-label">Cancel</span></button>
       <button id="refreshContext" class="tool-button" type="button" title="Refresh repository context and project map; may send code to the overview model" aria-label="Refresh repository context"><span class="btn-label">Refresh context</span></button>
@@ -555,16 +561,21 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
 
     function renderHeader(next) {
       const models = next.models;
-      const chip = byId("chooseModels");
       const modelKey = JSON.stringify([next.provider, models]);
       if (modelKey !== renderedModels) {
         renderedModels = modelKey;
-        const label = el("span", "model-label", next.provider === "mock" ? "Mock mode" : models.explanation);
-        if (next.provider !== "mock" && models.overview && models.overview !== models.explanation) {
-          label.append(el("span", "map-model", " · map: " + models.overview));
+        for (const [id, role, name, glyph, purpose] of [
+          ["chooseModel", "Functions", models.explanation, "model", "Function explanations, added explanation formats, and file summaries."],
+          ["chooseOverviewModel", "Project overview", models.overview || models.explanation, "project", "Project priming and repository context reviews, architecture maps, folder summaries, and main flows."]
+        ]) {
+          const button = byId(id);
+          const model = next.provider === "mock" ? "Mock mode" : name;
+          const copy = el("span", "model-copy");
+          copy.append(el("span", "model-role", role), el("span", "model-name", model));
+          button.replaceChildren(icon(glyph), copy, icon("chevron"));
+          button.title = role + ": " + model + "\\n" + purpose + "\\nClick to change model";
+          button.setAttribute("aria-label", "Choose " + role.toLowerCase() + " model; current: " + model);
         }
-        chip.replaceChildren(icon("model"), label, icon("chevron"));
-        chip.title = (next.provider === "mock" ? "Mock mode (placeholder output)" : "Explanations: " + models.explanation + "\\nOverview & project map: " + (models.overview || models.explanation)) + "\\nClick to choose either model";
       }
       byId("cancel").hidden = !next.busy;
       byId("refreshContext").hidden = !next.hasRepository;
@@ -1806,7 +1817,7 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
         if (message.reveal === true) revealActive();
       }
     });
-    for (const [id, type, glyph] of [["chooseModels", "chooseModels"], ["cancel", "cancel", "cancel"], ["refreshContext", "refreshContext", "refresh"], ["clearCache", "clearCache", "clear"]]) {
+    for (const [id, type, glyph] of [["chooseModel", "chooseModel"], ["chooseOverviewModel", "chooseOverviewModel"], ["cancel", "cancel", "cancel"], ["refreshContext", "refreshContext", "refresh"], ["clearCache", "clearCache", "clear"]]) {
       const button = byId(id);
       if (glyph) button.prepend(icon(glyph));
       button.addEventListener("click", () => post({ type }));
@@ -1859,7 +1870,7 @@ export class ExplanationPanel {
         const type = fields.type;
         if (type === "ready") {
           this.replay();
-        } else if (type === "cancel" || type === "refreshContext" || type === "clearCache" || type === "chooseModels" || type === "regenerateOutdated" || type === "summarizeFolder" || type === "summarizeTree" || type === "describeFlows" || type === "approveSharing") {
+        } else if (type === "cancel" || type === "refreshContext" || type === "clearCache" || type === "chooseModel" || type === "chooseOverviewModel" || type === "regenerateOutdated" || type === "summarizeFolder" || type === "summarizeTree" || type === "describeFlows" || type === "approveSharing") {
           onAction({ type });
         } else if (type === "expand" || type === "regenerate" || type === "cancelEntry") {
           const entryId = stringField("entryId");

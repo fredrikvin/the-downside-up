@@ -24,15 +24,16 @@ describe("header action validation", () => {
     const actions: PanelAction[] = [];
     const panel = new ExplanationPanel("Test", (action) => actions.push(action));
     for (const message of [
-      { type: "chooseModels" },
+      { type: "chooseModel" },
+      { type: "chooseOverviewModel" },
       { type: "regenerateOutdated", paths: ["/untrusted/path"], model: "untrusted" },
       { type: "clearCache" },
-      { type: "chooseModel" },
+      { type: "chooseModels" },
       { type: "unknown" },
       { type: ["regenerateOutdated"] },
       null
     ]) harness.receive(message);
-    expect(actions).toEqual([{ type: "chooseModels" }, { type: "regenerateOutdated" }, { type: "clearCache" }]);
+    expect(actions).toEqual([{ type: "chooseModel" }, { type: "chooseOverviewModel" }, { type: "regenerateOutdated" }, { type: "clearCache" }]);
     panel.dispose();
   });
 });

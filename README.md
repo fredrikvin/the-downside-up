@@ -102,9 +102,13 @@ selecting a function's name and opening the preview explains it. With a plain
 cursor it only opens the preview. The repository context used for explanations is shown at the
 end of the preview.
 
-**Preview header.** Click the model chip to choose either the explanation model
-or the **Overview & project map** model. When they differ, the chip shows both
-(the tooltip always does). **Refresh context** and **Clear cache** are icon
+**Preview header.** Two separate model buttons open their pickers directly:
+**Functions** for function explanations, added explanation formats, and file
+summaries; **Project overview** for project priming, repository context reviews,
+architecture maps, folder summaries, and main flows. Each has its role above
+the current model name, even when both use the same model. Names wrap and the
+buttons stack in narrow sidebars without hiding either role. Tooltips explain
+what each model does. **Refresh context** and **Clear cache** are icon
 buttons with labels that collapse in narrow sidebars. Refresh is an explicit
 request and may send code to the overview model. Clear keeps its confirmation
 and removes saved sharing consent as well as this repository's cached results.

@@ -502,8 +502,8 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     const picked = await vscode.window.showQuickPick(
       [same, ...models.map((model) => languageModelItem(model, current))],
       {
-        title: "Choose the model for project overviews",
-        placeHolder: "Used for the repository overview and folder summaries, which are rarer and benefit from a stronger model. It asks once before sharing code.",
+        title: "Choose the project overview model",
+        placeHolder: "Used for project priming, repository context reviews, architecture maps, folder summaries, and main flows. Asks before sharing code.",
         matchOnDescription: true,
         matchOnDetail: true
       }
@@ -511,16 +511,6 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     if (!picked) return;
     await vscode.workspace.getConfiguration("downsideUp")
       .update("languageModel.overviewModel", picked.model?.name, vscode.ConfigurationTarget.Global);
-  };
-
-  const chooseModels = async (): Promise<void> => {
-    const picked = await vscode.window.showQuickPick([
-      { label: "$(sparkle) Explanation model…", description: describeProvider().modelId, role: "explanation" },
-      { label: "$(project) Overview & project map model…", description: describeOverviewProvider().modelId, role: "overview" }
-    ], { title: "Downside Up models", placeHolder: "Choose which model to change" });
-    if (picked?.role === "explanation") await chooseLanguageModel();
-    else if (picked?.role === "overview") await chooseOverviewModel();
-    render();
   };
 
   const ensureLanguageModelSelected = async (): Promise<boolean> => {
@@ -2833,8 +2823,13 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       case "clearCache":
         await clearRepositoryCache();
         return;
-      case "chooseModels":
-        await chooseModels();
+      case "chooseModel":
+        await chooseLanguageModel();
+        render();
+        return;
+      case "chooseOverviewModel":
+        await chooseOverviewModel();
+        render();
         return;
       case "regenerateOutdated":
         await regenerateOutdated();
