@@ -1,5 +1,5 @@
 import { basename, relative, sep } from "node:path";
-import type * as vscode from "vscode";
+import * as vscode from "vscode";
 import { inputsMatch, explanationCacheKey } from "./cache/freshness";
 import type { RepositoryCacheStore } from "./cache/store";
 import { cacheKey, fingerprint } from "./core/fingerprint";
@@ -304,8 +304,46 @@ function withOverview(
 export class ExplanationService {
   private readonly inFlight = new Map<string, Promise<ExplanationResult>>();
   private readonly generationFences = new Map<string, number>();
+  private readonly contexts = new Map<string, Promise<FunctionContext>>();
 
   constructor(private readonly options: ExplanationServiceOptions) {}
+
+  /**
+   * Tooling can time out or discover additional callers without any source edit.
+   * Reuse the same evidence for an unchanged repository snapshot and dirty buffers,
+   * rather than treating a different tooling answer as a code change.
+   */
+  private functionContext(
+    target: FunctionTarget,
+    document: vscode.TextDocument,
+    inventory: RepositoryInventory
+  ): Promise<FunctionContext> {
+    const dirty = vscode.workspace.textDocuments
+      .filter((open) => open.isDirty && open.uri.scheme === "file")
+      .flatMap<[string, string]>((open) => {
+        const path = relative(inventory.root, open.uri.fsPath).split(sep).join("/");
+        return Object.hasOwn(inventory.snapshot, path) ? [[path, fingerprint(open.getText())]] : [];
+      })
+      .sort(([left], [right]) => left.localeCompare(right));
+    const key = fingerprint(JSON.stringify([
+      inventory.root, this.fence(inventory.root), target.symbolId, target.languageId, target.structuralFingerprint,
+      fingerprint(document.getText()),
+      Object.entries(inventory.snapshot).sort(([left], [right]) => left.localeCompare(right)), dirty
+    ]));
+    const hit = this.contexts.get(key);
+    if (hit) {
+      this.contexts.delete(key);
+      this.contexts.set(key, hit);
+      return hit;
+    }
+    const context = gatherFunctionContext(target, document, inventory);
+    this.contexts.set(key, context);
+    if (this.contexts.size > 64) this.contexts.delete(this.contexts.keys().next().value!);
+    void context.catch(() => {
+      if (this.contexts.get(key) === context) this.contexts.delete(key);
+    });
+    return context;
+  }
 
   /** Saved records across all models; no source scanning or freshness checks. */
   async cacheStats(root: string): Promise<CacheStats> {
@@ -362,7 +400,7 @@ export class ExplanationService {
     const inventory = await gatherInventory(root, overview.checkedSnapshot);
     for (const { target, cached } of candidates) {
       if (results.has(target.symbolId)) continue;
-      const context = await gatherFunctionContext(target, document, inventory);
+      const context = await this.functionContext(target, document, inventory);
       if (!inputsMatch(cached.inputs, context.inputs)) continue;
       results.set(target.symbolId, {
         explanation: cached.explanation,
@@ -504,7 +542,7 @@ export class ExplanationService {
       let cache = await this.options.store.read(root);
       const baseInventory = await gatherInventory(root, cache.overview?.checkedSnapshot);
       const inventory = await addLocalSymbolOutline(baseInventory);
-      const context = await gatherFunctionContext(target, document, inventory);
+      const context = await this.functionContext(target, document, inventory);
       if (Buffer.byteLength(inventory.inventoryText, "utf8") > MAX_PRIMING_BYTES) {
         throw new Error("Repository inventory exceeds the priming budget; no code was sent.");
       }
@@ -598,7 +636,7 @@ export class ExplanationService {
 
     progress("checking", "Rechecking source and tracked inputs before saving.");
     const latestInventory = await gatherInventory(root, inventory.snapshot);
-    const latestContext = await gatherFunctionContext(target, document, latestInventory);
+    const latestContext = await this.functionContext(target, document, latestInventory);
     if (
       latestInventory.changedPaths.length > 0 ||
       !inputsMatch(context.inputs, latestContext.inputs) ||

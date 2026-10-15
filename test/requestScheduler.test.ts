@@ -67,6 +67,19 @@ describe("request scheduler", () => {
     })).rejects.toThrow("failed");
     await expect(scheduler.schedule("explicit", async () => "next")).resolves.toBe("next");
   });
+
+  it("makes released prefetch capacity visible before notifying a completed caller", async () => {
+    const scheduler = new RequestScheduler(() => 1);
+    for (let index = 0; index < 10; index++) {
+      expect(scheduler.prefetchCapacity).toBe(1);
+      await scheduler.schedule("prefetch", async () => undefined);
+      expect(scheduler.running).toBe(0);
+    }
+    await expect(scheduler.schedule("prefetch", () => { throw new Error("sync failure"); })).rejects.toThrow("sync failure");
+    expect(scheduler.prefetchCapacity).toBe(1);
+    await expect(scheduler.schedule("prefetch", async () => { throw new Error("async failure"); })).rejects.toThrow("async failure");
+    expect(scheduler.prefetchCapacity).toBe(1);
+  });
 });
 
 describe("single flight", () => {

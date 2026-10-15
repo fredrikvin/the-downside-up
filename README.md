@@ -63,7 +63,7 @@ Preview to the Side** (or use the preview button in the editor title bar).
   and related code; **Explanations: Show Details**
   (`downsideUp.explanations.showDetails`) opens it by default. Current
   explanations stay visible, so the preview reads like a document.
-  Several can load at once, and up to three
+  Several can load at once, and up to six
   generations run at the same time (see **Max Concurrent Requests** below).
   Each explanation links to the related code the extension found.
   Maps and flowcharts fit the preview's reading column: wide rows reflow
@@ -386,7 +386,7 @@ ready as you read, turn on **Downside Up › Prefetch: Enabled**
 open, the extension then explains the shown file's functions in the
 background, starting where you are and spreading outward. It uses the
 request slots your own requests leave free and always leaves one for them;
-**Max Concurrent Requests** (`downsideUp.maxConcurrentRequests`, default 3,
+**Max Concurrent Requests** (`downsideUp.maxConcurrentRequests`, default 6,
 1–8) sets how many requests run at once. More is faster but may hit your
 provider's rate limits sooner; it does not change how many requests are made. **Prefetch: Window**
 (`downsideUp.prefetch.window`, default 10) limits it to that many functions
@@ -404,6 +404,11 @@ Declining keeps the banner available without retrying the prompt.
 Background work never asks for approval on its own. Loading explanations
 show skeleton lines inline as they are queued or generated. Every prefetched explanation
 counts toward your provider's usage limits or billing.
+
+Recent function context is reused within the session while the repository
+snapshot and relevant unsaved buffers are unchanged. Clicking or refocusing the
+editor does not invalidate explanations just because language tools answer
+differently under load; actual source edits still trigger freshness checks.
 
 ### Review mode
 

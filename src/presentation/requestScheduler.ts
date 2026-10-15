@@ -32,11 +32,15 @@ export class RequestScheduler {
         } catch (error) {
           result = Promise.reject(error);
         }
-        void result.then(resolve, reject).finally(() => {
+        const finished = () => {
           this.active--;
           if (priority === "prefetch") this.activePrefetches--;
           this.pump();
-        });
+        };
+        void result.then(
+          (value) => { finished(); resolve(value); },
+          (error: unknown) => { finished(); reject(error); }
+        );
       });
       this.pump();
     });

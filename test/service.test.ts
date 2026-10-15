@@ -8,7 +8,7 @@ import { ExplanationService } from "../src/controller";
 import { MockProvider } from "../src/generation/mock";
 import { COMPONENT_GUIDANCE } from "../src/languages/javascript/guidance";
 import { initializeJavaScriptParsersAt } from "../src/languages/javascript/syntax";
-import { Range, Position, Uri } from "./vscode";
+import { Range, Position, Uri, workspace } from "./vscode";
 
 const harness = vi.hoisted(() => ({
   functionHash: "function-v1",
@@ -27,7 +27,7 @@ vi.mock("../src/context/inventory", () => ({
   sharingExclusion: async () => harness.exclusion
 }));
 vi.mock("../src/context/related", () => ({
-  gatherFunctionContext: (...args: unknown[]) => harness.gatherFunctionContext(...args)
+  gatherFunctionContext: async (...args: unknown[]) => harness.gatherFunctionContext(...args)
 }));
 
 const root = resolve("fixtures/js-app");
@@ -149,7 +149,10 @@ function createService(
 }
 
 describe("ExplanationService", () => {
-  beforeEach(() => setHarness());
+  beforeEach(() => {
+    setHarness();
+    workspace.__resetConfiguration();
+  });
   afterEach(() => vi.restoreAllMocks());
 
   it("counts saved cache records across models without checking source or calling a provider", async () => {
@@ -256,6 +259,83 @@ describe("ExplanationService", () => {
     expect(first.cached).toBe(false);
     expect(second.cached).toBe(false);
     expect(provider.requests).toBe(3);
+  });
+
+  it("keeps context stable when tooling answers change during six parallel requests without source edits", async () => {
+    const provider = new MockProvider();
+    provider.delayMs = 10;
+    const service = createService(new MemoryRepositoryCacheStore(), provider);
+    const calls = new Map<string, number>();
+    harness.gatherFunctionContext = (...args: unknown[]) => {
+      const selected = args[0] as FunctionTarget;
+      const context = makeContext(selected);
+      const count = (calls.get(selected.symbolId) ?? 0) + 1;
+      calls.set(selected.symbolId, count);
+      // Language tools may answer with extra callers later, or omit them under load.
+      if (count % 2 === 0) context.inputs.push({ path: "src/unrelated.js", description: "reference near line 1", fingerprint: "same-source" });
+      return context;
+    };
+    const targets = Array.from({ length: 6 }, (_, index) => ({
+      ...target(), symbolId: `symbol-${index}`, qualifiedName: `function${index}`
+    }));
+    const results = await Promise.all(targets.map((selected) => service.explain(root, selected, fakeDocument)));
+    expect(results.every((result) => !result.cached)).toBe(true);
+    const requests = provider.requests;
+    for (const selected of targets) {
+      expect((await service.findCachedExplanation(root, selected, fakeDocument))?.cached).toBe(true);
+    }
+    expect(provider.requests).toBe(requests);
+    expect([...calls.values()]).toEqual(Array(6).fill(1));
+    harness.storageHash = "edited-related-source";
+    for (const selected of targets) expect(await service.findCachedExplanation(root, selected, fakeDocument)).toBeUndefined();
+  });
+
+  it("does not treat opening a clean document as a context edit, but checks dirty-buffer changes", async () => {
+    const provider = new MockProvider();
+    const service = createService(new MemoryRepositoryCacheStore(), provider);
+    let buffer = "original";
+    let dirty = false;
+    let calls = 0;
+    harness.gatherFunctionContext = () => {
+      calls++;
+      const context = makeContext(target());
+      if (dirty) context.inputs[1]!.fingerprint = buffer;
+      return context;
+    };
+    await service.explain(root, target(), fakeDocument);
+    workspace.textDocuments.push({
+      uri: Uri.file(resolve(root, "src/storage.js")),
+      get isDirty() { return dirty; },
+      getText: () => buffer
+    });
+    expect(await service.findCachedExplanation(root, target(), fakeDocument)).toBeDefined();
+    expect(calls).toBe(1);
+    dirty = true;
+    buffer = "unsaved dependency edit";
+    expect(await service.findCachedExplanation(root, target(), fakeDocument)).toBeUndefined();
+    expect(calls).toBe(2);
+  });
+
+  it("rejects an explanation when a dirty dependency changes during generation", async () => {
+    const provider = new MockProvider();
+    const store = new MemoryRepositoryCacheStore();
+    const service = createService(store, provider);
+    let buffer = "before";
+    workspace.textDocuments.push({
+      uri: Uri.file(resolve(root, "src/storage.js")), isDirty: true, getText: () => buffer
+    });
+    harness.gatherFunctionContext = () => {
+      const context = makeContext(target());
+      context.inputs[1]!.fingerprint = buffer;
+      return context;
+    };
+    const explain = vi.spyOn(provider, "explainFunction").mockImplementation(async (input, signal) => {
+      buffer = "after";
+      return new MockProvider().explainFunction(input, signal);
+    });
+    await expect(service.explain(root, target(), fakeDocument)).rejects.toThrow(/changed while/);
+    expect(explain).toHaveBeenCalledOnce();
+    expect(Object.keys((await store.read(root)).explanations)).toHaveLength(0);
   });
 
   it("returns only a fresh cached explanation without making provider requests", async () => {

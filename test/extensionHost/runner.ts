@@ -601,6 +601,38 @@ export async function run(): Promise<void> {
   await downsideUpSettings.update("prefetch.dependencies", undefined, vscode.ConfigurationTarget.Global);
   console.log("Downside Up integration tests: other-file prefetching and saved-explanation hovers work.");
 
+  const preloadPath = resolve(goRoot, "prefetch_regression.go");
+  const preloadNames = Array.from({ length: 6 }, (_, index) => `preload${index}`);
+  try {
+    await writeFile(preloadPath, `package main\n\n${preloadNames.map((name) => `func ${name}() int { return 1 }`).join("\n\n")}\n`);
+    await downsideUpSettings.update("maxConcurrentRequests", 6, vscode.ConfigurationTarget.Global);
+    await downsideUpSettings.update("prefetch.window", 10, vscode.ConfigurationTarget.Global);
+    await downsideUpSettings.update("prefetch.dependencies", 0, vscode.ConfigurationTarget.Global);
+    const preloadDocument = await vscode.workspace.openTextDocument(vscode.Uri.file(preloadPath));
+    const preloadEditor = await vscode.window.showTextDocument(preloadDocument, vscode.ViewColumn.One);
+    await waitFor(async () => api.shownOutline().some((entry) => entry.name === "preload0") ? true : undefined, "the preload regression file outline");
+    await downsideUpSettings.update("prefetch.enabled", true, vscode.ConfigurationTarget.Global);
+    const allPreloaded = () => preloadNames.every((name) =>
+      api.previewExplanations().some((view) => view.functionName === name && view.status === "current"));
+    await waitFor(async () => allPreloaded() ? true : undefined, "all six functions to load without reader movement");
+    await downsideUpSettings.update("prefetch.enabled", false, vscode.ConfigurationTarget.Global);
+    await vscode.commands.executeCommand("workbench.action.focusSecondEditorGroup");
+    await vscode.window.showTextDocument(preloadDocument, vscode.ViewColumn.One);
+    for (let index = 0; index < preloadNames.length; index++) {
+      const cursor = preloadDocument.positionAt(preloadDocument.getText().indexOf(preloadNames[index]!) + 3);
+      preloadEditor.selection = new vscode.Selection(cursor, cursor);
+    }
+    await new Promise((resolveWait) => setTimeout(resolveWait, 1_500));
+    assert.equal(allPreloaded(), true, "Refocusing and clicking unchanged functions keeps every explanation current at concurrency six.");
+    console.log("Downside Up integration tests: six-function preload completes without movement, and refocusing does not invalidate it.");
+  } finally {
+    await downsideUpSettings.update("prefetch.enabled", undefined, vscode.ConfigurationTarget.Global);
+    await downsideUpSettings.update("prefetch.window", undefined, vscode.ConfigurationTarget.Global);
+    await downsideUpSettings.update("prefetch.dependencies", undefined, vscode.ConfigurationTarget.Global);
+    await downsideUpSettings.update("maxConcurrentRequests", undefined, vscode.ConfigurationTarget.Global);
+    await rm(preloadPath, { force: true });
+  }
+
   const legacyDocument = await vscode.workspace.openTextDocument(vscode.Uri.file(resolve(goRoot, "legacy/legacy.go")));
   const legacyEditor = await vscode.window.showTextDocument(legacyDocument, vscode.ViewColumn.One);
   const rateCursor = legacyDocument.positionAt(legacyDocument.getText().indexOf("func Rate") + 6);

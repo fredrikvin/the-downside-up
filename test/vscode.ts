@@ -79,7 +79,7 @@ export const SymbolKind = {
 };
 
 export const workspace = {
-  textDocuments: [] as Array<{ uri: { scheme: string; fsPath: string }; getText(): string }>,
+  textDocuments: [] as Array<{ uri: { scheme: string; fsPath: string }; isDirty?: boolean; getText(): string }>,
   getConfiguration(section?: string) {
     return {
       get<T>(key: string, fallback?: T): T | undefined {

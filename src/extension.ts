@@ -249,8 +249,8 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
   /** Projects, per overview model, not mapped automatically again this session after a declined approval, a cancel, or a failure. */
   const autoMapSkipped = new Set<string>();
   const maxConcurrentRequests = (): number => {
-    const value = vscode.workspace.getConfiguration("downsideUp").get<number>("maxConcurrentRequests", 3) ?? 3;
-    return Number.isFinite(value) ? Math.min(8, Math.max(1, Math.floor(value))) : 3;
+    const value = vscode.workspace.getConfiguration("downsideUp").get<number>("maxConcurrentRequests", 6) ?? 6;
+    return Number.isFinite(value) ? Math.min(8, Math.max(1, Math.floor(value))) : 6;
   };
   const scheduler = new RequestScheduler(maxConcurrentRequests);
   let previewEpoch = 0;
@@ -1866,8 +1866,16 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       let cached: ExplanationResult | undefined;
       try {
         cached = await service.findCachedExplanation(current.root, current.target, current.document);
-      } catch {
-        cached = undefined;
+      } catch (error) {
+        if (state.epoch !== epoch || state.controller || !functions.has(state.key)) continue;
+        state.view = {
+          ...state.view,
+          status: "failed",
+          detail: "Could not check the saved explanation",
+          error: errorMessage(error)
+        };
+        render();
+        continue;
       }
       if (state.epoch !== epoch || state.controller || !functions.has(state.key)) continue;
       state.value = current;

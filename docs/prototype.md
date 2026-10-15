@@ -133,7 +133,7 @@ Loading, including queued and prefetched requests, shows skeleton lines
 using the existing theme-aware shimmer (static with reduced motion), a
 status, and Cancel. Loading an extra format uses the same skeleton lines.
 **More detail** remains collapsible. Several explanations can load, and up to
-`downsideUp.maxConcurrentRequests` provider requests (default 3, 1–8, user
+`downsideUp.maxConcurrentRequests` provider requests (default 6, 1–8, user
 settings only) run at once. Building or reviewing the repository overview is
 exclusive per repository, so parallel requests wait for it and reuse it
 instead of priming twice, and parallel requests share a single code-sharing
@@ -790,6 +790,14 @@ regenerating it uses the latest one. Unrelated edits do not by
 themselves discard a valid explanation. Unsaved buffers participate in
 freshness checks, and results are not saved as current if source changes during
 generation.
+
+Within a session, up to 64 recent function-context lookups reuse their evidence
+while the bounded repository snapshot, selected source, and eligible dirty
+buffers are unchanged. Opening a clean file, focusing the editor, or moving the
+cursor does not change that identity. Language tools timing out or discovering
+additional callers on a later lookup must not be mistaken for a source edit.
+An actual snapshot or dirty-buffer change gathers context again and applies the
+usual tracked-input checks; clearing the cache also fences this reuse.
 
 Each explanation records what it was built from, so tracking matches what the
 model saw. Every tracked input notes its depth (0 for the function itself, 1
