@@ -5,6 +5,7 @@ import { hasConsent, withConsent } from "./cache/consent";
 import { FileRepositoryCacheStore } from "./cache/store";
 import {
   ExplanationService,
+  type CacheStats,
   type ExplanationResult,
   type FlowsRequest,
   type ProviderDescriptor
@@ -71,7 +72,8 @@ import {
   type PanelAction,
   type FormatSettings,
   type LinkedKind,
-  type PanelNotice
+  type PanelNotice,
+  type PanelState
 } from "./presentation/panel";
 import { innermostRangeAt } from "./presentation/scrollSync";
 
@@ -231,7 +233,9 @@ function isWithin(root: string, target: string): boolean {
 }
 
 export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | undefined {
-  const cacheStore = new FileRepositoryCacheStore(context.globalStorageUri.fsPath);
+  const cacheStore = new FileRepositoryCacheStore(context.globalStorageUri.fsPath, (root) => {
+    if (panel && (preview?.root ?? folderPreview?.root) === root) void loadHeaderData(root);
+  });
   const mockProvider = new MockProvider();
   let panel: ExplanationPanel | undefined;
   let preview: PreviewFile | undefined;
@@ -282,6 +286,11 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
   let approvingSharing = false;
   /** The AI summary of the previewed file, if one is saved. */
   let fileSummary: { uri: string; text: string; current: boolean } | undefined;
+  let headerData: { root: string; stats: CacheStats; map?: ProjectMap } | undefined;
+  let headerError: { root: string; text: string } | undefined;
+  let headerEpoch = 0;
+  let regeneration: AbortController | undefined;
+  let regenerationRoot: string | undefined;
   const summaryRuns = new Map<string, Promise<void>>();
   let selectionTimer: ReturnType<typeof setTimeout> | undefined;
   let outlineTimer: ReturnType<typeof setTimeout> | undefined;
@@ -504,6 +513,16 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       .update("languageModel.overviewModel", picked.model?.name, vscode.ConfigurationTarget.Global);
   };
 
+  const chooseModels = async (): Promise<void> => {
+    const picked = await vscode.window.showQuickPick([
+      { label: "$(sparkle) Explanation model…", description: describeProvider().modelId, role: "explanation" },
+      { label: "$(project) Overview & project map model…", description: describeOverviewProvider().modelId, role: "overview" }
+    ], { title: "Downside Up models", placeHolder: "Choose which model to change" });
+    if (picked?.role === "explanation") await chooseLanguageModel();
+    else if (picked?.role === "overview") await chooseOverviewModel();
+    render();
+  };
+
   const ensureLanguageModelSelected = async (): Promise<boolean> => {
     const descriptor = describeProvider();
     if (descriptor.kind !== "vscode-lm") return true;
@@ -714,6 +733,58 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     ? visibleOutline(preview.overview.entries, outlineInclude(vscode.workspace.getConfiguration("downsideUp").get("preview.include")))
     : [];
 
+  /** Refreshed on navigation and cache writes, not cursor movement or webview renders. */
+  const loadHeaderData = async (root: string): Promise<void> => {
+    const epoch = ++headerEpoch;
+    try {
+      const [stats, saved] = await Promise.all([service.cacheStats(root), service.savedProjectMap(root)]);
+      if (epoch !== headerEpoch || (preview?.root ?? folderPreview?.root) !== root || !panel) return;
+      headerData = { root, stats, ...(saved ? { map: saved.map } : {}) };
+      headerError = undefined;
+    } catch (error) {
+      if (epoch !== headerEpoch || (preview?.root ?? folderPreview?.root) !== root || !panel) return;
+      headerData = undefined;
+      headerError = { root, text: `Could not read local cache statistics: ${errorMessage(error)}` };
+    }
+    render();
+  };
+
+  const outdatedHere = (): {
+    states: FunctionAi[];
+    files: string[];
+    summary: boolean;
+    flows: boolean;
+  } => {
+    if (preview) {
+      const visible = new Set(shownEntries().map((entry) => entry.id));
+      return {
+        states: previewStates().filter(({ state, entry }) => visible.has(entry.id) && state.view.status === "outdated").map(({ state }) => state),
+        files: fileSummary?.uri === preview.document.uri.toString() && !fileSummary.current ? [filePath(preview.root, preview.document.uri)] : [],
+        summary: false,
+        flows: false
+      };
+    }
+    const shown = folderPreview;
+    const describedByMap = Boolean(shown?.map && (shown.level === "project" || shown.level === "group"));
+    return {
+      states: [],
+      files: shown?.children.filter((child) => child.kind === "file" && shown.summaries.get(child.path)?.current === false).map((child) => child.path) ?? [],
+      summary: Boolean(shown?.ai && !shown.ai.current && shown.input && !describedByMap),
+      flows: Boolean(shown?.flows && !shown.flows.current && shown.flowsInput)
+    };
+  };
+
+  const statsForPanel = (): PanelState["stats"] => {
+    const root = preview?.root ?? folderPreview?.root;
+    if (!headerData || headerData.root !== root) return undefined;
+    const outdated = outdatedHere();
+    return {
+      ...headerData.stats,
+      outdatedHere: outdated.states.length + outdated.files.length + Number(outdated.summary) + Number(outdated.flows),
+      scope: preview ? "file" : "folder"
+    };
+  };
+
   const render = (): void => {
     if (!panel) return;
     const descriptor = describeProvider();
@@ -774,9 +845,15 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     panel.setReferenceHandlers(handlers);
     const summary = preview && fileSummary?.uri === preview.document.uri.toString() ? fileSummary : undefined;
     const approval = pendingPrefetchConsent();
+    const stats = statsForPanel();
     panel.update({
       provider: descriptor.kind,
-      model: descriptor.modelId || "no model selected",
+      models: {
+        explanation: descriptor.modelId || "no model selected",
+        overview: describeOverviewProvider().modelId || "no model selected"
+      },
+      ...(stats ? { stats } : {}),
+      ...(headerError?.root === shownRoot ? { statsError: headerError?.text } : {}),
       ...(preview ? { document: { ...preview.overview, entries: shownEntries() } } : {}),
       ...(folder ? { folder } : {}),
       ...(breadcrumbs ? { breadcrumbs } : {}),
@@ -793,7 +870,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
         }
       } : {}),
       ...(openingFolder ? { loading: { name: openingFolder.name } } : {}),
-      busy: Boolean(repositoryJob || folderJobs.size),
+      busy: Boolean(repositoryJob || folderJobs.size || regeneration || [...functions.values()].some((state) => state.controller)),
       hasRepository: Boolean(preview || folderPreview)
     });
     syncStepHighlight();
@@ -813,12 +890,22 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
   /** `project › folder › … › file`: every step but the last opens that folder. */
   const crumbsFor = (root: string, path: string, isFile: boolean, target: (open: () => Promise<void>) => string): Crumb[] => {
     const segments = path ? path.split("/") : [];
-    const crumbs: Crumb[] = [{ name: basename(root), target: target(() => showFolder(root, "")) }];
+    const map = headerData?.root === root ? headerData.map : undefined;
+    const crumbs: Crumb[] = [{
+      name: basename(root), level: "project",
+      ...(map ? { summary: map.summary } : {}),
+      target: target(() => showFolder(root, ""))
+    }];
     segments.forEach((segment, index) => {
       const folderPath = segments.slice(0, index + 1).join("/");
+      const summary = map ? mapPartAt(map, folderPath)?.summary : undefined;
       crumbs.push(isFile && index === segments.length - 1
-        ? { name: segment }
-        : { name: segment, target: target(() => showFolder(root, folderPath)) });
+        ? { name: segment, level: "file" }
+        : {
+            name: segment, level: folderLevel(map, folderPath),
+            ...(summary ? { summary } : {}),
+            target: target(() => showFolder(root, folderPath))
+          });
     });
     return crumbs;
   };
@@ -977,6 +1064,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
    * which is filled in when found. Local only; nothing is generated.
    */
   const showFolder = async (root: string, path: string): Promise<void> => {
+    regeneration?.abort();
     ensurePanel();
     const epoch = ++folderEpoch;
     previewEpoch++;
@@ -1015,6 +1103,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       level: folderLevel(savedMap?.map, path),
       ...(savedMap ? { map: savedMap } : {})
     };
+    void loadHeaderData(root);
     // The project page maps the project when it has no current map.
     if (!path && !savedMap?.current) void mapProjectAutomatically(root);
     panel.panel.title = `Downside Up: ${path ? basename(path) : basename(root)}`;
@@ -1646,6 +1735,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
   };
 
   const showPreview = async (document: vscode.TextDocument, root: string): Promise<void> => {
+    regeneration?.abort();
     const epoch = ++previewEpoch;
     const overview = await buildFileOverview(document, filePath(root, document.uri));
     const exclusion = await sharingExclusion(root, document.uri.fsPath).catch(() => undefined);
@@ -1656,6 +1746,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     folderEpoch++;
     openingFolder = undefined;
     preview = { document, root, overview, ...(exclusion ? { exclusion } : {}) };
+    if (fileChanged || headerData?.root !== root) void loadHeaderData(root);
     panel.panel.title = `Downside Up: ${overview.fileName}`;
     const handlers = new Map<string, () => Promise<void>>();
     for (const entry of overview.entries) {
@@ -1717,6 +1808,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       new vscode.RelativePattern(vscode.Uri.file(root), "**/*")
     );
     const onExternalFileChange = (uri: vscode.Uri, structural: boolean) => {
+      if (regenerationRoot === root) regeneration?.abort();
       const path = filePath(root, uri);
       const tracked = [...functions.values()].some((state) =>
         state.value.root === root && state.result?.context.inputs.some((input) => input.path === path)
@@ -1810,12 +1902,15 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
    */
   const generate = async (
     state: FunctionAi,
-    options: { prefetch?: { shouldStart: () => boolean } } = {}
+    options: { prefetch?: { shouldStart: () => boolean }; signal?: AbortSignal; skipSummary?: boolean } = {}
   ): Promise<void> => {
     if (state.controller) return;
     const prefetching = options.prefetch;
     if (!prefetching && (!(await ensureLanguageModelSelected()) || state.controller)) return;
+    if (options.signal?.aborted) return;
     const controller = new AbortController();
+    const cancel = () => controller.abort();
+    options.signal?.addEventListener("abort", cancel, { once: true });
     const epoch = ++state.epoch;
     state.controller = controller;
     if (prefetching) prefetchSignals.add(controller.signal);
@@ -1862,7 +1957,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       });
       if (state.epoch !== epoch) return;
       applyResult(state, result);
-      if (!result.cached) summarizeAfterExplanation(state.value.root, state.value.document, prefetching ? "prefetch" : "explicit");
+      if (!result.cached && !options.skipSummary) summarizeAfterExplanation(state.value.root, state.value.document, prefetching ? "prefetch" : "explicit");
     } catch (error) {
       if (state.epoch !== epoch) return;
       const userCancelled = controller.signal.aborted;
@@ -1881,6 +1976,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
           }
         : { ...state.view, status: "failed", detail: "Generation failed", error: errorMessage(error) };
     } finally {
+      options.signal?.removeEventListener("abort", cancel);
       if (state.controller === controller) state.controller = undefined;
       render();
     }
@@ -1908,6 +2004,117 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       return;
     }
     await generate(state);
+  };
+
+  /** A fixed set of checked, outdated items, requested by the reader; never expands with navigation. */
+  const regenerateOutdated = async (): Promise<void> => {
+    if (regeneration || repositoryJob || folderJobs.size || [...functions.values()].some((state) => state.controller)) return;
+    const file = preview;
+    const folder = file ? undefined : folderPreview;
+    const root = file?.root ?? folder?.root;
+    if (!root) return;
+    const items = outdatedHere();
+    const count = items.states.length + items.files.length + Number(items.summary) + Number(items.flows);
+    if (!count) return;
+    const controller = new AbortController();
+    regeneration = controller;
+    regenerationRoot = root;
+    installRootWatcher(root);
+    const fileEpoch = previewEpoch;
+    const shownFolderEpoch = folderEpoch;
+    const models = JSON.stringify([describeProvider(), describeOverviewProvider()]);
+    const check = () => {
+      if (controller.signal.aborted || models !== JSON.stringify([describeProvider(), describeOverviewProvider()]) ||
+        (file ? previewEpoch !== fileEpoch || preview?.document !== file.document : folderEpoch !== shownFolderEpoch || preview || folderPreview?.path !== folder?.path)) {
+        throw new DOMException("Regeneration cancelled.", "AbortError");
+      }
+    };
+    const request = <T>(run: () => Promise<T>): Promise<T> => scheduler.schedule("explicit", () => {
+      check();
+      return run();
+    });
+    notice = { tone: "progress", text: `Regenerating ${count} outdated item${count === 1 ? "" : "s"} here by request…` };
+    render();
+    try {
+      if (!(await ensureLanguageModelSelected())) throw new DOMException("No model selected.", "AbortError");
+      check();
+      const descriptors = [
+        ...(items.states.length || items.files.length ? [describeProvider()] : []),
+        ...(items.summary || items.flows ? [describeOverviewProvider()] : [])
+      ];
+      const approved = new Set<string>();
+      for (const descriptor of descriptors) {
+        const key = JSON.stringify(descriptor);
+        if (!approved.has(key) && !(await askSharingConsent(root, descriptor))) {
+          throw new DOMException("Code sharing was not approved.", "AbortError");
+        }
+        approved.add(key);
+        check();
+      }
+      for (const state of items.states) {
+        check();
+        if (!functions.has(state.key) || state.view.status !== "outdated") continue;
+        await generate(state, { signal: controller.signal, skipSummary: true });
+        check();
+        const result = functions.get(state.key)?.view;
+        if (result?.status === "cancelled") throw new DOMException("Explanation cancelled.", "AbortError");
+        if (result?.status !== "current") throw new Error(result?.error || "An explanation could not be refreshed. See its status in the preview.");
+      }
+      for (const path of items.files) {
+        check();
+        const document = file?.document ?? await vscode.workspace.openTextDocument(vscode.Uri.file(resolve(root, path)));
+        check();
+        await summaryRuns.get(`${root}\0${document.uri.toString()}`);
+        const result = await request(() => service.summarizeFile(root, document, controller.signal));
+        check();
+        if (!result) throw new Error(`The summary for ${basename(path)} could not be refreshed: the file is excluded, changed during the request, or exceeds the request size limit.`);
+        if (file) await loadFileSummary(document, root);
+        else if (folderPreview) {
+          const summaries = new Map(folderPreview.summaries);
+          summaries.set(path, { summary: result.summary, current: true });
+          folderPreview = { ...folderPreview, summaries };
+        }
+        render();
+      }
+      if (folder && (items.files.length || items.summary)) {
+        check();
+        const prepared = await summaryInputFor(root, folder.path, folder.children, folderPreview!.summaries, folder.structure);
+        check();
+        if (!prepared.input) throw new Error("The folder summary input could not be rebuilt. Reopen this folder and try again.");
+        const input = prepared.input;
+        const saved = items.summary
+          ? { value: (await request(() => service.summarizeFolder(root, input, controller.signal))).value, current: true }
+          : await service.findFolderSummary(root, input);
+        check();
+        folderPreview = { ...folderPreview!, input, ai: saved, summaryError: undefined };
+        render();
+      }
+      if (folder && (items.files.length || items.summary || items.flows)) {
+        check();
+        const input = await flowsRequestFor(root, folder.path, folder.structure, folderPreview?.ai?.value.summary);
+        check();
+        if (!input && items.flows) throw new Error("The main-flow input is no longer available. Reopen this folder and try again.");
+        const saved = input
+          ? items.flows
+            ? { flows: (await request(() => service.describeProjectFlows(root, input, controller.signal))).flows, current: true }
+            : await service.findProjectFlows(root, input)
+          : undefined;
+        check();
+        folderPreview = { ...folderPreview!, flowsInput: input, flows: saved, flowsError: undefined };
+      }
+      notice = { tone: "info", text: "The requested outdated items were checked and refreshed." };
+    } catch (error) {
+      const cancelled = controller.signal.aborted || (error instanceof DOMException && error.name === "AbortError");
+      notice = cancelled
+        ? { tone: "info", text: "Regeneration stopped; completed items remain saved. Nothing else will be requested." }
+        : { tone: "error", text: `Could not regenerate the outdated items: ${errorMessage(error)}` };
+    } finally {
+      if (regeneration === controller) {
+        regeneration = undefined;
+        regenerationRoot = undefined;
+      }
+      render();
+    }
   };
 
   const existingStateForEntry = (entryId: string): FunctionAi | undefined =>
@@ -2609,8 +2816,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
         existingStateForEntry(action.entryId)?.controller?.abort();
         return;
       case "cancel":
-        repositoryJob?.abort();
-        for (const job of folderJobs.values()) job.abort();
+        cancelExplanations();
         return;
       case "summarizeFolder":
         await summarizeShownFolder();
@@ -2627,9 +2833,11 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       case "clearCache":
         await clearRepositoryCache();
         return;
-      case "chooseModel":
-        await chooseLanguageModel();
-        render();
+      case "chooseModels":
+        await chooseModels();
+        return;
+      case "regenerateOutdated":
+        await regenerateOutdated();
         return;
       case "revealItem":
         await revealItem(action.entryId, action.kind, action.index);
@@ -2656,10 +2864,14 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     if (panel) return panel;
     const created = new ExplanationPanel(
       "Downside Up",
-      (action) => void handlePanelAction(action),
+      (action) => void handlePanelAction(action).catch((error: unknown) => {
+        notice = { tone: "error", text: `The preview action failed: ${errorMessage(error)}` };
+        render();
+      }),
       () => {
         if (panel !== created) return;
         clearReveal();
+        regeneration?.abort();
         stopPrefetch();
         stopReview();
         for (const state of [...functions.values()]) forget(state);
@@ -2821,6 +3033,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       "Clear repository cache"
     );
     if (answer !== "Clear repository cache") return;
+    regeneration?.abort();
     stopPrefetch();
     if (reviewSession?.root === root) dismissReview();
     savedLookupEpoch++;
@@ -2830,6 +3043,11 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     repositoryJobRoot = undefined;
     autoMapSkipped.clear();
     await service.clearCache(root);
+    if (preview?.root === root) fileSummary = undefined;
+    if (folderPreview?.root === root) {
+      const { ai: _ai, flows: _flows, map: _map, ...rest } = folderPreview;
+      folderPreview = { ...rest, summaries: new Map(), level: folderLevel(undefined, rest.path) };
+    }
     if (repositoryContext?.root === root) repositoryContext = undefined;
     notice = { tone: "info", text: "Repository cache and saved code-sharing consent cleared." };
     render();
@@ -2935,6 +3153,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
   };
 
   const cancelExplanations = (): void => {
+    regeneration?.abort();
     for (const job of folderJobs.values()) job.abort();
     stopPrefetch();
     stopReview();
@@ -2963,6 +3182,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
 
   const onDocumentChange = vscode.workspace.onDidChangeTextDocument((event) => {
     if (event.contentChanges.length === 0 || event.document.uri.scheme !== "file") return;
+    if (regenerationRoot && isWithin(regenerationRoot, event.document.uri.fsPath)) regeneration?.abort();
     if (revealed?.uri === event.document.uri.toString()) clearReveal();
     const current = preview;
     if (current && sameUri(event.document.uri, current.document.uri)) {
@@ -3043,10 +3263,14 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
 
   const onConfigChange = vscode.workspace.onDidChangeConfiguration((event) => {
     if (["downsideUp.provider", "downsideUp.languageModel", "downsideUp.openai", "downsideUp.projectMap"].some((key) => event.affectsConfiguration(key))) {
+      regeneration?.abort();
+      const root = preview?.root ?? folderPreview?.root;
+      if (panel && root) void loadHeaderData(root);
       // Folder summaries are saved per overview model, which falls back to the explanation model, so look again.
       if (panel && folderPreview && !preview) void showFolder(folderPreview.root, folderPreview.path);
     }
     if (event.affectsConfiguration("downsideUp.exclusion")) {
+      regeneration?.abort();
       clearPolicyCache();
       // The shown file may now be excluded, or allowed again.
       if (panel && preview) void previewDocument(preview.document);
@@ -3134,6 +3358,17 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       status: state.view.status
     })),
     prefetchApproval: () => pendingPrefetchConsent()?.descriptors.map((model) => model.modelId),
+    header: () => {
+      const shown = preview ?? folderPreview;
+      return {
+        stats: statsForPanel(),
+        crumbs: shown
+          ? crumbsFor(shown.root, preview ? filePath(preview.root, preview.document.uri) : folderPreview!.path, Boolean(preview), () => "test-navigation")
+          : []
+      };
+    },
+    regenerateOutdated,
+    cancel: cancelExplanations,
     stepHighlight: () => lastStepHighlight,
     revealedLines: () => revealed ? { start: revealed.start, end: revealed.end } : undefined,
     revealStep: async (functionName: string, step: number, kind: LinkedKind = "step") => {
@@ -3194,6 +3429,9 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
 }
 
 export interface DownsideUpTestApi {
+  header(): { stats: PanelState["stats"]; crumbs: Crumb[] };
+  regenerateOutdated(): Promise<void>;
+  cancel(): void;
   shownFolder(): {
     path: string;
     children: string[];

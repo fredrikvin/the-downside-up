@@ -39,7 +39,10 @@ export interface RepositoryCacheStore {
 export class FileRepositoryCacheStore implements RepositoryCacheStore {
   private readonly writes = new Map<string, Promise<unknown>>();
 
-  constructor(private readonly storageRoot: string) {}
+  constructor(
+    private readonly storageRoot: string,
+    private readonly onChanged?: (root: string) => void
+  ) {}
 
   private fileFor(root: string): string {
     return resolve(this.storageRoot, "repositories", cacheKey([root]), "cache.json");
@@ -87,7 +90,9 @@ export class FileRepositoryCacheStore implements RepositoryCacheStore {
     });
     this.writes.set(file, write);
     try {
-      return await write;
+      const result = await write;
+      this.onChanged?.(root);
+      return result;
     } finally {
       if (this.writes.get(file) === write) this.writes.delete(file);
     }
@@ -101,6 +106,7 @@ export class FileRepositoryCacheStore implements RepositoryCacheStore {
     const file = this.fileFor(root);
     await this.writes.get(file);
     await rm(dirname(file), { recursive: true, force: true });
+    this.onChanged?.(root);
   }
 }
 

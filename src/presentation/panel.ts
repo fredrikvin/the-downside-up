@@ -58,6 +58,8 @@ export interface PanelNotice {
 export interface Crumb {
   readonly name: string;
   readonly target?: string;
+  readonly level: FolderView["level"] | "file";
+  readonly summary?: string;
 }
 
 /** A file or subfolder listed in a folder preview. */
@@ -144,7 +146,17 @@ export interface FolderView {
 
 export interface PanelState {
   readonly provider: string;
-  readonly model: string;
+  readonly models: { readonly explanation: string; readonly overview?: string };
+  readonly stats?: {
+    readonly explanations: number;
+    readonly fileSummaries: number;
+    readonly folderSummaries: number;
+    readonly flows: number;
+    readonly mapSavedAt?: number;
+    readonly outdatedHere: number;
+    readonly scope: "file" | "folder";
+  };
+  readonly statsError?: string;
   readonly document?: FileOverview;
   /** Shown instead of a file when a folder is previewed. */
   readonly folder?: FolderView;
@@ -175,7 +187,8 @@ export type PanelAction =
   | { readonly type: "describeFlows" }
   | { readonly type: "refreshContext" }
   | { readonly type: "clearCache" }
-  | { readonly type: "chooseModel" }
+  | { readonly type: "chooseModels" }
+  | { readonly type: "regenerateOutdated" }
   | { readonly type: "navigate"; readonly referenceId: string }
   | { readonly type: "revealLine"; readonly line: number }
   | { readonly type: "revealItem"; readonly entryId: string; readonly kind: LinkedKind; readonly index: number }
@@ -226,8 +239,23 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
     }
     .muted { color: var(--vscode-descriptionForeground); }
     .small { font-size: .85em; }
-    .toolbar { display: flex; flex-wrap: wrap; gap: 4px 14px; padding: 10px 0 0; font-size: .85em; color: var(--vscode-descriptionForeground); }
+    [hidden] { display: none !important; }
+    .header { container-type: inline-size; padding: 12px 0 10px; margin-bottom: 12px; border-bottom: 1px solid var(--separator); }
+    .toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 12px; }
     .toolbar .spacer { flex: 1; }
+    .header button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; font: inherit; color: var(--vscode-button-secondaryForeground, var(--vscode-editor-foreground)); background: var(--vscode-button-secondaryBackground, rgba(128,128,128,.12)); border: 1px solid var(--vscode-contrastBorder, transparent); border-radius: 5px; padding: 5px 9px; cursor: pointer; min-height: 30px; box-sizing: border-box; }
+    .header button:hover { background: var(--vscode-button-secondaryHoverBackground, rgba(128,128,128,.22)); }
+    .header button:disabled { opacity: .5; cursor: default; }
+    .header .danger { color: var(--vscode-errorForeground, #c33); border-color: var(--vscode-inputValidation-errorBorder, var(--vscode-errorForeground, #c33)); background: transparent; }
+    .header .model-chip { min-width: 0; max-width: 100%; text-align: left; }
+    .model-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .map-model { color: var(--vscode-descriptionForeground); }
+    .icon { width: 16px; height: 16px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.25; stroke-linecap: round; stroke-linejoin: round; vertical-align: middle; }
+    .stats { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; margin-top: 8px; font-size: 11px; color: var(--vscode-descriptionForeground); }
+    .stats .outdated { color: var(--vscode-editorWarning-foreground, var(--vscode-descriptionForeground)); }
+    .stats button { font-size: 11px; padding: 2px 6px; min-height: 24px; }
+    @container (max-width: 600px) { .model-chip { flex-basis: 100%; } .toolbar .spacer { display: none; } }
+    @container (max-width: 420px) { .toolbar .btn-label { display: none; } .toolbar .tool-button { width: 32px; padding: 6px; } .map-model { display: none; } }
     .notice { margin: 8px 0 0; font-size: .9em; white-space: pre-line; }
     .notice.error, .error { color: var(--vscode-errorForeground); }
     .entry { position: relative; margin: 0; padding: 0 0 2px 12px; border-left: 2px solid transparent; }
@@ -294,8 +322,11 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
     .pseudo-line.gap { margin-top: 1.1em; }
     .pseudo-line.linked { cursor: pointer; }
     .pseudo-line.linked:hover { background: var(--vscode-list-hoverBackground, rgba(128, 128, 128, .12)); }
-    .crumbs { display: flex; flex-wrap: wrap; gap: 2px 6px; margin: 0 0 4px; }
-    .crumbs a { cursor: pointer; }
+    .crumbs { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; margin: 0 0 6px; }
+    .crumb { display: inline-flex; align-items: center; gap: 4px; padding: 2px 5px; border: 1px solid transparent; border-radius: 4px; max-width: 100%; box-sizing: border-box; min-width: 0; }
+    .crumb-name { overflow-wrap: anywhere; min-width: 0; }
+    .crumb.rich { font-weight: 600; background: color-mix(in srgb, var(--vscode-textLink-foreground, #3794ff) 9%, transparent); border-color: color-mix(in srgb, var(--vscode-textLink-foreground, #3794ff) 25%, transparent); }
+    .crumb[aria-current="page"] { color: var(--vscode-editor-foreground); }
     .crumbs .sep { opacity: .6; }
     .folder-list { list-style: none; padding: 0; margin: 4px 0 16px; }
     .folder-list li { padding: 6px 0; border-bottom: 1px solid var(--vscode-panel-border, var(--separator)); }
@@ -387,14 +418,16 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
   </style>
 </head>
 <body>
-  <nav class="toolbar" aria-label="Downside Up actions">
-    <span id="model"></span>
-    <a id="chooseModel" role="button" tabindex="0">Change model</a>
-    <span class="spacer"></span>
-    <a id="cancel" role="button" tabindex="0" hidden>Cancel</a>
-    <a id="refreshContext" role="button" tabindex="0">Refresh repository context</a>
-    <a id="clearCache" role="button" tabindex="0">Clear cache</a>
-  </nav>
+  <header class="header">
+    <nav class="toolbar" aria-label="Downside Up actions">
+      <button id="chooseModels" class="model-chip" type="button" title="Choose explanation or overview model" aria-label="Choose explanation or overview model"></button>
+      <span class="spacer"></span>
+      <button id="cancel" class="tool-button" type="button" title="Cancel requests" aria-label="Cancel requests" hidden><span class="btn-label">Cancel</span></button>
+      <button id="refreshContext" class="tool-button" type="button" title="Refresh repository context and project map; may send code to the overview model" aria-label="Refresh repository context"><span class="btn-label">Refresh context</span></button>
+      <button id="clearCache" class="tool-button danger" type="button" title="Clear this repository's cache and saved sharing consent" aria-label="Clear repository cache"><span class="btn-label">Clear cache</span></button>
+    </nav>
+    <div id="stats" class="stats" aria-label="Local cache statistics" hidden></div>
+  </header>
   <p id="notice" class="notice" role="status" aria-live="polite"></p>
   <aside id="prefetchConsent" class="prefetch-consent" aria-label="Background explanation approval" hidden></aside>
   <main id="doc">
@@ -437,6 +470,8 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
     let revealFrame = 0;
     let ignoreScrollUntil = 0;
     const chartObservers = [];
+    let renderedModels = "";
+    let renderedStats = "";
 
     function el(tag, className, text) {
       const node = document.createElement(tag);
@@ -485,6 +520,90 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
     /** The view picked with a tab; it applies to every explanation, like language tabs in documentation. */
     let chosenTab = (vscode.getState() || {}).tab;
     const SVG = "http://www.w3.org/2000/svg";
+    const iconPaths = {
+      model: "M8 1 10 6 15 8 10 10 8 15 6 10 1 8 6 6Z",
+      chevron: "m4 6 4 4 4-4",
+      refresh: "M13 6A5.5 5.5 0 1 0 13.3 10M13 2v4H9",
+      clear: "M2 4h12M6 4V2h4v2M4 4l1 10h6l1-10M7 6v5M9 6v5",
+      cancel: "m4 4 8 8M12 4l-8 8",
+      project: "M1.5 3.5h5l2 2h6v8h-13ZM4 8h8M4 11h5",
+      group: "M1.5 2h5v4h-5ZM9.5 2h5v4h-5ZM1.5 10h5v4h-5ZM9.5 10h5v4h-5Z",
+      component: "m8 1 6 3.5v7L8 15l-6-3.5v-7ZM2 4.5 8 8l6-3.5M8 8v7",
+      module: "M2 2h12v12H2ZM2 6h12M6 6v8",
+      support: "m8 1 6 3v4c0 3-3 5-6 7-3-2-6-4-6-7V4ZM5 8l2 2 4-4",
+      folder: "M1.5 3.5h5l2 2h6v8h-13Z",
+      file: "M3 1.5h6l4 4v9H3ZM9 1.5v4h4M5.5 8h5M5.5 11h5"
+    };
+    function icon(name) {
+      const svg = document.createElementNS(SVG, "svg");
+      svg.setAttribute("class", "icon");
+      svg.setAttribute("viewBox", "0 0 16 16");
+      svg.setAttribute("aria-hidden", "true");
+      const path = document.createElementNS(SVG, "path");
+      path.setAttribute("d", iconPaths[name] || iconPaths.folder);
+      svg.append(path);
+      return svg;
+    }
+
+    function savedAge(timestamp) {
+      const minutes = Math.max(0, Math.floor((Date.now() - timestamp) / 60000));
+      if (minutes < 1) return "just now";
+      if (minutes < 60) return minutes + "m ago";
+      if (minutes < 1440) return Math.floor(minutes / 60) + "h ago";
+      return Math.floor(minutes / 1440) + "d ago";
+    }
+
+    function renderHeader(next) {
+      const models = next.models;
+      const chip = byId("chooseModels");
+      const modelKey = JSON.stringify([next.provider, models]);
+      if (modelKey !== renderedModels) {
+        renderedModels = modelKey;
+        const label = el("span", "model-label", next.provider === "mock" ? "Mock mode" : models.explanation);
+        if (next.provider !== "mock" && models.overview && models.overview !== models.explanation) {
+          label.append(el("span", "map-model", " · map: " + models.overview));
+        }
+        chip.replaceChildren(icon("model"), label, icon("chevron"));
+        chip.title = (next.provider === "mock" ? "Mock mode (placeholder output)" : "Explanations: " + models.explanation + "\\nOverview & project map: " + (models.overview || models.explanation)) + "\\nClick to choose either model";
+      }
+      byId("cancel").hidden = !next.busy;
+      byId("refreshContext").hidden = !next.hasRepository;
+      byId("refreshContext").disabled = next.busy;
+      byId("clearCache").hidden = !next.hasRepository;
+      const statsKey = JSON.stringify([next.stats, next.statsError, next.busy, next.stats?.mapSavedAt === undefined ? "" : savedAge(next.stats.mapSavedAt)]);
+      if (statsKey === renderedStats) return;
+      renderedStats = statsKey;
+      const stats = byId("stats");
+      stats.hidden = !next.stats && !next.statsError;
+      stats.replaceChildren();
+      if (next.statsError) {
+        stats.append(el("span", "error", next.statsError));
+      } else if (next.stats) {
+        const saved = next.stats;
+        stats.title = "Local saved records for this repository, across all models. Outdated counts cover only items checked in the shown " + saved.scope + ", not the whole repository.";
+        stats.append(el("span", "", "Saved in repository:"));
+        for (const [key, one, many] of [["explanations", "explanation", "explanations"], ["fileSummaries", "file summary", "file summaries"], ["folderSummaries", "folder summary", "folder summaries"], ["flows", "flow set", "flow sets"]]) {
+          const count = saved[key];
+          stats.append(el("span", "", count + " " + (count === 1 ? one : many)));
+        }
+        const map = el("span", "", saved.mapSavedAt === undefined ? "No project map" : "Map saved " + savedAge(saved.mapSavedAt));
+        if (saved.mapSavedAt !== undefined) map.title = "Saved " + new Date(saved.mapSavedAt).toLocaleString() + "; age does not indicate freshness";
+        stats.append(map);
+        const outdated = el("span", saved.outdatedHere ? "outdated" : "", saved.outdatedHere + " outdated in this " + saved.scope);
+        outdated.title = "Only saved items checked here; not a repository-wide freshness scan";
+        stats.append(outdated);
+        if (saved.outdatedHere > 0) {
+          const regenerate = el("button", "", "Regenerate " + saved.outdatedHere + " outdated here");
+          regenerate.id = "regenerateOutdated";
+          regenerate.type = "button";
+          regenerate.disabled = next.busy;
+          regenerate.title = "Explicitly request fresh versions of these outdated items; uses your provider's usage limits or billing and asks for sharing approval if needed";
+          regenerate.prepend(icon("refresh"));
+          regenerate.addEventListener("click", () => post({ type: "regenerateOutdated" }));
+          stats.append(regenerate);
+        }
+      }
+    }
 
     /** Makes an item clickable to select its source lines, and marks it for highlighting. */
     function linkItem(item, view, kind, index, attribute) {
@@ -1038,15 +1157,24 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
     /** The breadcrumb trail; every step but the last opens that folder. */
     function renderCrumbs(crumbs) {
       const nav = byId("crumbs");
-      nav.hidden = !(crumbs && crumbs.length > 1);
+      nav.hidden = !(crumbs && crumbs.length);
       nav.replaceChildren();
       (crumbs || []).forEach((crumb, index) => {
-        if (index > 0) nav.append(el("span", "sep", "›"));
-        if (crumb.target && index < crumbs.length - 1) {
-          nav.append(action(crumb.name, () => post({ type: "navigate", referenceId: crumb.target })));
-        } else {
-          nav.append(el("span", "", crumb.name));
+        if (index > 0) {
+          const separator = el("span", "sep", "›");
+          separator.setAttribute("aria-hidden", "true");
+          nav.append(separator);
         }
+        const current = index === crumbs.length - 1;
+        const level = crumb.level;
+        const className = "crumb level-" + level + (["project", "group", "component"].includes(level) ? " rich" : "");
+        const node = crumb.target && !current
+          ? action("", () => post({ type: "navigate", referenceId: crumb.target }), className)
+          : el("span", className);
+        node.title = level.charAt(0).toUpperCase() + level.slice(1) + (crumb.summary ? " — " + crumb.summary : "");
+        if (current) node.setAttribute("aria-current", "page");
+        node.append(icon(level), el("span", "crumb-name", crumb.name));
+        nav.append(node);
       });
     }
 
@@ -1507,10 +1635,7 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
       const file = loading ? undefined : next.document;
       const folder = file || loading ? undefined : next.folder;
       renderCrumbs(next.breadcrumbs);
-      byId("model").textContent = next.provider === "mock" ? "Mock mode (placeholder output)" : "AI: " + next.model;
-      byId("cancel").hidden = !next.busy;
-      byId("refreshContext").hidden = !next.hasRepository;
-      byId("clearCache").hidden = !next.hasRepository;
+      renderHeader(next);
       const notice = byId("notice");
       notice.textContent = next.notice ? next.notice.text : "";
       notice.className = "notice" + (next.notice && next.notice.tone === "error" ? " error" : "");
@@ -1681,12 +1806,10 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
         if (message.reveal === true) revealActive();
       }
     });
-    for (const [id, type] of [["chooseModel", "chooseModel"], ["cancel", "cancel"], ["refreshContext", "refreshContext"], ["clearCache", "clearCache"]]) {
-      const link = byId(id);
-      link.addEventListener("click", () => post({ type }));
-      link.addEventListener("keydown", (event) => {
-        if (event.key === "Enter" || event.key === " ") { event.preventDefault(); post({ type }); }
-      });
+    for (const [id, type, glyph] of [["chooseModels", "chooseModels"], ["cancel", "cancel", "cancel"], ["refreshContext", "refreshContext", "refresh"], ["clearCache", "clearCache", "clear"]]) {
+      const button = byId(id);
+      if (glyph) button.prepend(icon(glyph));
+      button.addEventListener("click", () => post({ type }));
     }
     post({ type: "ready" });
   </script>
@@ -1736,7 +1859,7 @@ export class ExplanationPanel {
         const type = fields.type;
         if (type === "ready") {
           this.replay();
-        } else if (type === "cancel" || type === "refreshContext" || type === "clearCache" || type === "chooseModel" || type === "summarizeFolder" || type === "summarizeTree" || type === "describeFlows" || type === "approveSharing") {
+        } else if (type === "cancel" || type === "refreshContext" || type === "clearCache" || type === "chooseModels" || type === "regenerateOutdated" || type === "summarizeFolder" || type === "summarizeTree" || type === "describeFlows" || type === "approveSharing") {
           onAction({ type });
         } else if (type === "expand" || type === "regenerate" || type === "cancelEntry") {
           const entryId = stringField("entryId");

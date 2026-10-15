@@ -155,6 +155,29 @@ prefetching (below). After edits, file changes,
 or a model change, open explanations are rechecked against the cache locally
 and marked outdated when their recorded inputs no longer match.
 
+The preview header has a model chip opening a choice between the explanation
+and overview/project-map model pickers. It shows the separate overview model
+when different; the tooltip names both. Refresh context and Clear cache are
+native icon-and-label buttons, collapsing to labelled-for-accessibility icons
+in narrow columns; Clear has a danger outline and keeps its modal confirmation.
+Icons are fixed inline SVG paths, with no font, asset, or CSP changes.
+
+Local header statistics count saved explanation, file-summary, folder-summary,
+and flow-set records across all models for the repository, and show the map's
+saved age (not a freshness claim). The host retains a snapshot, refreshed on
+navigation and successful cache writes/clear, not on cursor movement or
+webview renders. Read failures show an error instead of zero counts.
+The outdated count is scoped to checked items here: shown function explanations
+and a file's summary, or a folder's displayed summary, main flows, and its
+directly listed file summaries. It does not scan the repository or include
+nested folders. **Regenerate N outdated here** is an explicit request for a
+fixed set of these items, through the existing sharing consent and request
+scheduler. It never adds missing items or new ones while navigating, skips
+current explanations, and stops on cancellation, decline, failure, model
+changes, repository edits, or a change of preview. Completed results remain saved. Source
+freshness and exclusion checks still apply. This action can explicitly refresh
+a saved file summary without explaining another function first.
+
 Prefetching is an opt-in exception to explicit-only generation. With
 `downsideUp.prefetch.enabled` (off by default, user settings only, so a
 repository cannot turn it on), the extension generates explanations in the
@@ -435,6 +458,13 @@ preview stays on the folder until the active editor changes or a file is
 opened from it; opening a file there also previews it even when its editor
 was already active. Links and boxes use navigation ids that the extension
 resolves, so the webview never names paths.
+Breadcrumbs include fixed icons for project, group, component, module,
+support, plain folder, and file levels. Project/group/component crumbs have
+tinted chip styling; hover text shows the level and saved map summary.
+Levels reuse `folderLevel` and summaries reuse `mapPartAt`, including for
+file previews; without a saved map only the root is a project. Root-only
+trails remain visible and the last crumb is marked as the current page.
+Loading this metadata is cache-only; it does not generate a project map.
 
 ### The project map
 
@@ -781,7 +811,8 @@ details were previously unread may also need one new explanation.
 
 Invalidation never regenerates automatically. Use the preview's
 **Regenerate** link, or select text in the function and run **Open Preview to
-the Side**, to regenerate. **Refresh Repository
+the Side**, to regenerate, or explicitly request **Regenerate N outdated here**
+in the header for the checked items in the shown preview. **Refresh Repository
 Context** explicitly reviews or rebuilds the overview. **Clear Repository
 Cache** removes cached overviews, explanations, and saved provider consent for
 that repository. Freshness means recorded inputs match; it does not prove the
@@ -866,6 +897,14 @@ the real TypeScript server, its props interface tracked, a `memo`-wrapped
 arrow component explained and shown when hovering `<CartItem>`, refusal to explain a function in a `.copilotignore`d file, and
 unsupported plaintext discovery. Each run uses a fresh temporary
 VS Code profile so earlier runs' windows are not restored.
+Header tests cover native icon buttons, responsive label collapse, model roles,
+text-only breadcrumb summaries, level styling, scoped statistics and explicit
+action validation. Service tests count records across models without scanning
+source or calling a provider and check cache-change notifications. Extension-host
+tests check local saved counts, outdated function/file-summary regeneration
+without touching current neighbours, direct child file-summary regeneration
+from a folder, folder-summary/flow regeneration, cancellation before sending,
+and project/group/component breadcrumb levels from the saved map.
 Concise-outline tests cover which items each `preview.include` option adds and the
 recomputed nesting; schema tests cover the plain-language explanation and file
 summary formats; step-line tests cover numbering, validation, lines that

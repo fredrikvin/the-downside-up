@@ -102,6 +102,23 @@ selecting a function's name and opening the preview explains it. With a plain
 cursor it only opens the preview. The repository context used for explanations is shown at the
 end of the preview.
 
+**Preview header.** Click the model chip to choose either the explanation model
+or the **Overview & project map** model. When they differ, the chip shows both
+(the tooltip always does). **Refresh context** and **Clear cache** are icon
+buttons with labels that collapse in narrow sidebars. Refresh is an explicit
+request and may send code to the overview model. Clear keeps its confirmation
+and removes saved sharing consent as well as this repository's cached results.
+
+The header counts saved explanations, file summaries, folder summaries, and
+flow sets across **all models** for the repository, plus when its project map
+was saved. These are local cache reads, not a repository-wide freshness scan;
+map age does not mean it is current. **Outdated in this file/folder** counts
+only saved items checked here: shown function explanations and the file summary,
+or the folder's displayed summary, flows, and directly listed file summaries.
+It does not include nested folders. **Regenerate N outdated here** explicitly
+requests fresh versions of that fixed set, asking for sharing approval as
+needed. Cancel stops remaining requests; completed results stay saved.
+
 **Folder and project previews.** A folder can be previewed like a file: run
 **Open Preview to the Side** on a folder in the Explorer, run **Downside Up:
 Preview Project** for the repository root, or click a step of the breadcrumb
@@ -117,6 +134,12 @@ and TypeScript, including `tsconfig` path aliases); it does not show other
 connections, such as dependency injection or calls between services, and
 nothing is generated or sent. The folder preview stays until you switch to
 another file.
+Breadcrumb icons identify the project, groups, components, modules, support
+folders, plain folders, and files using the saved project map. Project, group,
+and component crumbs are tinted chips to highlight their richer pages; hover
+for the level and saved description. Without a map, only the root is marked
+as a project and other directories use plain folder icons. Loading the icons
+is cache-only; opening the project page still requests a map when none is current.
 
 **The project map: one zoom level at a time.** When the repository is primed
 (with the first explanation, when the project preview opens without a current

@@ -152,6 +152,57 @@ describe("ExplanationService", () => {
   beforeEach(() => setHarness());
   afterEach(() => vi.restoreAllMocks());
 
+  it("counts saved cache records across models without checking source or calling a provider", async () => {
+    const store = new MemoryRepositoryCacheStore();
+    const provider = new MockProvider();
+    const service = createService(store, provider);
+    expect(await service.cacheStats(root)).toEqual({ explanations: 0, fileSummaries: 0, folderSummaries: 0, flows: 0 });
+    await service.explain(root, target(), fakeDocument);
+    await service.summarizeFile(root, fakeDocument);
+    await store.update(root, (cache) => {
+      const record = Object.values(cache.explanations)[0]!;
+      const summary = Object.values(cache.fileSummaries!)[0]!;
+      return {
+        ...cache,
+        explanations: { ...cache.explanations, "other-model": { ...record, explanationConfig: "another model" } },
+        fileSummaries: { ...cache.fileSummaries, "other-model": { ...summary, model: "other" } },
+        folderSummaries: { folder: { path: "", value: { summary: "A folder", overview: "", parts: [] }, fingerprint: "old", provider: "mock", model: "other", promptVersion: "old", savedAt: 1 } },
+        projectFlows: { flows: { path: "", flows: [], fingerprint: "old", provider: "mock", model: "other", promptVersion: "old", savedAt: 1 } }
+      };
+    });
+    const inventory = vi.fn(harness.gatherInventory);
+    const related = vi.fn(harness.gatherFunctionContext);
+    harness.gatherInventory = inventory;
+    harness.gatherFunctionContext = related;
+    const requests = provider.requests;
+    expect(await service.cacheStats(root)).toEqual({ explanations: 2, fileSummaries: 2, folderSummaries: 1, flows: 1, mapSavedAt: expect.any(Number) });
+    expect(inventory).not.toHaveBeenCalled();
+    expect(related).not.toHaveBeenCalled();
+    expect(provider.requests).toBe(requests);
+    await service.clearCache(root);
+    expect(await service.cacheStats(root)).toEqual({ explanations: 0, fileSummaries: 0, folderSummaries: 0, flows: 0 });
+  });
+
+  it("notifies the header after a successful disk-cache write or clear, not after reads", async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), "downside-up-stats-"));
+    const changed = vi.fn();
+    try {
+      const store = new FileRepositoryCacheStore(directory, changed);
+      const service = createService(store, new MockProvider());
+      await service.cacheStats(root);
+      expect(changed).not.toHaveBeenCalled();
+      await service.explain(root, target(), fakeDocument);
+      expect(changed).toHaveBeenCalledWith(root);
+      changed.mockClear();
+      await service.cacheStats(root);
+      expect(changed).not.toHaveBeenCalled();
+      await service.clearCache(root);
+      expect(changed).toHaveBeenCalledExactlyOnceWith(root);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
   it("primes before explaining, then revisits without provider calls", async () => {
     const provider = new MockProvider();
     const store = new MemoryRepositoryCacheStore();

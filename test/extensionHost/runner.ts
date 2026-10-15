@@ -198,6 +198,47 @@ export async function run(): Promise<void> {
   );
   console.log("Downside Up integration tests: saved explanations listed after reopening the preview.");
 
+  const headerBeforeEdit = await waitFor(
+    async () => api.header().stats?.explanations ? api.header() : undefined,
+    "saved record statistics in the header"
+  );
+  assert.ok(headerBeforeEdit.stats!.explanations >= 2);
+  assert.ok(headerBeforeEdit.stats!.fileSummaries >= 1);
+  assert.equal(headerBeforeEdit.stats!.outdatedHere, 0);
+  assert.equal(headerBeforeEdit.crumbs[0]?.level, "project");
+  assert.equal(headerBeforeEdit.crumbs.at(-1)?.level, "file");
+  const savedExplanationCount = api.allExplanations().length;
+  const describeBefore = api.explanationOf("describeCatalog");
+  const changeCheckout = async (from: string, to: string) => {
+    const source = jsDocument.getText();
+    const offset = source.indexOf(from);
+    assert.ok(offset >= 0);
+    const edit = new vscode.WorkspaceEdit();
+    edit.replace(jsDocument.uri, new vscode.Range(jsDocument.positionAt(offset), jsDocument.positionAt(offset + from.length)), to);
+    assert.equal(await vscode.workspace.applyEdit(edit), true);
+  };
+  try {
+    await changeCheckout("book.available = false;", "book.available = true;");
+    await waitFor(
+      async () => api.header().stats?.outdatedHere === 2 ? true : undefined,
+      "the edited function and file summary to become outdated"
+    );
+    assert.equal(api.allExplanations().length, savedExplanationCount, "Local stats and freshness checks add no explanations.");
+    const cancelledBatch = api.regenerateOutdated();
+    api.cancel();
+    await cancelledBatch;
+    assert.equal(api.header().stats?.outdatedHere, 2, "Cancelling before generation leaves the outdated set untouched.");
+    await api.regenerateOutdated();
+    assert.equal(api.header().stats?.outdatedHere, 0, "The explicit batch refreshes the edited function and file summary.");
+    assert.equal(api.previewExplanations().find((view) => view.functionName === "checkout")?.status, "current");
+    assert.deepEqual(api.explanationOf("describeCatalog"), describeBefore, "The current neighbouring function is not regenerated.");
+  } finally {
+    await changeCheckout("book.available = true;", "book.available = false;");
+  }
+  await waitFor(async () => api.header().stats?.outdatedHere === 2 ? true : undefined, "the restored source to be rechecked");
+  await api.regenerateOutdated();
+  console.log("Downside Up integration tests: header statistics stay local and explicit regeneration targets only outdated items.");
+
   const jsRepository = await findRepositoryRoot(jsRoot);
   const jsCalled = await waitFor(async () => {
     const called = await findCalledFunctions(jsTarget, jsDocument, await gatherInventory(jsRepository));
@@ -364,7 +405,58 @@ export async function run(): Promise<void> {
   const flows = api.shownFlows();
   assert.equal(flows?.length, 1, "The mock model's flow is shown.");
   assert.ok(flows![0]!.refs.some((ref) => ref?.startsWith("inventory.go")), "Flow steps link to files and functions the extension found.");
+  const appendGoNote = async (remove: boolean) => {
+    const note = "\n// A temporary header-statistics test note.\n";
+    const source = goDocument.getText();
+    const edit = new vscode.WorkspaceEdit();
+    if (remove) {
+      const offset = source.lastIndexOf(note);
+      assert.ok(offset >= 0);
+      edit.delete(goDocument.uri, new vscode.Range(goDocument.positionAt(offset), goDocument.positionAt(offset + note.length)));
+    } else {
+      edit.insert(goDocument.uri, goDocument.positionAt(source.length), note);
+    }
+    assert.equal(await vscode.workspace.applyEdit(edit), true);
+  };
+  try {
+    await appendGoNote(false);
+    await api.previewFolder("");
+    await waitFor(async () => api.shownFolder()?.ready && api.flowsReady() && api.header().stats?.outdatedHere === 1 ? true : undefined, "an outdated direct child file summary");
+    assert.equal(api.header().stats?.scope, "folder");
+    await api.regenerateOutdated();
+    assert.equal(api.header().stats?.outdatedHere, 0, "Folder regeneration refreshes its listed outdated file summary without explaining any functions.");
+  } finally {
+    await appendGoNote(true);
+  }
+  await api.previewFolder("");
+  await waitFor(async () => api.shownFolder()?.ready && api.flowsReady() ? true : undefined, "the folder input after restoring its file");
+  await api.regenerateOutdated();
   await api.previewFolder("inventory");
+  await waitFor(async () => api.shownFolder()?.ready && api.flowsReady() ? true : undefined, "the inventory folder's summary and flows inputs");
+  await api.summarizeFolder();
+  await api.describeFlows();
+  const renameLookup = async (from: string, to: string) => {
+    const source = lookupDocument.getText();
+    const offset = source.indexOf(from);
+    assert.ok(offset >= 0);
+    const edit = new vscode.WorkspaceEdit();
+    edit.replace(lookupDocument.uri, new vscode.Range(lookupDocument.positionAt(offset), lookupDocument.positionAt(offset + from.length)), to);
+    assert.equal(await vscode.workspace.applyEdit(edit), true);
+  };
+  try {
+    await renameLookup(") FindAvailable(", ") FindAnyAvailable(");
+    await api.previewFolder("inventory");
+    await waitFor(async () => api.shownFolder()?.ready && api.flowsReady() && api.header().stats?.outdatedHere === 2 ? true : undefined, "outdated folder summary and main flows");
+    const beforeFolderBatch = api.allExplanations().length;
+    await api.regenerateOutdated();
+    assert.equal(api.header().stats?.outdatedHere, 0, "The fixed batch refreshes the folder summary and main flows.");
+    assert.equal(api.allExplanations().length, beforeFolderBatch, "Folder regeneration never adds function requests.");
+  } finally {
+    await renameLookup(") FindAnyAvailable(", ") FindAvailable(");
+  }
+  await api.previewFolder("inventory");
+  await waitFor(async () => api.shownFolder()?.ready && api.flowsReady() ? true : undefined, "the restored inventory folder inputs");
+  await api.regenerateOutdated();
   await api.previewFolder("");
   await waitFor(async () => api.shownFlows()?.length === 1 ? true : undefined, "the saved flows to be shown again");
   await waitFor(async () => api.shownFolder()?.ready ? true : undefined, "the folder summary input before the tree run");
@@ -550,6 +642,12 @@ export async function run(): Promise<void> {
     "the api component page"
   );
   assert.equal(component.level, "component");
+  const componentCrumbs = await waitFor(
+    async () => api.header().crumbs.some((crumb) => crumb.level === "component") ? api.header().crumbs : undefined,
+    "level-aware project breadcrumbs"
+  );
+  assert.deepEqual(componentCrumbs.map((crumb) => crumb.level), ["project", "group", "component"]);
+  assert.ok(componentCrumbs.every((crumb) => crumb.summary), "Rich breadcrumbs reuse the saved map's summary.");
   assert.deepEqual(component.mapNodes, ["Mock outside service:external", "api:inside", "worker:outside"]);
   assert.deepEqual(component.contracts, ["services/api/api/openapi.yaml"], "A component's summary input holds its API contracts.");
   await api.summarizeFolder();

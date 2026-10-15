@@ -76,6 +76,14 @@ export interface ProviderDescriptor {
   readonly modelId: string;
 }
 
+export interface CacheStats {
+  readonly explanations: number;
+  readonly fileSummaries: number;
+  readonly folderSummaries: number;
+  readonly flows: number;
+  readonly mapSavedAt?: number;
+}
+
 export type ProgressStage =
   | "checking"
   | "priming"
@@ -298,6 +306,18 @@ export class ExplanationService {
   private readonly generationFences = new Map<string, number>();
 
   constructor(private readonly options: ExplanationServiceOptions) {}
+
+  /** Saved records across all models; no source scanning or freshness checks. */
+  async cacheStats(root: string): Promise<CacheStats> {
+    const cache = await this.options.store.read(root);
+    return {
+      explanations: Object.keys(cache.explanations).length,
+      fileSummaries: Object.keys(cache.fileSummaries ?? {}).length,
+      folderSummaries: Object.keys(cache.folderSummaries ?? {}).length,
+      flows: Object.keys(cache.projectFlows ?? {}).length,
+      ...(cache.projectMap ? { mapSavedAt: cache.projectMap.savedAt } : {})
+    };
+  }
 
   async findCachedExplanation(
     root: string,

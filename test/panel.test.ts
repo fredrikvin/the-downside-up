@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { panelHtml, type ExplanationView } from "../src/presentation/panel";
+import { panelHtml, type ExplanationView, type PanelState, type Crumb } from "../src/presentation/panel";
 import type { Flowchart } from "../src/core/types";
 
 class TestElement {
@@ -8,9 +8,14 @@ class TestElement {
   className = "";
   textContent = "";
   id = "";
+  title = "";
+  hidden = false;
+  disabled = false;
   readonly dataset: Record<string, string> = {};
   constructor(readonly tagName: string) {}
   append(...children: Array<TestElement | string>): void { this.children.push(...children); }
+  prepend(...children: Array<TestElement | string>): void { this.children.unshift(...children); }
+  replaceChildren(...children: Array<TestElement | string>): void { this.children.splice(0, this.children.length, ...children); this.textContent = ""; }
   setAttribute(name: string, value: string): void { this.attributes.set(name, value); }
   addEventListener(): void {}
   elements(): TestElement[] {
@@ -22,11 +27,17 @@ function webviewHelpers() {
   const html = panelHtml("n");
   const start = html.indexOf('<script nonce="n">') + '<script nonce="n">'.length;
   const script = html.slice(start, html.indexOf("</script>", start));
-  return new Function("acquireVsCodeApi", "document", "window", script + "\nreturn { layoutFlow, downwardPath, renderEntry, renderAiBody, missingFormat };")(
+  const elements = new Map<string, TestElement>();
+  const element = (id: string) => {
+    if (!elements.has(id)) elements.set(id, new TestElement("button"));
+    return elements.get(id)!;
+  };
+  const helpers = new Function("acquireVsCodeApi", "document", "window", script + "\nreturn { layoutFlow, downwardPath, renderEntry, renderAiBody, missingFormat, renderHeader, renderCrumbs };")(
     () => ({ getState: () => ({}), postMessage: () => undefined }),
     {
-      getElementById: () => new TestElement("a"),
+      getElementById: element,
       createElement: (tag: string) => new TestElement(tag),
+      createElementNS: (_ns: string, tag: string) => new TestElement(tag),
       createTextNode: (text: string) => text
     },
     { addEventListener: () => undefined }
@@ -36,7 +47,10 @@ function webviewHelpers() {
     renderEntry(entry: Record<string, unknown>, views: Map<string, ExplanationView>): TestElement;
     renderAiBody(view: ExplanationView): TestElement;
     missingFormat(view: ExplanationView, format: string): TestElement;
+    renderHeader(state: Pick<PanelState, "models" | "provider" | "busy" | "hasRepository" | "stats" | "statsError">): void;
+    renderCrumbs(crumbs: readonly Crumb[]): void;
   };
+  return { ...helpers, element };
 }
 
 describe("preview webview document", () => {
@@ -59,6 +73,63 @@ describe("preview webview document", () => {
     const start = html.indexOf('<script nonce="n">') + '<script nonce="n">'.length;
     const script = html.slice(start, html.indexOf("</script>", start));
     expect(() => new Function(script)).not.toThrow();
+  });
+
+  it("uses native, responsive icon buttons without duplicate keyboard handlers", () => {
+    const html = panelHtml("n");
+    for (const id of ["chooseModels", "cancel", "refreshContext", "clearCache"]) {
+      expect(html).toMatch(new RegExp('<button id="' + id + '"[^>]*type="button"[^>]*aria-label='));
+    }
+    expect(html).toContain('@container (max-width: 420px)');
+    expect(html).toContain('.toolbar .btn-label { display: none; }');
+    expect(html).toContain('class="tool-button danger"');
+    expect(html).toContain('post({ type: "regenerateOutdated" })');
+    expect(html).toContain('button.addEventListener("click", () => post({ type }))');
+  });
+
+  it("shows both model roles, saved counts, scoped outdated status, and an explicit batch action", () => {
+    const { renderHeader, element } = webviewHelpers();
+    const base = { provider: "vscode-lm" as const, models: { explanation: "Fast", overview: "Strong" }, busy: false, hasRepository: true };
+    renderHeader({
+      ...base,
+      stats: { explanations: 12, fileSummaries: 1, folderSummaries: 2, flows: 3, outdatedHere: 2, scope: "file", mapSavedAt: Date.now() }
+    });
+    expect(element("chooseModels").elements().some((node) => node.className === "map-model" && node.textContent === " · map: Strong")).toBe(true);
+    expect(element("chooseModels").title).toContain("Overview & project map: Strong");
+    const stats = element("stats").elements();
+    expect(stats.map((node) => node.textContent)).toEqual(expect.arrayContaining(["12 explanations", "1 file summary", "2 folder summaries", "3 flow sets", "2 outdated in this file"]));
+    expect(stats.find((node) => node.id === "regenerateOutdated")?.disabled).toBe(false);
+    expect(element("stats").title).toContain("across all models");
+    renderHeader({ ...base, models: { explanation: "Fast", overview: "Fast" }, busy: true, stats: { explanations: 1, fileSummaries: 0, folderSummaries: 0, flows: 0, outdatedHere: 1, scope: "folder" } });
+    expect(element("chooseModels").elements().some((node) => node.className === "map-model")).toBe(false);
+    expect(element("stats").elements().find((node) => node.id === "regenerateOutdated")?.disabled).toBe(true);
+    renderHeader({ ...base, stats: { explanations: 0, fileSummaries: 0, folderSummaries: 0, flows: 0, outdatedHere: 0, scope: "file" } });
+    expect(element("stats").elements().some((node) => node.id === "regenerateOutdated")).toBe(false);
+    renderHeader({ ...base, statsError: "Cache could not be read" });
+    expect(element("stats").elements().find((node) => node.className === "error")?.textContent).toBe("Cache could not be read");
+    renderHeader({ ...base, provider: "mock" });
+    expect(element("chooseModels").elements().some((node) => node.textContent === "Mock mode")).toBe(true);
+  });
+
+  it("renders level-aware crumbs as text, marking rich pages and the current location", () => {
+    const { renderCrumbs, element } = webviewHelpers();
+    const crumbs: Crumb[] = [
+      { name: "project", level: "project", summary: "<script>not markup</script>", target: "root" },
+      { name: "services", level: "group", target: "services" },
+      { name: "api", level: "component", target: "api" },
+      { name: "module", level: "module", target: "module" },
+      { name: "api.ts", level: "file" }
+    ];
+    renderCrumbs(crumbs);
+    const nodes = element("crumbs").elements();
+    expect(nodes.filter((node) => node.className.endsWith(" rich"))).toHaveLength(3);
+    expect(nodes.find((node) => node.className === "crumb level-project rich")?.title).toBe("Project — <script>not markup</script>");
+    expect(nodes.find((node) => node.className === "crumb level-file")?.attributes.get("aria-current")).toBe("page");
+    expect(nodes.filter((node) => node.tagName === "svg")).toHaveLength(5);
+    expect(nodes.filter((node) => node.tagName === "svg").every((node) => node.attributes.get("aria-hidden") === "true")).toBe(true);
+    renderCrumbs([crumbs[0]!]);
+    expect(element("crumbs").hidden).toBe(false);
+    expect(element("crumbs").elements().find((node) => node.className.includes("level-project"))?.attributes.get("aria-current")).toBe("page");
   });
 
   it("reflows flowchart branches and side exits vertically without losing nodes or loops", () => {
