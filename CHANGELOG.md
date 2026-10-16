@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.33.1
+
+- Simplify the Marketplace README around installation, everyday usage, privacy,
+  and limitations. Move detailed configuration and contributor instructions
+  into separate guides included in the extension package.
+
 ## 0.33.0
 
 - Offer a repository-wide Initialize project button when context is missing,
