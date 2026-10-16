@@ -125,6 +125,7 @@ describe("preview webview document", () => {
       ...base,
       stats: { explanations: 12, fileSummaries: 1, folderSummaries: 2, flows: 3, outdatedHere: 2, scope: "file", mapSavedAt: Date.now() }
     });
+
     expect(element("chooseModel").elements().filter((node) => node.className === "model-role" || node.className === "model-name").map((node) => node.textContent)).toEqual(["Functions", "Fast"]);
     expect(element("chooseOverviewModel").elements().filter((node) => node.className === "model-role" || node.className === "model-name").map((node) => node.textContent)).toEqual(["Project overview", "Strong"]);
     expect(element("chooseOverviewModel").title).toContain("Project priming and repository context reviews");
@@ -158,6 +159,26 @@ describe("preview webview document", () => {
     }
     renderHeader({ ...base, models: { explanation: "Fallback" } });
     expect(element("chooseOverviewModel").elements().find((node) => node.className === "model-name")?.textContent).toBe("Fallback");
+  });
+
+  it("puts retained token usage and cache counts in a disclosure and hides zero outdated counts", () => {
+    const { renderHeader, element } = webviewHelpers();
+    renderHeader({
+      provider: "vscode-lm", models: { explanation: "Fast" }, busy: false, hasRepository: true,
+      stats: {
+        explanations: 1, fileSummaries: 0, folderSummaries: 0, flows: 0, outdatedHere: 0, scope: "file",
+        usage: {
+          inputTokens: 100, outputTokens: 20, estimated: true, unrecorded: 0,
+          models: [{ role: "Functions", provider: "vscode-lm", model: "Fast", inputTokens: 100, outputTokens: 20, estimated: true }]
+        }
+      }
+    });
+    const details = element("stats").elements().find((node) => node.tagName === "details");
+    expect(details).toBeDefined();
+    expect(details!.elements().find((node) => node.tagName === "summary")?.textContent).toBe("Tokens in current cache: ~120");
+    expect(details!.elements().map((node) => node.textContent)).toContain("Functions: 100 input / 20 output");
+    expect(details!.elements().map((node) => node.textContent)).toContain("Fast (vscode-lm): ~100 input / 20 output");
+    expect(element("stats").elements().some((node) => node.textContent.includes("0 outdated"))).toBe(false);
   });
 
   it("renders level-aware crumbs as text, marking rich pages and the current location", () => {

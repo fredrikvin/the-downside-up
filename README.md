@@ -119,15 +119,22 @@ request and may send code to the overview model. Clear keeps its confirmation
 and removes saved sharing consent as well as this repository's cached results.
 Both buttons are disabled while requests are active; Cancel remains available.
 
-The header counts saved explanations, file summaries, folder summaries, and
-flow sets across **all models** for the repository, plus when its project map
-was saved. These are local cache reads, not a repository-wide freshness scan;
+The header shows **Tokens in current cache**. Expand it for recorded input/output
+tokens, totals for **Overview** and **Functions**, and a per-provider/model breakdown.
+Overview includes mapping, folder summaries, and main flows; Functions includes
+explanations, added formats, and file summaries. Only retained records contribute:
+replacing a record replaces its usage, and Clear resets the total. This is not
+lifetime usage or billing, and failed/cancelled requests are not included.
+Estimated totals use `~`. The disclosure also counts saved explanations, file
+summaries, folder summaries, and flow sets across **all models**, plus map age.
+These are local cache reads, not a repository-wide freshness scan;
 map age does not mean it is current. **Outdated in this file/folder** counts
 only saved items checked here: shown function explanations and the file summary,
 or the folder's displayed summary, flows, and directly listed file summaries.
 It does not include nested folders. **Regenerate N outdated here** explicitly
 requests fresh versions of that fixed set, asking for sharing approval as
-needed. Cancel stops remaining requests; completed results stay saved.
+needed. Zero outdated counts are hidden. Cancel stops remaining requests; completed results stay saved.
+Version 0.31.0 updates the local cache schema; use Clear for older caches when prompted.
 
 **Folder and project previews.** A folder can be previewed like a file: run
 **Open Preview to the Side** on a folder in the Explorer, run **Downside Up:

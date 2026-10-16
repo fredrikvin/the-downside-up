@@ -194,6 +194,9 @@ export interface ProjectMap {
 export type ProjectMapDetail = "brief" | "detailed";
 
 export interface ProjectMapRecord {
+  readonly usage?: Usage;
+  readonly model?: string;
+  readonly provider?: ProviderKind;
   readonly value: ProjectMap;
   /** Provider, model, prompt version, and detail setting it was made with. */
   readonly config: string;
@@ -238,6 +241,7 @@ export interface ProjectFlowsDraft {
 }
 
 export interface ProjectFlowsRecord {
+  readonly usage?: Usage;
   readonly path: string;
   readonly flows: readonly ProjectFlow[];
   readonly fingerprint: string;
@@ -248,6 +252,7 @@ export interface ProjectFlowsRecord {
 }
 
 export interface FolderSummaryRecord {
+  readonly usage?: Usage;
   /** Repository-relative folder path, or "" for the repository root. */
   readonly path: string;
   readonly value: FolderSummary;
@@ -286,6 +291,9 @@ export interface TrackedInput {
 }
 
 export interface ExplanationRecord {
+  readonly usage?: Usage;
+  readonly model?: string;
+  readonly formatUsage?: Partial<Record<ExplanationFormat, Usage>>;
   readonly key: string;
   readonly symbolId: string;
   readonly languageId: string;
@@ -312,7 +320,7 @@ export interface OverviewRecord {
 }
 
 export interface RepositoryCache {
-  readonly schemaVersion: 1;
+  readonly schemaVersion: 2;
   readonly consent: {
     readonly provider: ExternalProviderKind;
     readonly model: string;
@@ -340,6 +348,7 @@ export interface RepositoryCache {
 }
 
 export interface FileSummaryRecord {
+  readonly usage?: Usage;
   readonly path: string;
   readonly summary: string;
   /** Fingerprint of the file text (whitespace-insensitive) the summary was made from. */

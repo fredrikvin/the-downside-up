@@ -3,6 +3,7 @@ import { randomBytes } from "node:crypto";
 import type { ExplanationFormat, Flowchart, FunctionExplanation, RepositoryOverview } from "../core/types";
 import type { SourceReference } from "../context/related";
 import type { FileOverview } from "../context/fileOverview";
+import type { CachedUsage } from "../cache/usage";
 import { lineForOffset, monotonicAnchors, offsetForLine } from "./scrollSync";
 import { structureLayout } from "./structureLayout";
 
@@ -148,6 +149,7 @@ export interface PanelState {
   readonly provider: string;
   readonly models: { readonly explanation: string; readonly overview?: string };
   readonly stats?: {
+    readonly usage?: CachedUsage;
     readonly explanations: number;
     readonly fileSummaries: number;
     readonly folderSummaries: number;
@@ -513,6 +515,7 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
     const chartObservers = [];
     let renderedModels = "";
     let renderedStats = "";
+    let savedDetailsOpen = false;
 
     function el(tag, className, text) {
       const node = document.createElement(tag);
@@ -629,17 +632,43 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
       } else if (next.stats) {
         const saved = next.stats;
         stats.title = "Local saved records for this repository, across all models. Outdated counts cover only items checked in the shown " + saved.scope + ", not the whole repository.";
-        stats.append(el("span", "", "Saved in repository:"));
+        const details = el("details", "saved-details");
+        details.open = savedDetailsOpen;
+        details.addEventListener("toggle", () => { savedDetailsOpen = details.open; });
+        const summary = el("summary", "");
+        const usage = saved.usage;
+        summary.textContent = usage
+          ? "Tokens in current cache: " + (usage.estimated ? "~" : "") + (usage.inputTokens + usage.outputTokens).toLocaleString()
+          : "Saved";
+        details.append(summary);
+        const body = el("div", "");
+        body.append(el("p", "small", "Recorded tokens for retained cache records, not lifetime usage or billing. Replaced records and failed or cancelled requests are not included."));
+        if (usage) {
+          body.append(el("p", "", usage.inputTokens.toLocaleString() + " input / " + usage.outputTokens.toLocaleString() + " output"));
+          for (const role of ["Overview", "Functions"]) {
+            const groups = usage.models.filter((group) => group.role === role);
+            const input = groups.reduce((sum, group) => sum + group.inputTokens, 0);
+            const output = groups.reduce((sum, group) => sum + group.outputTokens, 0);
+            body.append(el("p", "", role + ": " + input.toLocaleString() + " input / " + output.toLocaleString() + " output"));
+            for (const group of groups) {
+              body.append(el("p", "small", group.model + " (" + group.provider + "): " + (group.estimated ? "~" : "") + group.inputTokens.toLocaleString() + " input / " + group.outputTokens.toLocaleString() + " output"));
+            }
+          }
+          if (usage.unrecorded) body.append(el("p", "small", usage.unrecorded + " older records have no recorded token usage; totals are incomplete."));
+        }
+        body.append(el("span", "", "Saved in repository:"));
         for (const [key, one, many] of [["explanations", "explanation", "explanations"], ["fileSummaries", "file summary", "file summaries"], ["folderSummaries", "folder summary", "folder summaries"], ["flows", "flow set", "flow sets"]]) {
           const count = saved[key];
-          stats.append(el("span", "", count + " " + (count === 1 ? one : many)));
+          body.append(el("p", "small", count + " " + (count === 1 ? one : many)));
         }
         const map = el("span", "", saved.mapSavedAt === undefined ? "No project map" : "Map saved " + savedAge(saved.mapSavedAt));
         if (saved.mapSavedAt !== undefined) map.title = "Saved " + new Date(saved.mapSavedAt).toLocaleString() + "; age does not indicate freshness";
-        stats.append(map);
+        body.append(map);
+        details.append(body);
+        stats.append(details);
         const outdated = el("span", saved.outdatedHere ? "outdated" : "", saved.outdatedHere + " outdated in this " + saved.scope);
         outdated.title = "Only saved items checked here; not a repository-wide freshness scan";
-        stats.append(outdated);
+        if (saved.outdatedHere > 0) stats.append(outdated);
         if (saved.outdatedHere > 0) {
           const regenerate = el("button", "", "Regenerate " + saved.outdatedHere + " outdated here");
           regenerate.id = "regenerateOutdated";

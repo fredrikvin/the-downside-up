@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.31.0
+
+- Replace expanded cache statistics with a tokens-in-current-cache disclosure,
+  including input/output totals and overview/functions breakdowns per model.
+- Record usage alongside saved results; replaced records no longer contribute.
+  Counts are recorded tokens, not lifetime usage or billing.
+- Shorten project refresh confirmation and hide zero outdated counts.
+- Bump the local cache schema for usage metadata; Clear is required for older caches.
+
 ## 0.30.2
 
 - Animate the existing header divider during requests instead of a separate bar.

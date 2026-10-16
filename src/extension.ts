@@ -3006,7 +3006,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       if (repositoryJob !== controller) return;
       notice = {
         tone: "info",
-        text: `${changed ? "Repository context changed. Saved explanations stay current; they note that an earlier overview was used." : "Repository context and project map checked."} ${formatUsage(result.usage)}`
+        text: "Project refreshed."
       };
       if (changed) scheduleRecheck();
     } catch (error) {

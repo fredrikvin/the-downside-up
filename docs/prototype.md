@@ -178,11 +178,23 @@ background highlighting on hover, keyboard focus, or press; Clear also turns red
 on interaction and keeps its modal confirmation. Keyboard focus retains its outline.
 Icons are fixed inline SVG paths, with no font, asset, or CSP changes.
 
-Local header statistics count saved explanation, file-summary, folder-summary,
+The header's **Tokens in current cache** disclosure totals recorded usage on
+retained records, split into input/output and grouped by Overview/Functions
+and provider/model. Map usage counts the joint overview/map request once;
+folder summaries and flows are Overview work, while explanations, added
+formats, and file summaries are Functions work. Added formats store usage
+separately by format. Replacements replace their contribution, Clear resets it,
+and cache hits do not add usage. Totals are not lifetime usage or billing and
+exclude discarded/failed/cancelled requests. Estimates are marked `~`; records
+without usage are explicitly reported as incomplete. Cache schema version 2
+records this metadata; older schemas require Clear.
+The disclosure also counts saved explanation, file-summary, folder-summary,
 and flow-set records across all models for the repository, and show the map's
 saved age (not a freshness claim). The host retains a snapshot, refreshed on
 navigation and successful cache writes/clear, not on cursor movement or
 webview renders. Read failures show an error instead of zero counts.
+Zero outdated counts are hidden. Project refresh success says only
+**Project refreshed.**, without a per-request token report.
 The outdated count is scoped to checked items here: shown function explanations
 and a file's summary, or a folder's displayed summary, main flows, and its
 directly listed file summaries. It does not scan the repository or include

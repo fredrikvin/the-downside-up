@@ -5,7 +5,7 @@ import type { RepositoryCache } from "../core/types";
 
 export function emptyRepositoryCache(): RepositoryCache {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     consent: null,
     overview: null,
     explanations: {}
@@ -17,7 +17,7 @@ function parseCache(raw: string): RepositoryCache {
   if (
     typeof parsed !== "object" ||
     parsed === null ||
-    (parsed as { schemaVersion?: unknown }).schemaVersion !== 1 ||
+    (parsed as { schemaVersion?: unknown }).schemaVersion !== 2 ||
     !("explanations" in parsed) ||
     typeof (parsed as { explanations?: unknown }).explanations !== "object"
   ) {

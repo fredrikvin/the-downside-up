@@ -2,6 +2,7 @@ import { basename, relative, sep } from "node:path";
 import * as vscode from "vscode";
 import { inputsMatch, explanationCacheKey } from "./cache/freshness";
 import type { RepositoryCacheStore } from "./cache/store";
+import { cachedUsage, type CachedUsage } from "./cache/usage";
 import { cacheKey, fingerprint } from "./core/fingerprint";
 import type {
   ExplanationFormat,
@@ -77,6 +78,7 @@ export interface ProviderDescriptor {
 }
 
 export interface CacheStats {
+  readonly usage?: CachedUsage;
   readonly explanations: number;
   readonly fileSummaries: number;
   readonly folderSummaries: number;
@@ -384,6 +386,7 @@ export class ExplanationService {
   async cacheStats(root: string): Promise<CacheStats> {
     const cache = await this.options.store.read(root);
     return {
+      usage: cachedUsage(cache),
       explanations: Object.keys(cache.explanations).length,
       fileSummaries: Object.keys(cache.fileSummaries ?? {}).length,
       folderSummaries: Object.keys(cache.folderSummaries ?? {}).length,
@@ -688,6 +691,8 @@ export class ExplanationService {
     }
 
     const entry: ExplanationRecord = {
+      usage: generated.usage,
+      model: descriptor.modelId,
       key,
       symbolId: target.symbolId,
       languageId: target.languageId,
@@ -861,7 +866,7 @@ export class ExplanationService {
       overviewConfig
     );
     const map = checkedProjectMap(generated.value.map, (path) => inventory.folders.has(path));
-    const mapRecord: ProjectMapRecord = { value: map, config: mapConfig, savedAt: Date.now() };
+    const mapRecord: ProjectMapRecord = { value: map, config: mapConfig, savedAt: Date.now(), usage: generated.usage, model: descriptor.modelId, provider: descriptor.kind };
     const updated = await this.options.store.update(root, (current) => this.fence(root) !== startingFence ? current : {
       ...current,
       overview,
@@ -927,7 +932,10 @@ export class ExplanationService {
     await this.options.store.update(root, (current) => {
       const record = current.explanations[key];
       if (!record || this.fence(root) !== startingFence) return current;
-      return { ...current, explanations: { ...current.explanations, [key]: { ...record, explanation } } };
+      return { ...current, explanations: { ...current.explanations, [key]: {
+        ...record, explanation, model: descriptor.modelId,
+        formatUsage: { ...record.formatUsage, [format]: generated.usage }
+      } } };
     });
     return { ...latest, explanation, usage: generated.usage, cached: false };
   }
@@ -1016,6 +1024,7 @@ export class ExplanationService {
       : checkedFlowReferences(generated.value, request.input.catalog);
     if (flows.length === 0) throw new Error("The model returned no usable flows.");
     const record: ProjectFlowsRecord = {
+      usage: generated.usage,
       path: input.path,
       flows,
       fingerprint: flowsInputFingerprint(request),
@@ -1075,6 +1084,7 @@ export class ExplanationService {
     const needing = new Set(input.parts.filter((part) => !part.summary).map((part) => part.name));
     const value: FolderSummary = { ...generated.value, parts: generated.value.parts.filter((part) => needing.has(part.name)) };
     const record: FolderSummaryRecord = {
+      usage: generated.usage,
       path: input.path,
       value,
       fingerprint: folderInputFingerprint(input),
@@ -1156,6 +1166,7 @@ export class ExplanationService {
       return undefined;
     }
     const record: FileSummaryRecord = {
+      usage: generated.usage,
       path,
       summary: generated.value.summary,
       fingerprint: startingFingerprint,
