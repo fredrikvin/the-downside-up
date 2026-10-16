@@ -171,7 +171,7 @@ beside its model name on a compact line, including when both use the same model.
 Names wrap and buttons stack in narrow columns without hiding either role. Tooltips
 describe the responsibilities, rather than calling project-level work only
 "map". Changing a model still uses the existing settings and consent rules.
-Refresh context and Clear cache are
+Refresh and Clear are
 native icon-and-label buttons, collapsing to labelled-for-accessibility icons
 in narrow columns. Header buttons are borderless and transparent at rest, with
 background highlighting on hover, keyboard focus, or press; Clear also turns red
@@ -763,8 +763,10 @@ reply is validated with the same parser as other providers. Malformed replies
 fail without an automatic retry. The request is checked against the model's
 `maxInputTokens` before sending, the output is capped, and requests time out
 after 10 minutes, allowing slower reasoning and overview models time to finish.
-The preview shows a sticky animated activity strip, current stage, and elapsed
-time while requests are active; reduced motion disables the strip animation.
+The preview animates the existing header divider and shows the current stage
+and elapsed time below the toolbar while requests are active; reduced motion
+disables the divider animation. Refresh and Clear are disabled while busy;
+Cancel remains available, and Clear retains its confirmation and descriptive tooltip.
 Elapsed time covers the continuous busy period, not a provider progress estimate.
 No ETA is inferred from file counts, since provider latency is unknown.
 Token usage comes from the model's `countTokens` and is

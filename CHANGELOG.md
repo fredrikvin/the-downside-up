@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.30.2
+
+- Animate the existing header divider during requests instead of a separate bar.
+- Shorten toolbar labels to **Refresh** and **Clear**, retaining descriptive tooltips.
+- Disable Clear while requests are active; Cancel remains available.
+
 ## 0.30.1
 
 - Allow VS Code language-model requests up to ten minutes instead of 90 seconds,

@@ -60,6 +60,7 @@ it("shows elapsed activity across updates and clears the timer when work stops",
     const { renderActivity, element } = webviewHelpers();
     renderActivity({ busy: true, notice: { tone: "progress", text: "Mapping the project…" } });
     expect(element("activity").hidden).toBe(false);
+    expect(element("header").className).toBe("header working");
     expect(element("activityStage").textContent).toBe("Mapping the project…");
     vi.advanceTimersByTime(65_000);
     expect(element("activityTime").textContent).toContain("1:05 elapsed");
@@ -69,6 +70,7 @@ it("shows elapsed activity across updates and clears the timer when work stops",
     expect(element("activityTime").textContent).toContain("1:06 elapsed");
     renderActivity({ busy: false });
     expect(element("activity").hidden).toBe(true);
+    expect(element("header").className).toBe("header");
     expect(vi.getTimerCount()).toBe(0);
   } finally {
     vi.useRealTimers();
@@ -110,6 +112,10 @@ describe("preview webview document", () => {
     expect(html.indexOf('<button id="chooseOverviewModel"')).toBeLessThan(html.indexOf('<button id="chooseModel"'));
     expect(html).toContain('background: transparent; border: 0;');
     expect(html).toContain('button:not(:disabled):is(:hover, :focus-visible, :active)');
+    expect(html).toContain('<span class="btn-label">Refresh</span>');
+    expect(html).toContain('<span class="btn-label">Clear</span>');
+    expect(html).toContain('.header.working::after');
+    expect(html).not.toContain('.activity::before');
   });
 
   it("shows both model roles, saved counts, scoped outdated status, and an explicit batch action", () => {
@@ -137,7 +143,12 @@ describe("preview webview document", () => {
       expect(element(id).elements().find((node) => node.className === "model-name")?.textContent).toBe("Fast");
     }
     expect(element("stats").elements().find((node) => node.id === "regenerateOutdated")?.disabled).toBe(true);
+    expect(element("clearCache").disabled).toBe(true);
+    expect(element("refreshContext").disabled).toBe(true);
+    expect(element("cancel").hidden).toBe(false);
     renderHeader({ ...base, stats: { explanations: 0, fileSummaries: 0, folderSummaries: 0, flows: 0, outdatedHere: 0, scope: "file" } });
+    expect(element("clearCache").disabled).toBe(false);
+    expect(element("refreshContext").disabled).toBe(false);
     expect(element("stats").elements().some((node) => node.id === "regenerateOutdated")).toBe(false);
     renderHeader({ ...base, statsError: "Cache could not be read" });
     expect(element("stats").elements().find((node) => node.className === "error")?.textContent).toBe("Cache could not be read");

@@ -113,10 +113,11 @@ then **Functions** for function explanations, added formats, and file summaries.
 Each shows its role beside the current model, even when both use the same model.
 They wrap in narrow sidebars without hiding either role. Tooltips explain what
 each model does. Header buttons are transparent and borderless until hover or
-keyboard focus; Clear cache turns red on interaction. **Refresh context** and **Clear cache** are icon
+keyboard focus; Clear turns red on interaction. **Refresh** and **Clear** are icon
 buttons with labels that collapse in narrow sidebars. Refresh is an explicit
 request and may send code to the overview model. Clear keeps its confirmation
 and removes saved sharing consent as well as this repository's cached results.
+Both buttons are disabled while requests are active; Cancel remains available.
 
 The header counts saved explanations, file summaries, folder summaries, and
 flow sets across **all models** for the repository, plus when its project map
@@ -256,7 +257,7 @@ To install a locally packaged VSIX, run
 
 ## Provider setup
 
-While requests are active, the preview shows an activity strip, the current
+While requests are active, the header divider animates and the preview shows the current
 stage, and elapsed time. Slower models may take several minutes; VS Code
 language-model requests allow up to ten minutes, and you can cancel at any time.
 Elapsed time is not an estimate of completion time.

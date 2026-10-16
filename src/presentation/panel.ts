@@ -241,7 +241,9 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
     .muted { color: var(--vscode-descriptionForeground); }
     .small { font-size: .85em; }
     [hidden] { display: none !important; }
-    .header { container-type: inline-size; padding: 8px 0; margin-bottom: 10px; border-bottom: 1px solid var(--separator); }
+    .header { position: relative; container-type: inline-size; padding: 8px 0; margin-bottom: 10px; border-bottom: 1px solid var(--separator); }
+    .header.working { border-bottom-color: var(--vscode-progressBar-background, #3794ff); }
+    .header.working::after { content: ""; position: absolute; bottom: -1px; left: 0; width: 100%; height: 1px; background: linear-gradient(90deg, transparent, var(--vscode-editor-background), transparent); background-size: 200% 100%; animation: shimmer 1.4s linear infinite; pointer-events: none; }
     .toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; font-size: 12px; }
     .toolbar .spacer { flex: 1; }
     .header button { display: inline-flex; align-items: center; justify-content: center; gap: 5px; font: inherit; color: inherit; background: transparent; border: 0; border-radius: 4px; padding: 3px 6px; cursor: pointer; min-height: 28px; box-sizing: border-box; }
@@ -420,14 +422,12 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
     .repo summary { cursor: pointer; font-weight: 600; }
     .repo p { white-space: pre-line; }
     footer { margin-top: 24px; }
-    .activity { position: sticky; top: 0; z-index: 10; padding: 8px 0; background: var(--vscode-editor-background); border-top: 3px solid var(--vscode-progressBar-background, #3794ff); }
-    .activity::before { content: ""; position: absolute; top: -3px; left: 0; width: 100%; height: 3px; background: linear-gradient(90deg, transparent, var(--vscode-editor-background), transparent); background-size: 200% 100%; animation: shimmer 1.4s linear infinite; }
-    @media (prefers-reduced-motion: reduce) { .activity::before { animation: none; } }
+    .activity { padding-top: 8px; font-size: .85em; }
+    @media (prefers-reduced-motion: reduce) { .header.working::after { animation: none; } }
   </style>
 </head>
 <body>
-  <div id="activity" class="activity" hidden><span id="activityStage" role="status"></span><span id="activityTime" class="muted small"></span></div>
-  <header class="header">
+  <header id="header" class="header">
     <nav class="toolbar" aria-label="Downside Up actions">
       <div class="model-selectors" role="group" aria-label="AI models">
         <span id="modelsIcon" aria-hidden="true"></span>
@@ -438,10 +438,11 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
       </div>
       <span class="spacer"></span>
       <button id="cancel" class="tool-button" type="button" title="Cancel requests" aria-label="Cancel requests" hidden><span class="btn-label">Cancel</span></button>
-      <button id="refreshContext" class="tool-button" type="button" title="Refresh repository context and project map; may send code to the overview model" aria-label="Refresh repository context"><span class="btn-label">Refresh context</span></button>
-      <button id="clearCache" class="tool-button danger" type="button" title="Clear this repository's cache and saved sharing consent" aria-label="Clear repository cache"><span class="btn-label">Clear cache</span></button>
+      <button id="refreshContext" class="tool-button" type="button" title="Refresh repository context and project map; may send code to the overview model" aria-label="Refresh repository context"><span class="btn-label">Refresh</span></button>
+      <button id="clearCache" class="tool-button danger" type="button" title="Clear this repository's cache and saved sharing consent" aria-label="Clear repository cache"><span class="btn-label">Clear</span></button>
     </nav>
     <div id="stats" class="stats" aria-label="Local cache statistics" hidden></div>
+    <div id="activity" class="activity" hidden><span id="activityStage" role="status"></span><span id="activityTime" class="muted small"></span></div>
   </header>
   <p id="notice" class="notice" role="status" aria-live="polite"></p>
   <aside id="prefetchConsent" class="prefetch-consent" aria-label="Background explanation approval" hidden></aside>
@@ -473,6 +474,7 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
     let activityTimer;
     function renderActivity(next) {
       const busy = next.busy;
+      byId("header").className = "header" + (busy ? " working" : "");
       byId("activity").hidden = !busy;
       byId("activityStage").textContent = busy
         ? (next.notice?.tone === "progress" ? next.notice.text : next.folder?.mapping || "Preparing explanations…")
@@ -615,6 +617,7 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
       byId("refreshContext").hidden = !next.hasRepository;
       byId("refreshContext").disabled = next.busy;
       byId("clearCache").hidden = !next.hasRepository;
+      byId("clearCache").disabled = next.busy;
       const statsKey = JSON.stringify([next.stats, next.statsError, next.busy, next.stats?.mapSavedAt === undefined ? "" : savedAge(next.stats.mapSavedAt)]);
       if (statsKey === renderedStats) return;
       renderedStats = statsKey;
