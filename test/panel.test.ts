@@ -11,13 +11,14 @@ class TestElement {
   title = "";
   hidden = false;
   disabled = false;
+  readonly listeners = new Map<string, () => void>();
   readonly dataset: Record<string, string> = {};
   constructor(readonly tagName: string) {}
   append(...children: Array<TestElement | string>): void { this.children.push(...children); }
   prepend(...children: Array<TestElement | string>): void { this.children.unshift(...children); }
   replaceChildren(...children: Array<TestElement | string>): void { this.children.splice(0, this.children.length, ...children); this.textContent = ""; }
   setAttribute(name: string, value: string): void { this.attributes.set(name, value); }
-  addEventListener(): void {}
+  addEventListener(type: string, listener: () => void): void { this.listeners.set(type, listener); }
   elements(): TestElement[] {
     return [this, ...this.children.flatMap((child) => typeof child === "string" ? [] : child.elements())];
   }
@@ -28,12 +29,13 @@ function webviewHelpers() {
   const start = html.indexOf('<script nonce="n">') + '<script nonce="n">'.length;
   const script = html.slice(start, html.indexOf("</script>", start));
   const elements = new Map<string, TestElement>();
+  const messages: unknown[] = [];
   const element = (id: string) => {
     if (!elements.has(id)) elements.set(id, new TestElement("button"));
     return elements.get(id)!;
   };
-  const helpers = new Function("acquireVsCodeApi", "document", "window", script + "\nreturn { layoutFlow, downwardPath, renderEntry, renderAiBody, missingFormat, renderHeader, renderCrumbs, renderActivity };")(
-    () => ({ getState: () => ({}), postMessage: () => undefined }),
+  const helpers = new Function("acquireVsCodeApi", "document", "window", script + "\nreturn { layoutFlow, downwardPath, renderEntry, renderAiBody, missingFormat, renderHeader, renderCrumbs, renderActivity, renderPageActions };")(
+    () => ({ getState: () => ({}), postMessage: (message: unknown) => messages.push(message) }),
     {
       getElementById: element,
       createElement: (tag: string) => new TestElement(tag),
@@ -49,9 +51,11 @@ function webviewHelpers() {
     missingFormat(view: ExplanationView, format: string): TestElement;
     renderHeader(state: Pick<PanelState, "models" | "provider" | "busy" | "hasRepository" | "stats" | "statsError">): void;
     renderCrumbs(crumbs: readonly Crumb[]): void;
-    renderActivity(state: Pick<PanelState, "busy" | "notice" | "folder">): void;
+    renderActivity(state: Pick<PanelState, "busy" | "notice" | "folder" | "stats">): void;
+    renderPageActions(state: Partial<PanelState>): void;
   };
-  return { ...helpers, element };
+  messages.length = 0;
+  return { ...helpers, element, messages };
 }
 
 it("shows elapsed activity across updates and clears the timer when work stops", () => {
@@ -78,6 +82,42 @@ it("shows elapsed activity across updates and clears the timer when work stops",
 });
 
 describe("preview webview document", () => {
+  it("places refresh actions in page context and uses amber only for known outdated content", () => {
+    const { renderPageActions, renderActivity, element, messages } = webviewHelpers();
+    const folder: NonNullable<PanelState["folder"]> = {
+      name: "Project", path: "", level: "project", mapState: "current",
+      fileCount: 0, children: [], limitations: [], summarizing: false,
+      canSummarize: false, canSummarizeTree: false, describingFlows: false, canDescribeFlows: false
+    };
+    renderPageActions({ busy: false, folder });
+    expect(element("pageActions").elements().find((node) => node.id === "pageRefresh")?.disabled).toBe(true);
+    renderPageActions({ busy: false, folder: { ...folder, mapState: "missing" } });
+    expect(element("pageActions").elements().map((node) => node.textContent)).toContain("Map project");
+    const mapButton = element("pageActions").elements().find((node) => node.id === "pageMap");
+    expect(mapButton?.disabled).toBe(false);
+    mapButton?.listeners.get("click")?.();
+    expect(messages).toEqual([{ type: "refreshContext" }]);
+    const stats: NonNullable<PanelState["stats"]> = {
+      explanations: 2, fileSummaries: 0, folderSummaries: 0, flows: 0, outdatedHere: 2, scope: "folder"
+    };
+    renderPageActions({ busy: false, folder, stats });
+    expect(element("pageActions").elements().map((node) => node.textContent)).toContain("2 outdated here");
+    element("pageActions").elements().find((node) => node.id === "pageRefresh")?.listeners.get("click")?.();
+    expect(messages).toEqual([{ type: "refreshContext" }, { type: "regenerateOutdated" }]);
+    renderActivity({ busy: false, folder, stats });
+    expect(element("header").className).toBe("header stale");
+    renderActivity({ busy: false, folder: { ...folder, mapState: "other" } });
+    expect(element("header").className).toBe("header stale");
+    renderActivity({ busy: true, folder: { ...folder, mapState: "other" } });
+    expect(element("header").className).toBe("header working");
+    renderPageActions({ busy: true, folder: { ...folder, mapState: "other" } });
+    expect(element("pageActions").elements().find((node) => node.id === "pageMap")?.disabled).toBe(true);
+    renderActivity({ busy: false });
+    expect(element("header").className).toBe("header");
+    renderPageActions({ busy: false });
+    expect(element("pageActions").children).toHaveLength(0);
+  });
+
   it("keeps a restrictive policy and renders content only as text", () => {
     const html = panelHtml("nonce-value");
     expect(html).toContain("default-src 'none'; style-src 'nonce-nonce-value'; script-src 'nonce-nonce-value';");
@@ -101,24 +141,25 @@ describe("preview webview document", () => {
 
   it("uses native, responsive icon buttons without duplicate keyboard handlers", () => {
     const html = panelHtml("n");
-    for (const id of ["chooseModel", "chooseOverviewModel", "cancel", "refreshContext", "clearCache"]) {
+    for (const id of ["chooseModel", "chooseOverviewModel", "cancel", "clearCache"]) {
       expect(html).toMatch(new RegExp('<button id="' + id + '"[^>]*type="button"[^>]*aria-label='));
     }
     expect(html).toContain('@container (max-width: 420px)');
     expect(html).toContain('.toolbar .btn-label { display: none; }');
     expect(html).toContain('class="tool-button danger"');
-    expect(html).toContain('post({ type: "regenerateOutdated" })');
+    expect(html).toContain('"Refresh outdated items on this page", "regenerateOutdated"');
+    expect(html.indexOf('id="pageActions"')).toBeGreaterThan(html.indexOf('</header>'));
     expect(html).toContain('button.addEventListener("click", () => post({ type }))');
     expect(html.indexOf('<button id="chooseOverviewModel"')).toBeLessThan(html.indexOf('<button id="chooseModel"'));
     expect(html).toContain('background: transparent; border: 0;');
     expect(html).toContain('button:not(:disabled):is(:hover, :focus-visible, :active)');
-    expect(html).toContain('<span class="btn-label">Refresh</span>');
+    expect(html).not.toContain('<button id="refreshContext"');
     expect(html).toContain('<span class="btn-label">Clear</span>');
     expect(html).toContain('.header.working::after');
     expect(html).not.toContain('.activity::before');
   });
 
-  it("shows both model roles, saved counts, scoped outdated status, and an explicit batch action", () => {
+  it("keeps model roles and repository cache details in the global header", () => {
     const { renderHeader, element } = webviewHelpers();
     const base = { provider: "vscode-lm" as const, models: { explanation: "Fast", overview: "Strong" }, busy: false, hasRepository: true };
     renderHeader({
@@ -136,20 +177,16 @@ describe("preview webview document", () => {
       expect(element(id).elements().filter((node) => node.tagName === "svg")).toHaveLength(1);
     }
     const stats = element("stats").elements();
-    expect(stats.map((node) => node.textContent)).toEqual(expect.arrayContaining(["12 explanations", "1 file summary", "2 folder summaries", "3 flow sets", "2 outdated in this file"]));
-    expect(stats.find((node) => node.id === "regenerateOutdated")?.disabled).toBe(false);
+    expect(stats.map((node) => node.textContent)).toEqual(expect.arrayContaining(["12 explanations", "1 file summary", "2 folder summaries", "3 flow sets"]));
     expect(element("stats").title).toContain("across all models");
     renderHeader({ ...base, models: { explanation: "Fast", overview: "Fast" }, busy: true, stats: { explanations: 1, fileSummaries: 0, folderSummaries: 0, flows: 0, outdatedHere: 1, scope: "folder" } });
     for (const id of ["chooseModel", "chooseOverviewModel"]) {
       expect(element(id).elements().find((node) => node.className === "model-name")?.textContent).toBe("Fast");
     }
-    expect(element("stats").elements().find((node) => node.id === "regenerateOutdated")?.disabled).toBe(true);
     expect(element("clearCache").disabled).toBe(true);
-    expect(element("refreshContext").disabled).toBe(true);
     expect(element("cancel").hidden).toBe(false);
     renderHeader({ ...base, stats: { explanations: 0, fileSummaries: 0, folderSummaries: 0, flows: 0, outdatedHere: 0, scope: "file" } });
     expect(element("clearCache").disabled).toBe(false);
-    expect(element("refreshContext").disabled).toBe(false);
     expect(element("stats").elements().some((node) => node.id === "regenerateOutdated")).toBe(false);
     renderHeader({ ...base, statsError: "Cache could not be read" });
     expect(element("stats").elements().find((node) => node.className === "error")?.textContent).toBe("Cache could not be read");

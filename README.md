@@ -113,11 +113,19 @@ then **Functions** for function explanations, added formats, and file summaries.
 Each shows its role beside the current model, even when both use the same model.
 They wrap in narrow sidebars without hiding either role. Tooltips explain what
 each model does. Header buttons are transparent and borderless until hover or
-keyboard focus; Clear turns red on interaction. **Refresh** and **Clear** are icon
-buttons with labels that collapse in narrow sidebars. Refresh is an explicit
-request and may send code to the overview model. Clear keeps its confirmation
+keyboard focus; Clear turns red on interaction. **Clear** is a repository-wide
+icon button with a label that collapses in narrow sidebars. Clear keeps its confirmation
 and removes saved sharing consent as well as this repository's cached results.
-Both buttons are disabled while requests are active; Cancel remains available.
+Clear and page actions are disabled while requests are active; Cancel remains available.
+
+The page heading below the divider has a **Refresh** icon for checked outdated
+items on that page. It is disabled when none are known to need updating.
+The project page also has a labelled **Map project** action when missing, or
+**Update project map** for a map made with different model/settings. These
+map actions are separate requests; they do not expand the outdated-item batch.
+Amber on the divider means known outdated content, not a repository-wide
+freshness check; animated blue takes precedence while working. Success does
+not leave a persistent message. Errors remain visible.
 
 The header shows **Tokens in current cache**. Expand it for recorded input/output
 tokens, totals for **Overview** and **Functions**, and a per-provider/model breakdown.
@@ -128,10 +136,10 @@ lifetime usage or billing, and failed/cancelled requests are not included.
 Estimated totals use `~`. The disclosure also counts saved explanations, file
 summaries, folder summaries, and flow sets across **all models**, plus map age.
 These are local cache reads, not a repository-wide freshness scan;
-map age does not mean it is current. **Outdated in this file/folder** counts
+map age does not mean it is current. **N outdated here** counts
 only saved items checked here: shown function explanations and the file summary,
 or the folder's displayed summary, flows, and directly listed file summaries.
-It does not include nested folders. **Regenerate N outdated here** explicitly
+It does not include nested folders. The page **Refresh** icon explicitly
 requests fresh versions of that fixed set, asking for sharing approval as
 needed. Zero outdated counts are hidden. Cancel stops remaining requests; completed results stay saved.
 Version 0.31.0 updates the local cache schema; use Clear for older caches when prompted.

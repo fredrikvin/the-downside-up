@@ -171,8 +171,15 @@ beside its model name on a compact line, including when both use the same model.
 Names wrap and buttons stack in narrow columns without hiding either role. Tooltips
 describe the responsibilities, rather than calling project-level work only
 "map". Changing a model still uses the existing settings and consent rules.
-Refresh and Clear are
-native icon-and-label buttons, collapsing to labelled-for-accessibility icons
+Clear is a repository-wide control; page Refresh lives beside the title below
+the divider. It refreshes the fixed set of checked outdated items on that page,
+with separate **Map project** (missing) or **Update project map** (different
+model/settings) actions on the project page. Map requests do not expand the
+outdated-item batch.
+The divider is amber for known outdated page content and blue/animated while
+busy, never a claim that the whole repository has been checked. Successful
+refresh leaves no persistent message; errors remain explicit.
+Page Refresh is an accessible icon button; Clear has a label that collapses
 in narrow columns. Header buttons are borderless and transparent at rest, with
 background highlighting on hover, keyboard focus, or press; Clear also turns red
 on interaction and keeps its modal confirmation. Keyboard focus retains its outline.
@@ -193,12 +200,12 @@ and flow-set records across all models for the repository, and show the map's
 saved age (not a freshness claim). The host retains a snapshot, refreshed on
 navigation and successful cache writes/clear, not on cursor movement or
 webview renders. Read failures show an error instead of zero counts.
-Zero outdated counts are hidden. Project refresh success says only
-**Project refreshed.**, without a per-request token report.
+Zero outdated counts are hidden. Successful refresh leaves no persistent
+message or per-request token report.
 The outdated count is scoped to checked items here: shown function explanations
 and a file's summary, or a folder's displayed summary, main flows, and its
 directly listed file summaries. It does not scan the repository or include
-nested folders. **Regenerate N outdated here** is an explicit request for a
+nested folders. The page **Refresh** icon is an explicit request for a
 fixed set of these items, through the existing sharing consent and request
 scheduler. It never adds missing items or new ones while navigating, skips
 current explanations, and stops on cancellation, decline, failure, model
@@ -917,8 +924,8 @@ cannot be resolved, that item has no source range rather than using an old offse
 
 Invalidation never regenerates automatically. Use the preview's
 **Regenerate** link, or select text in the function and run **Open Preview to
-the Side**, to regenerate, or explicitly request **Regenerate N outdated here**
-in the header for the checked items in the shown preview. **Refresh Repository
+the Side**, to regenerate, or use the page heading's **Refresh** icon
+for the checked outdated items in the shown preview. **Refresh Repository
 Context** explicitly reviews or rebuilds the overview. **Clear Repository
 Cache** removes cached overviews, explanations, and saved provider consent for
 that repository. Freshness means recorded inputs match; it does not prove the

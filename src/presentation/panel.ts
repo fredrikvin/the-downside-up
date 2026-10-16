@@ -245,6 +245,14 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
     [hidden] { display: none !important; }
     .header { position: relative; container-type: inline-size; padding: 8px 0; margin-bottom: 10px; border-bottom: 1px solid var(--separator); }
     .header.working { border-bottom-color: var(--vscode-progressBar-background, #3794ff); }
+    .header.stale { border-bottom-color: var(--vscode-editorWarning-foreground, #c9a000); }
+    .page-heading { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; border-bottom: 1px solid var(--separator); margin: 16px 0 12px; }
+    .page-heading h1 { flex: 1; border: 0; margin: 0; min-width: 0; overflow-wrap: anywhere; }
+    .page-actions { display: flex; align-items: center; gap: 8px; }
+    .page-actions button { display: inline-flex; align-items: center; gap: 5px; font: inherit; color: inherit; background: transparent; border: 0; padding: 5px; cursor: pointer; }
+    .page-actions button:disabled { opacity: .5; cursor: default; }
+    .page-actions button:not(:disabled):is(:hover, :focus-visible, :active) { background: var(--vscode-toolbar-hoverBackground); }
+    .page-actions svg { width: 16px; height: 16px; }
     .header.working::after { content: ""; position: absolute; bottom: -1px; left: 0; width: 100%; height: 1px; background: linear-gradient(90deg, transparent, var(--vscode-editor-background), transparent); background-size: 200% 100%; animation: shimmer 1.4s linear infinite; pointer-events: none; }
     .toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; font-size: 12px; }
     .toolbar .spacer { flex: 1; }
@@ -440,7 +448,6 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
       </div>
       <span class="spacer"></span>
       <button id="cancel" class="tool-button" type="button" title="Cancel requests" aria-label="Cancel requests" hidden><span class="btn-label">Cancel</span></button>
-      <button id="refreshContext" class="tool-button" type="button" title="Refresh repository context and project map; may send code to the overview model" aria-label="Refresh repository context"><span class="btn-label">Refresh</span></button>
       <button id="clearCache" class="tool-button danger" type="button" title="Clear this repository's cache and saved sharing consent" aria-label="Clear repository cache"><span class="btn-label">Clear</span></button>
     </nav>
     <div id="stats" class="stats" aria-label="Local cache statistics" hidden></div>
@@ -450,7 +457,7 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
   <aside id="prefetchConsent" class="prefetch-consent" aria-label="Background explanation approval" hidden></aside>
   <main id="doc">
     <nav id="crumbs" class="crumbs muted small" aria-label="Location" hidden></nav>
-    <h1 id="title">Downside Up</h1>
+    <div class="page-heading"><h1 id="title">Downside Up</h1><div id="pageActions" class="page-actions"></div></div>
     <p id="facts" class="muted small"></p>
     <p id="summary" class="summary" hidden></p>
     <blockquote id="purpose" hidden></blockquote>
@@ -476,7 +483,8 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
     let activityTimer;
     function renderActivity(next) {
       const busy = next.busy;
-      byId("header").className = "header" + (busy ? " working" : "");
+      const stale = Boolean(next.stats?.outdatedHere || (next.folder?.level === "project" && next.folder.mapState === "other"));
+      byId("header").className = "header" + (busy ? " working" : stale ? " stale" : "");
       byId("activity").hidden = !busy;
       byId("activityStage").textContent = busy
         ? (next.notice?.tone === "progress" ? next.notice.text : next.folder?.mapping || "Preparing explanations…")
@@ -617,8 +625,6 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
         }
       }
       byId("cancel").hidden = !next.busy;
-      byId("refreshContext").hidden = !next.hasRepository;
-      byId("refreshContext").disabled = next.busy;
       byId("clearCache").hidden = !next.hasRepository;
       byId("clearCache").disabled = next.busy;
       const statsKey = JSON.stringify([next.stats, next.statsError, next.busy, next.stats?.mapSavedAt === undefined ? "" : savedAge(next.stats.mapSavedAt)]);
@@ -666,19 +672,38 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
         body.append(map);
         details.append(body);
         stats.append(details);
-        const outdated = el("span", saved.outdatedHere ? "outdated" : "", saved.outdatedHere + " outdated in this " + saved.scope);
-        outdated.title = "Only saved items checked here; not a repository-wide freshness scan";
-        if (saved.outdatedHere > 0) stats.append(outdated);
-        if (saved.outdatedHere > 0) {
-          const regenerate = el("button", "", "Regenerate " + saved.outdatedHere + " outdated here");
-          regenerate.id = "regenerateOutdated";
-          regenerate.type = "button";
-          regenerate.disabled = next.busy;
-          regenerate.title = "Explicitly request fresh versions of these outdated items; uses your provider's usage limits or billing and asks for sharing approval if needed";
-          regenerate.prepend(icon("refresh"));
-          regenerate.addEventListener("click", () => post({ type: "regenerateOutdated" }));
-          stats.append(regenerate);
-        }
+      }
+    }
+
+    function renderPageActions(next) {
+      const container = byId("pageActions");
+      container.replaceChildren();
+      if (next.loading || (!next.document && !next.folder)) return;
+      const count = next.stats?.outdatedHere || 0;
+      const needsMap = next.folder?.level === "project" && next.folder.mapState !== "current";
+      if (count) {
+        const outdated = el("span", "small outdated", count + " outdated here");
+        outdated.title = "Only saved items checked on this page; not a repository-wide freshness scan";
+        container.append(outdated);
+      }
+      const action = (id, label, type, disabled, text) => {
+        const button = el("button", "");
+        button.type = "button";
+        button.id = id;
+        button.disabled = next.busy || disabled;
+        button.title = label + "; uses provider quota or billing and asks for sharing approval if needed";
+        button.setAttribute("aria-label", label);
+        button.append(icon("refresh"));
+        if (text) button.append(el("span", "small", text));
+        button.addEventListener("click", () => post({ type }));
+        container.append(button);
+      };
+      if (needsMap) {
+        const label = next.folder.mapState === "missing" ? "Map project" : "Update project map";
+        action("pageMap", label, "refreshContext", false, label);
+      }
+      if (count || !needsMap) {
+        action("pageRefresh", "Refresh outdated items on this page", "regenerateOutdated", !count);
       }
     }
 
@@ -1590,9 +1615,9 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
       if (folder.level === "project" && folder.mapState !== "current") {
         const note = el("p", "muted small");
         note.append(document.createTextNode(folder.mapState === "missing"
-          ? "No project map yet. It is made with the repository overview, at the first explanation in this repository, or now: "
+          ? "No project map yet. Use Map project beside the page title to create one. "
           : "The project map was made with another overview model or setting. "));
-        note.append(action(folder.mapState === "missing" ? "Map this project" : "Refresh the map", () => post({ type: "refreshContext" })));
+        if (folder.mapState !== "missing") note.append(document.createTextNode("Use Update project map beside the page title. "));
         note.append(document.createTextNode(" · sends a bounded inventory of the repository (READMEs, manifests, API contracts, deployment facts with values left out, and some source files) and its folder outline to the overview model."));
         box.append(note);
       }
@@ -1714,6 +1739,7 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
       const folder = file || loading ? undefined : next.folder;
       renderCrumbs(next.breadcrumbs);
       renderHeader(next);
+      renderPageActions(next);
       const notice = byId("notice");
       notice.textContent = next.notice ? next.notice.text : "";
       notice.className = "notice" + (next.notice && next.notice.tone === "error" ? " error" : "");
@@ -1884,7 +1910,7 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
         if (message.reveal === true) revealActive();
       }
     });
-    for (const [id, type, glyph] of [["chooseModel", "chooseModel"], ["chooseOverviewModel", "chooseOverviewModel"], ["cancel", "cancel", "cancel"], ["refreshContext", "refreshContext", "refresh"], ["clearCache", "clearCache", "clear"]]) {
+    for (const [id, type, glyph] of [["chooseModel", "chooseModel"], ["chooseOverviewModel", "chooseOverviewModel"], ["cancel", "cancel", "cancel"], ["clearCache", "clearCache", "clear"]]) {
       const button = byId(id);
       if (glyph) button.prepend(icon(glyph));
       button.addEventListener("click", () => post({ type }));

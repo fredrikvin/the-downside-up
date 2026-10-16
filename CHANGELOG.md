@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.32.0
+
+- Move refresh into the page heading, separate from repository-wide controls.
+- Refresh only checked outdated items on the displayed page; separate project
+  actions map a missing project or update a map made with different model/settings.
+- Show known outdated state with an amber divider and contextual text, while
+  active requests retain the animated blue divider.
+- Remove persistent successful-refresh messages.
+
 ## 0.31.0
 
 - Replace expanded cache statistics with a tokens-in-current-cache disclosure,

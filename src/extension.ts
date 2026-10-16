@@ -2103,7 +2103,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
         check();
         folderPreview = { ...folderPreview!, flowsInput: input, flows: saved, flowsError: undefined };
       }
-      notice = { tone: "info", text: "The requested outdated items were checked and refreshed." };
+      notice = undefined;
     } catch (error) {
       const cancelled = controller.signal.aborted || (error instanceof DOMException && error.name === "AbortError");
       notice = cancelled
@@ -3004,10 +3004,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       // A shown folder of this repository picks up the new project map.
       if (!preview && folderPreview?.root === root) await showFolder(root, folderPreview.path);
       if (repositoryJob !== controller) return;
-      notice = {
-        tone: "info",
-        text: "Project refreshed."
-      };
+      notice = undefined;
       if (changed) scheduleRecheck();
     } catch (error) {
       if (repositoryJob !== controller) return;
