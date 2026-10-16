@@ -542,6 +542,10 @@ export async function run(): Promise<void> {
   console.log("Downside Up integration tests: a flowchart is added on request and follows the cursor.");
 
   const downsideUpSettings = vscode.workspace.getConfiguration("downsideUp");
+  const availableCommands = await vscode.commands.getCommands(true);
+  for (const command of ["chooseBlockedFilePatternsFile", "chooseRestrictedRemotesFile", "chooseAllowedRepositoriesFile", "chooseExclusionFolder"]) {
+    assert.ok(availableCommands.includes(`downsideUp.${command}`), `The ${command} policy picker is registered.`);
+  }
   await downsideUpSettings.update("prefetch.window", 1, vscode.ConfigurationTarget.Global);
   await downsideUpSettings.update("prefetch.dependencies", 0, vscode.ConfigurationTarget.Global);
   const beforeApproval = api.allExplanations().length;

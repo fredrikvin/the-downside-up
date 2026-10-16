@@ -50,4 +50,24 @@ describe("extension settings", () => {
     ]);
     expect(section("OpenAI")).toEqual(["downsideUp.openai.model", "downsideUp.openai.overviewModel"]);
   });
+
+  it("links every exclusion path to its file picker and the shared folder picker", () => {
+    const manifest = JSON.parse(readFileSync(resolve("package.json"), "utf8"));
+    const properties = Object.assign({}, ...manifest.contributes.configuration.map((section: { properties: object }) => section.properties));
+    const extension = readFileSync(resolve("src/extension.ts"), "utf8");
+    const commands = new Set(manifest.contributes.commands.map((command: { command: string }) => command.command));
+    for (const [setting, command] of [
+      ["blockedFilePatternsFile", "chooseBlockedFilePatternsFile"],
+      ["restrictedRemotesFile", "chooseRestrictedRemotesFile"],
+      ["allowedRepositoriesFile", "chooseAllowedRepositoriesFile"]
+    ]) {
+      const description = properties[`downsideUp.exclusion.${setting}`].markdownDescription;
+      expect(description).toContain(`command:downsideUp.${command}`);
+      expect(description).toContain("command:downsideUp.chooseExclusionFolder");
+      expect(commands.has(`downsideUp.${command}`)).toBe(true);
+      expect(extension).toContain(`registerCommand("downsideUp.${command}"`);
+    }
+    expect(commands.has("downsideUp.chooseExclusionFolder")).toBe(true);
+    expect(extension).toContain('registerCommand("downsideUp.chooseExclusionFolder"');
+  });
 });

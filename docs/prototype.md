@@ -423,6 +423,15 @@ files in folders above the repository, with patterns relative to their own
 folder), and VS Code file/search exclusions, plus an optional organization
 exclusion policy read from files named in user settings only (application
 scope; workspace values are ignored), as plain-text files with one entry per
+line. Each setting offers a **Choose file…** command using a local, single-file
+dialog and saving only to global user settings. **Choose policy folder…** lists
+regular files immediately inside a chosen local folder and asks which file to use
+for each of the three settings, without assuming filenames or reading file contents.
+Assignments are collected before writing; cancellation leaves every setting unchanged,
+and **Keep current setting** preserves that policy. Picker and write errors are
+shown explicitly. The normal policy-settings change handling applies immediately;
+choosing paths does not grant sharing consent or request AI generation.
+The file format uses one entry per
 line and `#` comments (a format some organizations already keep for their
 Copilot hook scripts): gitignore-style blocked file patterns
 applied to repository-relative paths in every repository; restricted remote

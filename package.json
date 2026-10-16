@@ -69,6 +69,26 @@
         "command": "downsideUp.selectLanguageModel",
         "title": "Choose Language Model",
         "category": "Downside Up"
+      },
+      {
+        "command": "downsideUp.chooseBlockedFilePatternsFile",
+        "title": "Choose Blocked File Patterns File",
+        "category": "Downside Up"
+      },
+      {
+        "command": "downsideUp.chooseRestrictedRemotesFile",
+        "title": "Choose Restricted Remotes File",
+        "category": "Downside Up"
+      },
+      {
+        "command": "downsideUp.chooseAllowedRepositoriesFile",
+        "title": "Choose Allowed Repositories File",
+        "category": "Downside Up"
+      },
+      {
+        "command": "downsideUp.chooseExclusionFolder",
+        "title": "Choose Content Exclusion Policy Folder",
+        "category": "Downside Up"
       }
     ],
     "configuration": [
@@ -288,21 +308,21 @@
             "type": "string",
             "default": "",
             "scope": "application",
-            "markdownDescription": "Path to a text file of patterns for files that are never read into context or sent to a model provider, in any repository, in addition to `.gitignore` and `.copilotignore`. One gitignore-style pattern per line; blank lines and lines starting with `#` are skipped. Patterns are matched against paths inside the repository: a pattern without `/` matches at any depth (`*.vault` matches `config/app.vault`), a pattern with `/` is anchored at the repository root (`docs/private`), and a pattern matching a folder covers everything in it. `*` and `?` stay within one folder, `**` crosses folders. `~` is expanded. Read from user settings only. A missing or unreadable file adds nothing, so check the path. See the README for an example.",
+            "markdownDescription": "[Choose file…](command:downsideUp.chooseBlockedFilePatternsFile) or [choose policy folder…](command:downsideUp.chooseExclusionFolder) and assign its files. Saves to user settings only. Path to a text file of patterns for files that are never read into context or sent to a model provider, in any repository, in addition to `.gitignore` and `.copilotignore`. One gitignore-style pattern per line; blank lines and lines starting with `#` are skipped. Patterns are matched against paths inside the repository: a pattern without `/` matches at any depth (`*.vault` matches `config/app.vault`), a pattern with `/` is anchored at the repository root (`docs/private`), and a pattern matching a folder covers everything in it. `*` and `?` stay within one folder, `**` crosses folders. `~` is expanded. Read from user settings only. A missing or unreadable file adds nothing, so check the path. See the README for an example.",
             "order": 0
           },
           "downsideUp.exclusion.restrictedRemotesFile": {
             "type": "string",
             "default": "",
             "scope": "application",
-            "markdownDescription": "Path to a text file of Git remote URL prefixes, one per line (blank lines and lines starting with `#` are skipped). `*` matches any characters, and a trailing `*` is implied, so `ssh://git.example.com/` matches every repository on that server. A repository with any matching remote is not read or sent at all (explanations, file summaries, and **Refresh Repository Context** stop with the reason; the local preview still works) until it opts in with a `.copilotignore` file at its root or in a folder above it, a `.allowed-services` file at its Git root that contains the word `copilot`, or a listing in `#downsideUp.exclusion.allowedRepositoriesFile#`. `~` is expanded. Read from user settings only. A missing or unreadable file adds nothing. See the README for an example.",
+            "markdownDescription": "[Choose file…](command:downsideUp.chooseRestrictedRemotesFile) or [choose policy folder…](command:downsideUp.chooseExclusionFolder) and assign its files. Saves to user settings only. Path to a text file of Git remote URL prefixes, one per line (blank lines and lines starting with `#` are skipped). `*` matches any characters, and a trailing `*` is implied, so `ssh://git.example.com/` matches every repository on that server. A repository with any matching remote is not read or sent at all (explanations, file summaries, and **Refresh Repository Context** stop with the reason; the local preview still works) until it opts in with a `.copilotignore` file at its root or in a folder above it, a `.allowed-services` file at its Git root that contains the word `copilot`, or a listing in `#downsideUp.exclusion.allowedRepositoriesFile#`. `~` is expanded. Read from user settings only. A missing or unreadable file adds nothing. See the README for an example.",
             "order": 1
           },
           "downsideUp.exclusion.allowedRepositoriesFile": {
             "type": "string",
             "default": "",
             "scope": "application",
-            "markdownDescription": "Path to a text file of repository paths, one per line (blank lines and lines starting with `#` are skipped), that may be sent even when `#downsideUp.exclusion.restrictedRemotesFile#` restricts their remote. A remote's path is its URL without the scheme, user, host and port, and `.git`, so `ssh://user@git.example.com:29418/team/app.git` has the path `team/app`. `*` matches within one path segment (`team/*` matches `team/app` but not `team/app/tools`), and the whole path must match. `~` is expanded. Read from user settings only. A missing or unreadable file adds nothing.",
+            "markdownDescription": "[Choose file…](command:downsideUp.chooseAllowedRepositoriesFile) or [choose policy folder…](command:downsideUp.chooseExclusionFolder) and assign its files. Saves to user settings only. Path to a text file of repository paths, one per line (blank lines and lines starting with `#` are skipped), that may be sent even when `#downsideUp.exclusion.restrictedRemotesFile#` restricts their remote. A remote's path is its URL without the scheme, user, host and port, and `.git`, so `ssh://user@git.example.com:29418/team/app.git` has the path `team/app`. `*` matches within one path segment (`team/*` matches `team/app` but not `team/app/tools`), and the whole path must match. `~` is expanded. Read from user settings only. A missing or unreadable file adds nothing.",
             "order": 2
           }
         }

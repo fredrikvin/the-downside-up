@@ -61,6 +61,7 @@ import { baseChoices, changedLinesSince, recentCommits, touchesChange } from "./
 import { clearPolicyCache } from "./context/policy";
 import { RequestScheduler, singleFlight } from "./presentation/requestScheduler";
 import { outlineInclude, visibleOutline } from "./presentation/outlineFilter";
+import { chooseExclusionFile, chooseExclusionFolder } from "./presentation/exclusionPicker";
 import { innermostAt, pseudocodeLayout, stepRanges, stepsAt, type StepRange } from "./presentation/stepLines";
 import { findFunctionWithEditorTools } from "./languages/editor/symbols";
 import { bundledLanguageFor, initializeLanguage } from "./languages/registry";
@@ -3332,6 +3333,10 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     vscode.commands.registerCommand("downsideUp.cancelExplanation", cancelExplanations),
     vscode.commands.registerCommand("downsideUp.setApiKey", setApiKey),
     vscode.commands.registerCommand("downsideUp.removeApiKey", removeApiKey),
+    vscode.commands.registerCommand("downsideUp.chooseExclusionFolder", chooseExclusionFolder),
+    vscode.commands.registerCommand("downsideUp.chooseBlockedFilePatternsFile", () => chooseExclusionFile("blockedFilePatternsFile")),
+    vscode.commands.registerCommand("downsideUp.chooseRestrictedRemotesFile", () => chooseExclusionFile("restrictedRemotesFile")),
+    vscode.commands.registerCommand("downsideUp.chooseAllowedRepositoriesFile", () => chooseExclusionFile("allowedRepositoriesFile")),
     vscode.commands.registerCommand("downsideUp.selectLanguageModel", async () => {
       await chooseLanguageModel();
       render();

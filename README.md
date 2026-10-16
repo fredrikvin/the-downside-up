@@ -315,8 +315,15 @@ your organization allows sending source code to OpenAI before using it.
 
 If your organization enforces content exclusion with its own policy files on
 each computer (some organizations keep these for Copilot hook scripts), point
-these settings at them. Each takes a path to a plain-text file, with one
-entry per line; blank lines and lines starting with `#` are skipped, and `~`
+these settings at them. Use **Choose file…** beside each setting, or **Choose policy
+folder…** to select a folder once and assign its files to the three policies.
+Filenames are not guessed; **Keep current setting** skips a policy, and cancelling
+before finishing the assignments changes nothing. Only regular files directly in
+that folder are listed, without reading their contents or scanning subfolders.
+These actions are also available in the Command Palette under **Downside Up**.
+Each picker saves local absolute paths to user settings only. You can still type
+a path manually. Policy files are plain text with one entry per line;
+blank lines and lines starting with `#` are skipped, and `~`
 is expanded. They are read from user settings only, so a repository cannot
 change them, and take effect immediately. An empty setting, or a file that is
 missing or unreadable, adds nothing, so check the paths.
