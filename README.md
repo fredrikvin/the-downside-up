@@ -57,7 +57,7 @@ Preview to the Side** (or use the preview button in the editor title bar).
   multi-line selection touches) are highlighted, and clicking a step
   highlights its lines in the editor. **Explanations:
   Formats** (`downsideUp.explanations.formats`) adds **Pseudocode** and
-  **Flowchart** tabs next to the steps, with the same highlighting and
+  **Flowchart** tabs next to the steps, both enabled by default, with the same highlighting and
   click-to-select; **Explanations: Initial Format** picks the tab that opens
   first. In flowcharts, what a function returns to be shown on screen (such
   as a React element) is drawn as a "Shows" box, and the logic deciding what
@@ -415,7 +415,11 @@ limit still applies, and mapping the project has its own limit of 128 KiB.
 
 By default, explanations are generated only when you ask for one. To have them
 ready as you read, turn on **Downside Up › Prefetch: Enabled**
-(`downsideUp.prefetch.enabled`) in your user settings. While the preview is
+(`downsideUp.prefetch.enabled`) in your user settings, or choose **Enable prefetch**
+in the one-time prompt when you first open the preview. **Not now** or dismissing
+the prompt leaves it off; an existing user-level choice is respected.
+The prompt discloses quota/billing and the separate sharing approval.
+While the preview is
 open, the extension then explains the shown file's functions in the
 background, starting where you are and spreading outward. It uses the
 request slots your own requests leave free and always leaves one for them;

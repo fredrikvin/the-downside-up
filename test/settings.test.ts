@@ -3,7 +3,7 @@ import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 /** Every declared setting, from all settings sections. */
-function declaredSettings(): Record<string, { scope?: string }> {
+function declaredSettings(): Record<string, { scope?: string; default?: unknown }> {
   const configuration = JSON.parse(readFileSync(resolve("package.json"), "utf8")).contributes.configuration;
   const sections: Array<{ properties: Record<string, { scope?: string }> }> = Array.isArray(configuration) ? configuration : [configuration];
   return Object.assign({}, ...sections.map((section) => section.properties));
@@ -17,6 +17,17 @@ function sources(directory: string): string[] {
 }
 
 describe("extension settings", () => {
+  it("enables explanation formats by default while keeping prefetch opt-in", () => {
+    const properties = declaredSettings();
+    expect(properties["downsideUp.explanations.formats"]?.default).toEqual({
+      pseudocode: true,
+      flowchart: true
+    });
+    expect(properties["downsideUp.explanations.initialFormat"]?.default).toBe("steps");
+    expect(properties["downsideUp.prefetch.enabled"]?.default).toBe(false);
+    expect(properties["downsideUp.prefetch.enabled"]?.scope).toBe("application");
+  });
+
   it("declares every downsideUp setting the code reads or writes", () => {
     const declared = new Set(Object.keys(declaredSettings()));
     const used = new Set<string>();

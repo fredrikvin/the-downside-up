@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.30.0
+
+- Enable pseudocode and flowchart views by default for new explanations.
+  Existing saved explanations still require **Generate** for missing views.
+- Background prefetching remains opt-in and requires existing sharing consent.
+- Offer to enable prefetch once when the preview is first opened, with
+  quota/billing and sharing-approval information. Existing user choices are respected.
+
 ## 0.29.4
 
 Initial public release of **Downside Up**, published by **FredrikVinkvist**.

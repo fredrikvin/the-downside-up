@@ -88,7 +88,7 @@ clicked item stays highlighted until the cursor moves. Pseudocode is laid out
 from the code it describes: each linked line takes the indentation of its
 source line, and a blank line appears where the code has one.
 
-`downsideUp.explanations.formats` adds two optional views of "What happens",
+`downsideUp.explanations.formats` adds two views of "What happens", both enabled by default,
 shown as tabs beside the steps (`downsideUp.explanations.initialFormat` picks
 the first tab; choosing a tab switches every explanation, like language tabs in
 documentation, keeps the clicked tabs in place on screen, and lasts while the
@@ -194,7 +194,14 @@ changes, repository edits, or a change of preview. Completed results remain save
 freshness and exclusion checks still apply. This action can explicitly refresh
 a saved file summary without explaining another function first.
 
-Prefetching is an opt-in exception to explicit-only generation. With
+Prefetching is an opt-in exception to explicit-only generation. On
+the first preview opening, a one-time non-modal prompt offers **Enable prefetch**
+or **Not now**, unless the user already explicitly configured the setting.
+Dismissal leaves prefetch off. The choice is remembered per VS Code profile,
+including for existing installations after upgrading. Enabling saves only to
+user settings; the prompt explains quota/billing and that repository/model
+sharing approval is still required. It never grants sharing consent.
+With
 `downsideUp.prefetch.enabled` (off by default, user settings only, so a
 repository cannot turn it on), the extension generates explanations in the
 background for the functions of the file shown in the preview. It starts with

@@ -55,6 +55,12 @@ export async function run(): Promise<void> {
   const extension = vscode.extensions.getExtension("FredrikVinkvist.the-downside-up");
   assert.ok(extension, "The development extension is installed.");
   assert.equal(extension.isActive, false, "The extension starts inactive before a contributed command is run.");
+  const formatDefaults = vscode.workspace.getConfiguration("downsideUp").get("explanations.formats");
+  assert.deepEqual(formatDefaults, { pseudocode: true, flowchart: true }, "Both explanation formats are enabled by default.");
+  // Exercise adding missing views explicitly later in the suite.
+  await vscode.workspace.getConfiguration("downsideUp").update(
+    "explanations.formats", { pseudocode: false, flowchart: false }, vscode.ConfigurationTarget.Global
+  );
 
   const rustRoot = resolve(__dirname, "../../fixtures/rust-app");
   const rustFile = resolve(rustRoot, "src/main.rs");

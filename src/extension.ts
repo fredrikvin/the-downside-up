@@ -57,6 +57,7 @@ import {
 } from "./generation/languageModel";
 import { formatUsage } from "./generation/provider";
 import { nextPrefetch, nextReview, prefetchFocusLine } from "./presentation/prefetch";
+import { prefetchOnboarding } from "./presentation/prefetchOnboarding";
 import { baseChoices, changedLinesSince, recentCommits, touchesChange } from "./context/changes";
 import { clearPolicyCache } from "./context/policy";
 import { RequestScheduler, singleFlight } from "./presentation/requestScheduler";
@@ -2865,6 +2866,8 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     }
   }
 
+  const offerPrefetch = prefetchOnboarding(context.globalState);
+
   const ensurePanel = (): ExplanationPanel => {
     if (panel) return panel;
     const created = new ExplanationPanel(
@@ -2897,6 +2900,9 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       }
     );
     panel = created;
+    void offerPrefetch().catch((error: unknown) => {
+      void vscode.window.showErrorMessage(`Could not configure background explanations: ${errorMessage(error)}`);
+    });
     return created;
   };
 

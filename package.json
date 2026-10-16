@@ -188,8 +188,8 @@
             },
             "additionalProperties": false,
             "default": {
-              "pseudocode": false,
-              "flowchart": false
+              "pseudocode": true,
+              "flowchart": true
             },
             "order": 3
           },
