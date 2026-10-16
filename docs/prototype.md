@@ -162,6 +162,18 @@ prefetching (below). After edits, file changes,
 or a model change, open explanations are rechecked against the cache locally
 and marked outdated when their recorded inputs no longer match.
 
+Function headings have **Show callers**, independent of the
+explanation format. It uses native incoming Call Hierarchy, never references
+as a proxy for calls; no bundled fallback is provided. Lookup requires trust
+and respects sharing exclusions for the source and results, restricts navigation
+to local files within the repository, and bounds queries to eight prepared
+targets and 100 caller functions. Unsupported lookup and no eligible callers
+have distinct messages; provider failures are explicit. Dynamic calls and
+callbacks may be missing. Selection opens a call site with an empty cursor,
+not an Explain request; normal cache-only loading and opt-in, consent-gated
+reader-focused prefetch apply. VS Code's Go Back returns to the previous location.
+The caller picker does not enqueue explanations.
+
 The preview header has two separate buttons opening their model pickers
 directly: **Functions** (function explanations, added explanation formats, and
 file summaries) and **Project overview** (project priming, repository context

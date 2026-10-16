@@ -41,6 +41,17 @@ and billing.
 - **Choose models by role.** **Functions** handles explanations and file
   summaries. **Project overview** handles repository context, architecture
   maps, folder summaries, and flows.
+- **Follow callers.** **Show callers** beside a function lists direct callers
+  using your language extension's incoming Call Hierarchy. Choose one to open
+  its source and preview; use VS Code's **Go Back** to return. This works
+  regardless of the selected steps, pseudocode, or flowchart tab.
+
+Caller lookup requires a language extension with Call Hierarchy support.
+There is no bundled fallback for Rust or Go without a supporting extension.
+Results are limited to eligible files in the current repository and may miss
+dynamic calls and callbacks. Lookup itself makes no AI requests. Navigation
+shows cached explanations; with prefetch enabled and sharing already approved,
+the existing reader-focused queue loads missing explanations.
 
 Rust, Go, JavaScript, and TypeScript (including JSX and React) have bundled
 function discovery. JavaScript/TypeScript dependency lookup uses VS Code's

@@ -66,6 +66,7 @@ import { chooseExclusionFile, chooseExclusionFolder } from "./presentation/exclu
 import { checkContentExclusions } from "./presentation/exclusionDiagnostics";
 import { innermostAt, pseudocodeLayout, stepRanges, stepsAt, type StepRange } from "./presentation/stepLines";
 import { findFunctionWithEditorTools } from "./languages/editor/symbols";
+import { incomingCallers } from "./languages/editor/callers";
 import { bundledLanguageFor, initializeLanguage } from "./languages/registry";
 import {
   ExplanationPanel,
@@ -2807,6 +2808,59 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       case "expand": {
         const state = await resolveEntryState(action.entryId);
         if (state) await openExplanation(state);
+        return;
+      }
+      case "showCallers": {
+        if (!preview || !vscode.workspace.isTrusted) {
+          await vscode.window.showInformationMessage("Caller lookup requires a trusted source workspace.");
+          return;
+        }
+        const shown = preview;
+        const version = shown.document.version;
+        const entry = shown.overview.entries.find((item) => item.id === action.entryId && item.explainable);
+        if (!entry) return;
+        try {
+          const exclusion = await sharingExclusion(shown.root, shown.document.uri.fsPath);
+          if (exclusion) {
+            await vscode.window.showInformationMessage(`Caller lookup is off for this file because ${exclusion}.`);
+            return;
+          }
+          const result = await incomingCallers(shown.document.uri, new vscode.Position(entry.nameLine, entry.nameStart));
+          if (preview !== shown || shown.document.version !== version) return;
+          if (!result.available) {
+            await vscode.window.showInformationMessage("Incoming call lookup is unavailable for this function. It requires a language extension with Call Hierarchy support.");
+            return;
+          }
+          const choices = [];
+          for (const caller of result.callers) {
+            if (caller.uri.scheme !== "file" || !isWithin(shown.root, resolve(caller.uri.fsPath))) continue;
+            if (await sharingExclusion(shown.root, caller.uri.fsPath)) continue;
+            choices.push({
+              label: caller.name,
+              description: `${filePath(shown.root, caller.uri)}:${caller.position.line + 1}`,
+              caller
+            });
+          }
+          if (preview !== shown || shown.document.version !== version) return;
+          if (!choices.length) {
+            await vscode.window.showInformationMessage("No callers found in eligible files of this repository. Dynamic calls and callbacks may be missing.");
+            return;
+          }
+          const picked = await vscode.window.showQuickPick(choices, {
+            title: `Callers of ${entry.name}`,
+            placeHolder: "Open a caller. Use VS Code's Go Back to return. Up to 100 callers; dynamic calls may be missing.",
+            matchOnDescription: true
+          });
+          if (!picked || preview !== shown || shown.document.version !== version) return;
+          const { caller } = picked;
+          if (await sharingExclusion(shown.root, caller.uri.fsPath)) {
+            await vscode.window.showWarningMessage("This caller is now excluded and cannot be opened from caller lookup.");
+            return;
+          }
+          await reveal(caller.uri, caller.position.line, caller.position.character, caller.position.character);
+        } catch (error) {
+          await vscode.window.showErrorMessage(`Could not look up callers: ${errorMessage(error)}`);
+        }
         return;
       }
       case "regenerate": {

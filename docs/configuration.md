@@ -16,6 +16,16 @@ root).
 
 ## Reading code
 
+**Show callers** beside any function opens a native incoming-call picker,
+independent of the active explanation tab. Select a caller to navigate to its
+call site and preview; use VS Code's **Go Back** to return. Only eligible local
+files inside the current repository are listed (up to 100 callers).
+Your language extension must support Call Hierarchy; bundled Rust/Go parsing
+alone does not provide this feature. Dynamic calls and callbacks may be missing.
+Lookup makes no AI requests. After navigation, current cached explanations
+appear normally, and enabled prefetch prioritizes functions near the destination
+using existing sharing consent. Opening the picker does not preload its results.
+
 - **Document preview.** By default the preview is concise: the file name, a
   one-sentence AI summary of the file once one of its functions has been
   explained, and a heading per function in source order. **Downside Up ›

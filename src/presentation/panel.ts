@@ -180,6 +180,7 @@ export interface PanelState {
 }
 
 export type PanelAction =
+  | { readonly type: "showCallers"; readonly entryId: string }
   | { readonly type: "expand"; readonly entryId: string }
   | { readonly type: "approveSharing" }
   | { readonly type: "regenerate"; readonly entryId: string }
@@ -1217,6 +1218,14 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
         nameLink.title = entry.explainable ? "Show the AI explanation of " + entry.name : "Go to source";
         nameLink.append(el("code", "", entry.kind === "impl" ? entry.qualifiedName : entry.name));
         heading.append(nameLink);
+        if (entry.explainable) {
+          const callers = el("button", "callers explain", "Show callers");
+          callers.type = "button";
+          callers.title = "Find direct callers using the language extension; no AI request";
+          callers.setAttribute("aria-label", "Show callers of " + entry.name);
+          callers.addEventListener("click", () => post({ type: "showCallers", entryId: entry.id }));
+          heading.append(callers);
+        }
         if (entry.explainable && !view) {
           const explain = el("button", "explain", "Explain");
           explain.type = "button";
@@ -1969,7 +1978,7 @@ export class ExplanationPanel {
           this.replay();
         } else if (type === "cancel" || type === "refreshContext" || type === "clearCache" || type === "chooseModel" || type === "chooseOverviewModel" || type === "regenerateOutdated" || type === "summarizeFolder" || type === "summarizeTree" || type === "describeFlows" || type === "approveSharing") {
           onAction({ type });
-        } else if (type === "expand" || type === "regenerate" || type === "cancelEntry") {
+        } else if (type === "expand" || type === "regenerate" || type === "cancelEntry" || type === "showCallers") {
           const entryId = stringField("entryId");
           if (entryId) onAction({ type, entryId });
         } else if (type === "navigate") {

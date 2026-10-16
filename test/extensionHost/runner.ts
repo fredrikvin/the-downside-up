@@ -11,6 +11,7 @@ import type { DownsideUpTestApi } from "../../src/extension";
 import { findGoFunction, initializeGoParserAt } from "../../src/languages/go/syntax";
 import { findRustFunction, initializeRustParserAt } from "../../src/languages/rust/syntax";
 import { chooseExclusionAssignments } from "../../src/presentation/exclusionWizard";
+import { incomingCallers } from "../../src/languages/editor/callers";
 
 async function waitFor<T>(
   operation: () => Promise<T | undefined>,
@@ -181,6 +182,14 @@ export async function run(): Promise<void> {
 
   const api = extension.exports as DownsideUpTestApi | undefined;
   assert.ok(api, "Read-only test hooks are available in extension test mode.");
+  const callersBefore = api.allExplanations().length;
+  const callerLookupDocument = await vscode.workspace.openTextDocument(vscode.Uri.file(resolve(jsRoot, "src/storage.js")));
+  const nativeCallers = await waitFor(async () => {
+    const result = await incomingCallers(callerLookupDocument.uri, callerLookupDocument.positionAt(callerLookupDocument.getText().indexOf("persist")));
+    return result.available ? result : undefined;
+  }, "TypeScript incoming call hierarchy");
+  assert.ok(nativeCallers.callers.some((caller) => caller.name === "checkout"), "Native incoming calls locate persist's caller.");
+  assert.equal(api.allExplanations().length, callersBefore, "Looking up callers does not request explanations.");
   const hoverText = async (document: vscode.TextDocument, needle: string, offset: number): Promise<string> => {
     const hovers = await vscode.commands.executeCommand<vscode.Hover[]>(
       "vscode.executeHoverProvider",

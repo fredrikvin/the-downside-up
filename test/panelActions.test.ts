@@ -28,12 +28,14 @@ describe("header action validation", () => {
       { type: "chooseOverviewModel" },
       { type: "regenerateOutdated", paths: ["/untrusted/path"], model: "untrusted" },
       { type: "clearCache" },
+      { type: "showCallers", entryId: "entry-1", uri: "/untrusted" },
+      { type: "showCallers", entryId: 4 },
       { type: "chooseModels" },
       { type: "unknown" },
       { type: ["regenerateOutdated"] },
       null
     ]) harness.receive(message);
-    expect(actions).toEqual([{ type: "chooseModel" }, { type: "chooseOverviewModel" }, { type: "regenerateOutdated" }, { type: "clearCache" }]);
+    expect(actions).toEqual([{ type: "chooseModel" }, { type: "chooseOverviewModel" }, { type: "regenerateOutdated" }, { type: "clearCache" }, { type: "showCallers", entryId: "entry-1" }]);
     panel.dispose();
   });
 });

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.34.0
+
+- Add Show callers to function headings for steps, pseudocode, and flowcharts,
+  using native incoming Call Hierarchy when supported by a language extension.
+- Navigate to eligible repository callers with normal cache and opt-in prefetch
+  behavior; caller lookup itself does not generate explanations.
+
 ## 0.33.1
 
 - Simplify the Marketplace README around installation, everyday usage, privacy,
