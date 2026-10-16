@@ -1216,10 +1216,8 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
           heading.append(title);
         }
         else heading.append(el("span", "kind", entry.kindLabel));
-        const nameLink = action("", entry.explainable
-          ? () => post({ type: "expand", entryId: entry.id })
-          : () => post({ type: "navigate", referenceId: entry.id }), "heading-name");
-        nameLink.title = entry.explainable ? "Show the AI explanation of " + entry.name : "Go to source";
+        const nameLink = action("", () => post({ type: "navigate", referenceId: entry.id }), "heading-name");
+        nameLink.title = "Go to source: " + entry.name;
         nameLink.append(el("code", "", entry.kind === "impl" ? entry.qualifiedName : entry.name));
         heading.append(nameLink);
         if (entry.explainable) {

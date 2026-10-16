@@ -52,8 +52,8 @@ using existing sharing consent. Opening the picker does not preload its results.
   still. A function's heading stays pinned at the top while you read its
   explanation.
   Double-click an item to jump to its source.
-- **AI explanations.** Press **Explain** beside a function's name (or click
-  the name) to show its saved explanation, or to generate one if none is
+- **AI explanations.** Click a function's name to navigate to its source.
+  Press **Explain** beside it to show its saved explanation, or to generate one if none is
   current. Explanations appear inline, without a repeated accordion label;
   skeleton lines show while they load, with **Cancel** beside the status.
   An explanation gives the function a short

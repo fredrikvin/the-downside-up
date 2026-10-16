@@ -32,7 +32,8 @@ and billing.
   adds edge cases, language notes, and related code.
 - **Stay beside the source.** Editor and preview scroll together. Steps
   highlight their source lines, and saved explanations reappear when you
-  return to a file.
+  return to a file. Click a function's name to navigate to its source;
+  use **Explain** to request an explanation.
 - **Explore the project.** Run **Downside Up: Preview Project**, preview a
   folder from the Explorer, or navigate the breadcrumbs. Project maps show
   parts and connections; folder pages offer summaries and main flows.

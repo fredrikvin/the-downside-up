@@ -128,8 +128,10 @@ node with nodes inside it holds a smaller flow laid out the same way, and
 boxes in its row line up with its top. Clicking a node inside it selects only
 that node's lines. No diagram library or HTML parsing is involved.
 
+Clicking a function heading's name navigates to its host-validated source
+reference; it does not request an explanation.
 Every unexplained function has an **Explain** button beside its name. Pressing it,
-clicking the function name, or running **Open Preview to the Side** (the
+or running **Open Preview to the Side** (the
 editor title-bar button) while text inside the function is selected is an
 explicit request (with a selection, an outdated, failed, or cancelled
 explanation is regenerated); with only a cursor, opening the preview never

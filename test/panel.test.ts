@@ -11,14 +11,14 @@ class TestElement {
   title = "";
   hidden = false;
   disabled = false;
-  readonly listeners = new Map<string, () => void>();
+  readonly listeners = new Map<string, (event?: { preventDefault(): void; stopPropagation(): void }) => void>();
   readonly dataset: Record<string, string> = {};
   constructor(readonly tagName: string) {}
   append(...children: Array<TestElement | string>): void { this.children.push(...children); }
   prepend(...children: Array<TestElement | string>): void { this.children.unshift(...children); }
   replaceChildren(...children: Array<TestElement | string>): void { this.children.splice(0, this.children.length, ...children); this.textContent = ""; }
   setAttribute(name: string, value: string): void { this.attributes.set(name, value); }
-  addEventListener(type: string, listener: () => void): void { this.listeners.set(type, listener); }
+  addEventListener(type: string, listener: (event?: { preventDefault(): void; stopPropagation(): void }) => void): void { this.listeners.set(type, listener); }
   elements(): TestElement[] {
     return [this, ...this.children.flatMap((child) => typeof child === "string" ? [] : child.elements())];
   }
@@ -314,6 +314,13 @@ describe("preview webview document", () => {
     expect(callers?.elements().some((node) => node.tagName === "svg")).toBe(true);
     callers?.listeners.get("click")?.();
     expect(messages).toEqual([{ type: "showCallers", entryId: "f" }]);
+    messages.length = 0;
+    const name = unexplained.find((node) => node.className === "heading-name");
+    expect(name?.title).toBe("Go to source: run");
+    name?.listeners.get("click")?.({ preventDefault() {}, stopPropagation() {} });
+    expect(messages).toEqual([{ type: "navigate", referenceId: "f" }]);
+    unexplained.find((node) => node.className === "explain")?.listeners.get("click")?.();
+    expect(messages[1]).toEqual({ type: "expand", entryId: "f" });
     const pending = renderEntry(entry, new Map([["f", loading]])).elements();
     expect(pending.filter((node) => node.className === "explain")).toEqual([]);
     expect(pending.some((node) => node.className === "callers")).toBe(true);

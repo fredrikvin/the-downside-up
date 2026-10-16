@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.35.1
+
+- Make function names navigate to their source instead of requesting an
+  explanation. Explain and Show callers remain separate actions.
+
 ## 0.35.0
 
 - Add conservative bundled Go/Rust caller lookup when native incoming Call
