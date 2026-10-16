@@ -4,7 +4,7 @@
   "description": "The Downside Up: understand unfamiliar code in plain language. Explain functions beside the source, map the project's architecture and main flows, and review changed functions, with grounded, cached AI explanations.",
   "icon": "images/icon.png",
   "version": "0.29.3",
-  "publisher": "the-downside-up",
+  "publisher": "FredrikVinkvist",
   "license": "MIT",
   "engines": {
     "vscode": "^1.90.0"

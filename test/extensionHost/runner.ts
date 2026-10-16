@@ -52,7 +52,7 @@ async function findFunctionTarget(document: vscode.TextDocument, position: vscod
 
 export async function run(): Promise<void> {
   console.log("Downside Up integration tests: activating extension.");
-  const extension = vscode.extensions.getExtension("the-downside-up.the-downside-up");
+  const extension = vscode.extensions.getExtension("FredrikVinkvist.the-downside-up");
   assert.ok(extension, "The development extension is installed.");
   assert.equal(extension.isActive, false, "The extension starts inactive before a contributed command is run.");
 
