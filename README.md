@@ -332,6 +332,23 @@ is expanded. They are read from user settings only, so a repository cannot
 change them, and take effect immediately. An empty setting, or a file that is
 missing or unreadable, adds nothing, so check the paths.
 
+Use **Downside Up: Check Content Exclusions…** in the Command Palette (or the
+link beside any policy setting) to inspect their load status, resolved user paths,
+active rules, and original line numbers, including ignored comments and blanks.
+Missing or unreadable files show **This policy is not active**, not an all-clear.
+Choose **Test current file** or **Test a file…** to see the actual exclusion decision,
+matched rule and origin, and any restricted-remote rule or repository opt-in.
+The report is an unsaved plain-text document; rerun the command to refresh it.
+Checks bypass cached policy/parent-ignore decisions and run locally, without AI
+requests, consent changes, or recursive scans. File checks
+require a trusted local workspace. They read only policy/ignore/opt-in control
+files and Git metadata, not source contents (unless the tested file itself is one
+of those control files). The first blocking check is shown; other rules may also
+match. **Not excluded** does not mean safe to share: consent,
+supported file types, and request/scan limits still apply. GitHub Copilot's
+server-side exclusions are not available to this extension or applied to Language
+Model API requests.
+
 **Exclusion: Blocked File Patterns File**
 (`downsideUp.exclusion.blockedFilePatternsFile`) lists gitignore-style
 patterns for files that are never read into context or sent, in any

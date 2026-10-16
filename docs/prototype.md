@@ -436,6 +436,22 @@ Assignments are collected before writing; cancellation leaves every setting unch
 and **Keep current setting** preserves that policy. Picker and write errors are
 shown explicitly. The normal policy-settings change handling applies immediately;
 choosing paths does not grant sharing consent or request AI generation.
+**Check Content Exclusions…**, available from the Command Palette and each policy
+setting, opens a local unsaved plain-text report. It freshly parses all three user
+policy files with the enforcement parser, lists load status, resolved paths, active
+entries with original line numbers and ignored comments/blanks, and prominently
+warns when a missing/unreadable file adds no restrictions. Users may test the current
+file or choose a file in a trusted local workspace. The same single-file enforcement
+path returns its decision and matched rule/source (including ignore-file line numbers
+or VS Code setting patterns); the repository matcher reports the restricted-remote
+rule and applicable opt-in. Explicit checks clear policy and ancestor-ignore caches.
+No recursive scans, AI requests, settings writes, or consent changes are involved.
+Only local policy/ignore/opt-in control files and Git metadata are read, not source
+contents (unless the tested file is itself one of those control files). Only the
+first blocking check is reported; other exclusions may also match.
+Reports are snapshots, not a guarantee of safe sharing: supported file types,
+trust, consent, and scan/request budgets remain separate. Unavailable policy files
+or Git remote inspection failures flag incomplete checks, not an all-clear.
 The file format uses one entry per
 line and `#` comments (a format some organizations already keep for their
 Copilot hook scripts): gitignore-style blocked file patterns

@@ -543,7 +543,7 @@ export async function run(): Promise<void> {
 
   const downsideUpSettings = vscode.workspace.getConfiguration("downsideUp");
   const availableCommands = await vscode.commands.getCommands(true);
-  for (const command of ["chooseBlockedFilePatternsFile", "chooseRestrictedRemotesFile", "chooseAllowedRepositoriesFile", "chooseExclusionFolder"]) {
+  for (const command of ["chooseBlockedFilePatternsFile", "chooseRestrictedRemotesFile", "chooseAllowedRepositoriesFile", "chooseExclusionFolder", "checkContentExclusions"]) {
     assert.ok(availableCommands.includes(`downsideUp.${command}`), `The ${command} policy picker is registered.`);
   }
   await downsideUpSettings.update("prefetch.window", 1, vscode.ConfigurationTarget.Global);

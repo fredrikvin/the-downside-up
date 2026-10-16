@@ -64,10 +64,13 @@ describe("extension settings", () => {
       const description = properties[`downsideUp.exclusion.${setting}`].markdownDescription;
       expect(description).toContain(`command:downsideUp.${command}`);
       expect(description).toContain("command:downsideUp.chooseExclusionFolder");
+      expect(description).toContain("command:downsideUp.checkContentExclusions");
       expect(commands.has(`downsideUp.${command}`)).toBe(true);
       expect(extension).toContain(`registerCommand("downsideUp.${command}"`);
     }
     expect(commands.has("downsideUp.chooseExclusionFolder")).toBe(true);
     expect(extension).toContain('registerCommand("downsideUp.chooseExclusionFolder"');
+    expect(commands.has("downsideUp.checkContentExclusions")).toBe(true);
+    expect(extension).toContain('registerCommand("downsideUp.checkContentExclusions"');
   });
 });

@@ -6,7 +6,9 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { gatherInventory, sharingExclusion } from "../src/context/inventory";
 import {
   clearPolicyCache,
+  currentPolicy,
   globToRegex,
+  policyFileReports,
   remotePatternToRegex,
   repositoryPathOfRemote,
   repositoryPatternToRegex
@@ -80,6 +82,51 @@ describe("organization exclusion policy", () => {
   it("changes nothing without settings", async () => {
     expect(await exclusion("src/a.ts")).toBeUndefined();
     expect(await exclusion("infra/deploy-prod.yml")).toBeUndefined();
+  });
+
+  it("reports fresh load failures, empty files, original lines, and the enforcement parser", async () => {
+    const unconfigured = await policyFileReports();
+    expect(unconfigured.every((report) => report.status === "not configured")).toBe(true);
+    const path = resolve(policyDir, "blocked.conf");
+    setting("blockedFilePatternsFile", path);
+    await writeFile(path, " # comment\r\n\r\n  deploy*.yml  \r\n*.vault\r\n");
+    const [blocked] = await policyFileReports();
+    expect(blocked).toMatchObject({ path, status: "loaded" });
+    expect(blocked!.entries).toEqual([
+      { line: 1, text: "# comment", active: false },
+      { line: 2, text: "", active: false },
+      { line: 3, text: "deploy*.yml", active: true },
+      { line: 4, text: "*.vault", active: true },
+      { line: 5, text: "", active: false }
+    ]);
+    expect((await currentPolicy()).blockedBy("infra/deploy-prod.yml")).toBe("deploy*.yml");
+    await writeFile(path, "");
+    expect((await policyFileReports())[0]).toMatchObject({ status: "loaded" });
+    expect((await currentPolicy()).blockedBy("infra/deploy-prod.yml")).toBeUndefined();
+    await rm(path);
+    expect((await policyFileReports())[0]).toMatchObject({ status: "missing", entries: [] });
+    setting("blockedFilePatternsFile", policyDir);
+    expect((await policyFileReports())[0]).toMatchObject({ status: "unreadable", entries: [] });
+    expect((await currentPolicy()).blockedBy("infra/deploy-prod.yml")).toBeUndefined();
+  });
+
+  it("explains remote restrictions and each existing exception without exposing remote credentials", async () => {
+    setting("restrictedRemotesFile", resolve(policyDir, "restricted.conf"));
+    setting("allowedRepositoriesFile", resolve(policyDir, "allowed.conf"));
+    const report = () => currentPolicy().then((policy) => policy.repositoryReport(repo));
+    expect(await report()).toEqual({ restricted: true, matchedRule: "ssh://git.example.com/" });
+    await writeFile(resolve(repo, ".allowed-services"), "copilot\n");
+    expect(await report()).toMatchObject({ restricted: false, exception: expect.stringContaining(".allowed-services") });
+    await rm(resolve(repo, ".allowed-services"));
+    await writeFile(resolve(base, ".copilotignore"), "");
+    expect(await report()).toMatchObject({ restricted: false, exception: expect.stringContaining(".copilotignore") });
+    await rm(resolve(base, ".copilotignore"));
+    await writeFile(resolve(policyDir, "allowed.conf"), "team/*\n");
+    await policyFileReports();
+    expect(await report()).toMatchObject({ restricted: false, exception: "Allowed-repositories rule: team/*" });
+    git("remote", "set-url", "origin", "https://github.com/team/app.git");
+    expect(await report()).toEqual({ restricted: false });
+    expect(await (await currentPolicy()).repositoryReport(policyDir)).toMatchObject({ error: expect.stringContaining("could not be inspected") });
   });
 
   it("never shares files matching blocked patterns, in the scan or as the explained file", async () => {

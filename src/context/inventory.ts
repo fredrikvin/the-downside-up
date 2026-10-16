@@ -235,32 +235,43 @@ function eligiblePath(relativePath: string): boolean {
     file === ".copilotignore";
 }
 
+function addIgnoreRules(rules: ReturnType<typeof ignore>, path: string, text: string): void {
+  text.split(/\r?\n/).forEach((pattern, index) => rules.add({ pattern, mark: `${path}:${index + 1}` }));
+}
+
 async function readIgnoreRules(directory: string): Promise<ReturnType<typeof ignore> | undefined> {
   try {
     const [gitIgnore, copilotIgnore] = await Promise.all([
       readFile(resolve(directory, ".gitignore"), "utf8").catch(() => ""),
       readFile(resolve(directory, ".copilotignore"), "utf8").catch(() => "")
     ]);
-    return ignore().add(gitIgnore).add(copilotIgnore);
+    const rules = ignore();
+    for (const [file, text] of [[".gitignore", gitIgnore], [".copilotignore", copilotIgnore]] as const) {
+      addIgnoreRules(rules, resolve(directory, file), text);
+    }
+    return rules;
   } catch {
     return undefined;
   }
 }
 
 function isEditorExcluded(root: string, path: string): boolean {
+  return editorExclusion(root, path) !== undefined;
+}
+
+function editorExclusion(root: string, path: string): { source: string; rule: string } | undefined {
   const relativePath = path.split(sep).join("/");
   const resource = vscode.Uri.file(root);
-  const excludes = [
-    vscode.workspace.getConfiguration("files", resource).get<Record<string, boolean>>("exclude") ?? {},
-    vscode.workspace.getConfiguration("search", resource).get<Record<string, boolean>>("exclude") ?? {}
-  ];
-  return excludes.some((entries) =>
-    Object.entries(entries).some(([pattern, active]) =>
+  for (const section of ["files", "search"]) {
+    const entries = vscode.workspace.getConfiguration(section, resource).get<Record<string, boolean>>("exclude") ?? {};
+    const match = Object.entries(entries).find(([pattern, active]) =>
       active &&
       (minimatch(relativePath, pattern, { dot: true }) ||
         (!pattern.includes("/") && minimatch(basename(relativePath), pattern, { dot: true })))
-    )
-  );
+    );
+    if (match) return { source: `${section}.exclude`, rule: match[0] };
+  }
+  return undefined;
 }
 
 const ancestorRulesCache = new Map<string, { at: number; value: Promise<Array<{ directory: string; rules: ReturnType<typeof ignore> }>> }>();
@@ -274,7 +285,11 @@ function ancestorCopilotIgnores(root: string): Promise<Array<{ directory: string
     let directory = dirname(root);
     while (directory !== root) {
       const text = await readFile(resolve(directory, ".copilotignore"), "utf8").catch(() => undefined);
-      if (text !== undefined) found.push({ directory, rules: ignore().add(text) });
+      if (text !== undefined) {
+        const rules = ignore();
+        addIgnoreRules(rules, resolve(directory, ".copilotignore"), text);
+        found.push({ directory, rules });
+      }
       const parent = dirname(directory);
       if (parent === directory) break;
       directory = parent;
@@ -287,19 +302,30 @@ function ancestorCopilotIgnores(root: string): Promise<Array<{ directory: string
 
 /** Whether ignore files exclude a path; `isDirectory` lets folder-only patterns such as `build/` match it. */
 async function isIgnored(root: string, relativePath: string, isDirectory = false): Promise<boolean> {
+  return (await ignoredBy(root, relativePath, isDirectory)) !== undefined;
+}
+
+async function ignoredBy(root: string, relativePath: string, isDirectory = false): Promise<{ source: string; rule?: string } | undefined> {
   const suffix = isDirectory ? "/" : "";
   for (const { directory, rules } of await ancestorCopilotIgnores(root)) {
-    if (rules.ignores(relative(directory, resolve(root, relativePath)).split(sep).join("/") + suffix)) return true;
+    const result = rules.test(relative(directory, resolve(root, relativePath)).split(sep).join("/") + suffix);
+    if (result.ignored) return { source: result.rule?.mark ?? resolve(directory, ".copilotignore"), rule: result.rule?.pattern };
   }
   const segments = relativePath.split("/");
   let parent = root;
   for (let index = 0; index < segments.length; index++) {
     const rules = await readIgnoreRules(parent);
     const candidate = segments.slice(index).join("/") + suffix;
-    if (rules?.ignores(candidate)) return true;
+    const result = rules?.test(candidate);
+    if (result?.ignored) return { source: result.rule?.mark ?? parent, rule: result.rule?.pattern };
     parent = resolve(parent, segments[index]!);
   }
-  return false;
+  return undefined;
+}
+
+/** Explicit diagnostics must not reuse an earlier parent-ignore decision. */
+export function clearSharingExclusionCache(): void {
+  ancestorRulesCache.clear();
 }
 
 function vscodeLanguage(path: string): string | null {
@@ -697,6 +723,17 @@ export function isEligibleRelativePath(root: string, path: string): boolean {
  * policy file to apply it.
  */
 export async function sharingExclusion(rootPath: string, filePath: string): Promise<string | undefined> {
+  return (await sharingExclusionReport(rootPath, filePath))?.reason;
+}
+
+export interface SharingExclusionReport {
+  readonly reason: string;
+  readonly source: string;
+  readonly rule?: string;
+}
+
+/** The same decision used before generation, with provenance for local diagnostics. */
+export async function sharingExclusionReport(rootPath: string, filePath: string): Promise<SharingExclusionReport | undefined> {
   let root: string;
   let file: string;
   try {
@@ -706,17 +743,19 @@ export async function sharingExclusion(rootPath: string, filePath: string): Prom
     root = resolve(rootPath);
     file = resolve(filePath);
   }
-  if (!isWithin(root, file)) return "it is outside the repository";
+  if (!isWithin(root, file)) return { reason: "it is outside the repository", source: "Repository boundary" };
   const rel = canonicalRelative(relative(root, file));
   const policy = await currentPolicy();
   const restricted = await policy.repositoryRestriction(root);
-  if (restricted) return restricted;
+  if (restricted) return { reason: restricted, source: "Restricted remotes policy" };
   const blocked = policy.blockedBy(rel);
-  if (blocked) return `your organization's exclusion policy blocks files matching '${blocked}'`;
+  if (blocked) return { reason: `your organization's exclusion policy blocks files matching '${blocked}'`, source: "Blocked file patterns policy", rule: blocked };
   const folders = rel.split("/").slice(0, -1);
-  if (folders.some((folder) => ALWAYS_SKIP_DIRS.has(folder))) return "it is in a dependency, build, or vendored folder";
-  if (isSecretOrGenerated(rel)) return "it is hidden, secret-like, or generated";
-  if (isEditorExcluded(root, rel)) return "VS Code's files.exclude or search.exclude setting excludes it";
-  if (await isIgnored(root, rel)) return "a .gitignore or .copilotignore file excludes it";
+  if (folders.some((folder) => ALWAYS_SKIP_DIRS.has(folder))) return { reason: "it is in a dependency, build, or vendored folder", source: "Built-in safeguards" };
+  if (isSecretOrGenerated(rel)) return { reason: "it is hidden, secret-like, or generated", source: "Built-in safeguards" };
+  const editor = editorExclusion(root, rel);
+  if (editor) return { reason: "VS Code's files.exclude or search.exclude setting excludes it", ...editor };
+  const ignored = await ignoredBy(root, rel);
+  if (ignored) return { reason: "a .gitignore or .copilotignore file excludes it", ...ignored };
   return undefined;
 }
