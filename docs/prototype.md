@@ -427,6 +427,11 @@ line. Each setting offers a **Choose file…** command using a local, single-fil
 dialog and saving only to global user settings. **Choose policy folder…** lists
 regular files immediately inside a chosen local folder and asks which file to use
 for each of the three settings, without assuming filenames or reading file contents.
+The four-screen QuickPick flow uses native step/totalSteps indicators, Back buttons,
+remembered choices, and role-specific examples. Accepting a file never advances:
+the user explicitly presses the Next arrow, preventing a double click from selecting
+the same row for the next policy. A final summary lists all assignments; only its
+Save checkmark writes settings. Back from the review revisits the last assignment.
 Assignments are collected before writing; cancellation leaves every setting unchanged,
 and **Keep current setting** preserves that policy. Picker and write errors are
 shown explicitly. The normal policy-settings change handling applies immediately;

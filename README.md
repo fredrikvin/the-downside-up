@@ -318,7 +318,11 @@ each computer (some organizations keep these for Copilot hook scripts), point
 these settings at them. Use **Choose file…** beside each setting, or **Choose policy
 folder…** to select a folder once and assign its files to the three policies.
 Filenames are not guessed; **Keep current setting** skips a policy, and cancelling
-before finishing the assignments changes nothing. Only regular files directly in
+before saving changes nothing. Selecting a file stays on that step: use the
+**Next** (right-arrow) button to continue, or **Back** to revise a previous choice.
+Each step shows a progress indicator and examples of the expected contents.
+A final review lists all three assignments; use its **Save** checkmark to apply them.
+Only regular files directly in
 that folder are listed, without reading their contents or scanning subfolders.
 These actions are also available in the Command Palette under **Downside Up**.
 Each picker saves local absolute paths to user settings only. You can still type

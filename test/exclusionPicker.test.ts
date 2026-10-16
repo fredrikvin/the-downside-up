@@ -9,6 +9,7 @@ import { workspace } from "./vscode";
 const ui = vi.hoisted(() => ({
   showOpenDialog: vi.fn(),
   showQuickPick: vi.fn(),
+  createQuickPick: vi.fn(),
   showErrorMessage: vi.fn(),
   showInformationMessage: vi.fn(),
   update: vi.fn()
@@ -19,6 +20,8 @@ vi.mock("vscode", async (importOriginal) => {
   return {
     ...original,
     ConfigurationTarget: { Global: 1 },
+    ThemeIcon: class { constructor(public readonly id: string) {} },
+    QuickInputButtons: { Back: { tooltip: "Back" } },
     window: ui,
     workspace: {
       ...original.workspace,
@@ -31,11 +34,48 @@ vi.mock("vscode", async (importOriginal) => {
 });
 
 let folder: string;
+type WizardAction = { file?: string; direction?: "next" | "back" | "save" | "cancel" };
+let wizardActions: WizardAction[];
+let wizardViews: Array<{ step: number; items: readonly vscode.QuickPickItem[]; activeItems: readonly vscode.QuickPickItem[]; placeholder: string }>;
 const settings = ["blockedFilePatternsFile", "restrictedRemotesFile", "allowedRepositoriesFile"] as const;
 
 beforeEach(async () => {
   vi.resetAllMocks();
   workspace.__resetConfiguration();
+  wizardActions = [];
+  wizardViews = [];
+  ui.createQuickPick.mockImplementation(() => {
+    const handlers = new Map<string, (value?: unknown) => void>();
+    const listen = (event: string, handler: (value?: unknown) => void) => {
+      handlers.set(event, handler);
+      return { dispose: () => handlers.delete(event) };
+    };
+    const picker = {
+      step: 0, items: [] as Array<vscode.QuickPickItem & { file?: string }>,
+      activeItems: [] as Array<vscode.QuickPickItem & { file?: string }>,
+      selectedItems: [] as Array<vscode.QuickPickItem & { file?: string }>,
+      buttons: [] as vscode.QuickInputButton[], placeholder: "",
+      onDidAccept: (handler: () => void) => listen("accept", handler),
+      onDidTriggerButton: (handler: (value?: unknown) => void) => listen("button", handler),
+      onDidHide: (handler: () => void) => listen("hide", handler),
+      dispose: vi.fn(),
+      show: () => queueMicrotask(() => {
+        wizardViews.push({ step: picker.step, items: picker.items, activeItems: picker.activeItems, placeholder: picker.placeholder });
+        const action = wizardActions.shift() ?? { direction: "cancel" };
+        if (action.direction === "cancel") { handlers.get("hide")?.(); return; }
+        if (picker.step < 4) {
+          picker.selectedItems = picker.items.filter((item) => item.file === action.file);
+          handlers.get("accept")?.();
+          handlers.get("accept")?.();
+          expect(ui.update).not.toHaveBeenCalled();
+          expect(handlers.has("button")).toBe(true);
+        }
+        const button = action.direction === "back" ? vscode.QuickInputButtons.Back : picker.buttons[picker.buttons.length - 1];
+        handlers.get("button")?.(button);
+      })
+    };
+    return picker;
+  });
   folder = await mkdtemp(resolve(tmpdir(), "downside-up-policy-picker-"));
 });
 
@@ -102,15 +142,7 @@ describe("exclusion folder picker", () => {
   it("assigns arbitrary filenames after collecting all choices, with no recursive listing", async () => {
     await files();
     const picked = ["blocks.rules", "remotes.rules", "allowed.rules"];
-    ui.showQuickPick.mockImplementation(async (choices, options) => {
-      expect(ui.update).not.toHaveBeenCalled();
-      expect(choices.map((choice: vscode.QuickPickItem) => choice.label)).toEqual([
-        "Keep current setting", "allowed.rules", "blocks.rules", "remotes.rules"
-      ]);
-      const index = ui.showQuickPick.mock.calls.length - 1;
-      expect(options.title).toContain(`(${index + 1}/3)`);
-      return choices.find((choice: vscode.QuickPickItem) => choice.label === picked[index]);
-    });
+    wizardActions = [...picked.map((file) => ({ file, direction: "next" as const })), { direction: "save" }];
     await chooseExclusionFolder();
     expect(ui.showOpenDialog).toHaveBeenCalledWith(expect.objectContaining({
       canSelectFiles: false, canSelectFolders: true, canSelectMany: false
@@ -118,18 +150,24 @@ describe("exclusion folder picker", () => {
     expect(ui.update.mock.calls).toEqual(settings.map((setting, index) => [
       `exclusion.${setting}`, resolve(folder, picked[index]!), vscode.ConfigurationTarget.Global
     ]));
+    expect(wizardViews.map((view) => view.step)).toEqual([1, 2, 3, 4]);
+    expect(wizardViews[0]!.items.map((item) => item.label)).toEqual(["Keep current setting", "allowed.rules", "blocks.rules", "remotes.rules"]);
+    expect(wizardViews[0]!.placeholder).toContain("*.vault");
+    expect(wizardViews[1]!.placeholder).toContain("ssh://");
+    expect(wizardViews[2]!.placeholder).toContain("team/app");
+    expect(wizardViews[3]!.items.map((item) => item.description)).toEqual(picked);
   });
 
   it("preserves skipped settings", async () => {
     await files();
-    ui.showQuickPick.mockImplementation(async (choices) => choices[ui.showQuickPick.mock.calls.length === 2 ? 3 : 0]);
+    wizardActions = [{ direction: "next" }, { file: "remotes.rules", direction: "next" }, { direction: "next" }, { direction: "save" }];
     await chooseExclusionFolder();
     expect(ui.update).toHaveBeenCalledExactlyOnceWith("exclusion.restrictedRemotesFile", resolve(folder, "remotes.rules"), vscode.ConfigurationTarget.Global);
   });
 
   it("does not write any setting if assignment is cancelled midway", async () => {
     await files();
-    ui.showQuickPick.mockImplementationOnce(async (choices) => choices[1]).mockResolvedValueOnce(undefined);
+    wizardActions = [{ file: "blocks.rules", direction: "next" }, { direction: "cancel" }];
     await chooseExclusionFolder();
     expect(ui.update).not.toHaveBeenCalled();
   });
@@ -157,10 +195,43 @@ describe("exclusion folder picker", () => {
     expect(ui.showErrorMessage).toHaveBeenLastCalledWith(expect.stringContaining("local policy folder"));
     expect(ui.showQuickPick).not.toHaveBeenCalled();
     await files();
-    ui.showQuickPick.mockImplementation(async (choices) => choices[1]);
+    wizardActions = settings.map(() => ({ file: "allowed.rules", direction: "next" }));
+    wizardActions.push({ direction: "save" });
     ui.update.mockRejectedValueOnce(new Error("Settings are read-only"));
     await chooseExclusionFolder();
     expect(ui.showErrorMessage).toHaveBeenLastCalledWith(expect.stringContaining("Settings are read-only"));
     expect(ui.update).toHaveBeenCalledTimes(1);
+  });
+
+  it("supports Back from assignment and review screens and remembers choices", async () => {
+    await files();
+    wizardActions = [
+      { file: "blocks.rules", direction: "next" },
+      { file: "blocks.rules", direction: "back" },
+      { file: "allowed.rules", direction: "next" },
+      { file: "remotes.rules", direction: "next" },
+      { direction: "next" },
+      { direction: "back" },
+      { file: "blocks.rules", direction: "next" },
+      { direction: "save" }
+    ];
+    await chooseExclusionFolder();
+    expect(wizardViews.map((view) => view.step)).toEqual([1, 2, 1, 2, 3, 4, 3, 4]);
+    expect(wizardViews[2]!.activeItems[0]!.label).toBe("blocks.rules");
+    expect(wizardViews[3]!.activeItems[0]!.label).toBe("blocks.rules");
+    expect(ui.update.mock.calls).toEqual([
+      ["exclusion.blockedFilePatternsFile", resolve(folder, "allowed.rules"), vscode.ConfigurationTarget.Global],
+      ["exclusion.restrictedRemotesFile", resolve(folder, "remotes.rules"), vscode.ConfigurationTarget.Global],
+      ["exclusion.allowedRepositoriesFile", resolve(folder, "blocks.rules"), vscode.ConfigurationTarget.Global]
+    ]);
+  });
+
+  it("leaves settings untouched if the final review is cancelled", async () => {
+    await files();
+    wizardActions = settings.map(() => ({ file: "blocks.rules", direction: "next" }));
+    wizardActions.push({ direction: "cancel" });
+    await chooseExclusionFolder();
+    expect(wizardViews).toHaveLength(4);
+    expect(ui.update).not.toHaveBeenCalled();
   });
 });
