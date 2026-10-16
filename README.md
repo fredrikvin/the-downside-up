@@ -260,7 +260,7 @@ The development fixtures are in `fixtures/rust-app`,
 `fixtures/services-app` (a small multi-service project for the project map).
 
 To install a locally packaged VSIX, run
-`code --install-extension the-downside-up-0.30.2.vsix`.
+`code --install-extension the-downside-up-0.31.0.vsix`.
 
 ## Provider setup
 
