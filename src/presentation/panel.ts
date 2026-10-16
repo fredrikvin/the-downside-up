@@ -176,6 +176,7 @@ export interface PanelState {
   readonly loading?: { readonly name: string };
   readonly busy: boolean;
   readonly hasRepository: boolean;
+  readonly needsInitialization?: boolean;
 }
 
 export type PanelAction =
@@ -448,6 +449,7 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
       </div>
       <span class="spacer"></span>
       <button id="cancel" class="tool-button" type="button" title="Cancel requests" aria-label="Cancel requests" hidden><span class="btn-label">Cancel</span></button>
+      <button id="initializeProject" class="tool-button" type="button" title="Build repository context and the project map; may send code to the overview model and asks for sharing approval if needed" aria-label="Initialize project" hidden><span class="btn-label">Initialize project</span></button>
       <button id="clearCache" class="tool-button danger" type="button" title="Clear this repository's cache and saved sharing consent" aria-label="Clear repository cache"><span class="btn-label">Clear</span></button>
     </nav>
     <div id="stats" class="stats" aria-label="Local cache statistics" hidden></div>
@@ -625,6 +627,8 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
         }
       }
       byId("cancel").hidden = !next.busy;
+      byId("initializeProject").hidden = !next.hasRepository || !next.needsInitialization;
+      byId("initializeProject").disabled = next.busy;
       byId("clearCache").hidden = !next.hasRepository;
       byId("clearCache").disabled = next.busy;
       const statsKey = JSON.stringify([next.stats, next.statsError, next.busy, next.stats?.mapSavedAt === undefined ? "" : savedAge(next.stats.mapSavedAt)]);
@@ -1647,8 +1651,8 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
     /** The folder's map one zoom level down: its parts, what they connect to, and how. */
     function renderMap(folder) {
       const box = el("section", "folder-map");
-      box.append(el("h2", "folder-heading", "Map"));
-      box.append(el("p", "muted small", "Arrows point from a part to what it calls, sends to, or depends on. Made by the AI from manifests, API contracts, deployment files, and READMEs; it may miss connections."));
+      box.setAttribute("aria-label", "Project architecture map");
+      box.title = "AI-generated from repository context; may miss connections. Arrows point from a part to what it calls, sends to, or depends on.";
       const nodes = folder.map.nodes.map((node) => ({ ...node, path: node.id, kind: node.place }));
       const structure = {
         nodes: nodes.map((node) => ({ id: node.id })),
@@ -1910,7 +1914,7 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
         if (message.reveal === true) revealActive();
       }
     });
-    for (const [id, type, glyph] of [["chooseModel", "chooseModel"], ["chooseOverviewModel", "chooseOverviewModel"], ["cancel", "cancel", "cancel"], ["clearCache", "clearCache", "clear"]]) {
+    for (const [id, type, glyph] of [["chooseModel", "chooseModel"], ["chooseOverviewModel", "chooseOverviewModel"], ["cancel", "cancel", "cancel"], ["initializeProject", "refreshContext", "refresh"], ["clearCache", "clearCache", "clear"]]) {
       const button = byId(id);
       if (glyph) button.prepend(icon(glyph));
       button.addEventListener("click", () => post({ type }));

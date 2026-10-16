@@ -118,6 +118,12 @@ icon button with a label that collapses in narrow sidebars. Clear keeps its conf
 and removes saved sharing consent as well as this repository's cached results.
 Clear and page actions are disabled while requests are active; Cancel remains available.
 
+**Initialize project** is a separate repository-wide
+button above the divider, visible when no saved repository overview exists,
+including immediately after Clear. It explicitly builds the overview and map
+using the normal sharing approval. Clearing alone never starts generation.
+The architecture map sits beneath the opening description, without a redundant
+Map heading or arrow-description paragraph; hover for provenance and limitations.
 The page heading below the divider has a **Refresh** icon for checked outdated
 items on that page. It is disabled when none are known to need updating.
 The project page also has a labelled **Map project** action when missing, or

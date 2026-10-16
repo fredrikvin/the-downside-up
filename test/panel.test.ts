@@ -49,7 +49,7 @@ function webviewHelpers() {
     renderEntry(entry: Record<string, unknown>, views: Map<string, ExplanationView>): TestElement;
     renderAiBody(view: ExplanationView): TestElement;
     missingFormat(view: ExplanationView, format: string): TestElement;
-    renderHeader(state: Pick<PanelState, "models" | "provider" | "busy" | "hasRepository" | "stats" | "statsError">): void;
+    renderHeader(state: Pick<PanelState, "models" | "provider" | "busy" | "hasRepository" | "needsInitialization" | "stats" | "statsError">): void;
     renderCrumbs(crumbs: readonly Crumb[]): void;
     renderActivity(state: Pick<PanelState, "busy" | "notice" | "folder" | "stats">): void;
     renderPageActions(state: Partial<PanelState>): void;
@@ -82,6 +82,30 @@ it("shows elapsed activity across updates and clears the timer when work stops",
 });
 
 describe("preview webview document", () => {
+  it("offers repository initialization only when context is missing, without generating on render", () => {
+    const { renderHeader, element, messages } = webviewHelpers();
+    const base = { provider: "mock", models: { explanation: "Mock" }, busy: false, hasRepository: true };
+    renderHeader({ ...base, needsInitialization: true });
+    expect(element("initializeProject").hidden).toBe(false);
+    expect(element("initializeProject").disabled).toBe(false);
+    expect(messages).toEqual([]);
+    element("initializeProject").listeners.get("click")?.();
+    expect(messages).toEqual([{ type: "refreshContext" }]);
+    renderHeader({ ...base, needsInitialization: true, busy: true });
+    expect(element("initializeProject").disabled).toBe(true);
+    renderHeader({ ...base, needsInitialization: false });
+    expect(element("initializeProject").hidden).toBe(true);
+    renderHeader({ ...base, needsInitialization: true, hasRepository: false });
+    expect(element("initializeProject").hidden).toBe(true);
+  });
+
+  it("integrates the map into the opening description without a repetitive heading or paragraph", () => {
+    const html = panelHtml("n");
+    expect(html).not.toContain('el("h2", "folder-heading", "Map")');
+    expect(html).not.toContain('el("p", "muted small", "Arrows point from a part');
+    expect(html).toContain('box.title = "AI-generated from repository context; may miss connections.');
+  });
+
   it("places refresh actions in page context and uses amber only for known outdated content", () => {
     const { renderPageActions, renderActivity, element, messages } = webviewHelpers();
     const folder: NonNullable<PanelState["folder"]> = {

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.33.0
+
+- Offer a repository-wide Initialize project button when context is missing,
+  including after Clear, without requiring navigation or a restart.
+- Integrate architecture maps into the opening description, removing the
+  redundant Map heading and explanatory paragraph; retain a provenance tooltip.
+
 ## 0.32.0
 
 - Move refresh into the page heading, separate from repository-wide controls.

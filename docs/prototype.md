@@ -171,8 +171,15 @@ beside its model name on a compact line, including when both use the same model.
 Names wrap and buttons stack in narrow columns without hiding either role. Tooltips
 describe the responsibilities, rather than calling project-level work only
 "map". Changing a model still uses the existing settings and consent rules.
-Clear is a repository-wide control; page Refresh lives beside the title below
-the divider. It refreshes the fixed set of checked outdated items on that page,
+Clear is a repository-wide control. A separate **Initialize project** button
+above the divider appears
+when the cache has no saved repository overview, including immediately after
+Clear. It explicitly requests repository context and the project map with the
+existing consent flow; rendering the button never generates anything.
+The architecture map follows the opening description without a Map heading or
+repetitive arrow paragraph. Its tooltip retains AI provenance and limitations.
+Page Refresh lives beside the title below the divider. It refreshes the fixed
+set of checked outdated items on that page,
 with separate **Map project** (missing) or **Update project map** (different
 model/settings) actions on the project page. Map requests do not expand the
 outdated-item batch.

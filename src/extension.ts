@@ -289,7 +289,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
   let approvingSharing = false;
   /** The AI summary of the previewed file, if one is saved. */
   let fileSummary: { uri: string; text: string; current: boolean } | undefined;
-  let headerData: { root: string; stats: CacheStats; map?: ProjectMap } | undefined;
+  let headerData: { root: string; stats: CacheStats; initialized: boolean; map?: ProjectMap } | undefined;
   let headerError: { root: string; text: string } | undefined;
   let headerEpoch = 0;
   let regeneration: AbortController | undefined;
@@ -730,9 +730,9 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
   const loadHeaderData = async (root: string): Promise<void> => {
     const epoch = ++headerEpoch;
     try {
-      const [stats, saved] = await Promise.all([service.cacheStats(root), service.savedProjectMap(root)]);
+      const [stats, saved, overview] = await Promise.all([service.cacheStats(root), service.savedProjectMap(root), service.savedOverview(root)]);
       if (epoch !== headerEpoch || (preview?.root ?? folderPreview?.root) !== root || !panel) return;
-      headerData = { root, stats, ...(saved ? { map: saved.map } : {}) };
+      headerData = { root, stats, initialized: Boolean(overview), ...(saved ? { map: saved.map } : {}) };
       headerError = undefined;
     } catch (error) {
       if (epoch !== headerEpoch || (preview?.root ?? folderPreview?.root) !== root || !panel) return;
@@ -864,7 +864,8 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       } : {}),
       ...(openingFolder ? { loading: { name: openingFolder.name } } : {}),
       busy: Boolean(repositoryJob || folderJobs.size || regeneration || [...functions.values()].some((state) => state.controller)),
-      hasRepository: Boolean(preview || folderPreview)
+      hasRepository: Boolean(preview || folderPreview),
+      needsInitialization: headerData?.root === shownRoot && headerData?.initialized === false
     });
     syncStepHighlight();
   };
@@ -3051,6 +3052,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     repositoryJobRoot = undefined;
     autoMapSkipped.clear();
     await service.clearCache(root);
+    await loadHeaderData(root);
     if (preview?.root === root) fileSummary = undefined;
     if (folderPreview?.root === root) {
       const { ai: _ai, flows: _flows, map: _map, ...rest } = folderPreview;
