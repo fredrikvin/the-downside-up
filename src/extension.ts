@@ -401,7 +401,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
         ? `Provider: VS Code language model from “${model.vendor}”\nModel: ${model.name}`
         : `Provider: OpenAI Responses API\nModel: ${descriptor.modelId}`;
       const terms = descriptor.kind === "vscode-lm"
-        ? "Requests use your existing subscription with that provider (for GitHub Copilot, your Copilot plan) and may count toward its usage limits. Data handling follows that provider's terms and your organization's policies. VS Code may also ask you to allow The Downside Up to use language models."
+        ? "Requests use your existing subscription with that provider (for GitHub Copilot, your Copilot plan) and may count toward its usage limits. Data handling follows that provider's terms and your organization's policies. VS Code may also ask you to allow Downside Up to use language models."
         : "Your API usage is billed separately. Review OpenAI's data controls; store:false does not guarantee zero provider-side retention.";
       const accept = descriptor.kind === "vscode-lm" ? "Send code to language model" : "Send code to OpenAI";
       const action = await vscode.window.showWarningMessage(
@@ -3033,7 +3033,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       return;
     }
     const answer = await vscode.window.showWarningMessage(
-      `Clear The Downside Up's local overview, explanations, and saved code-sharing consent for this repository?\n\n${root}`,
+      `Clear Downside Up's local overview, explanations, and saved code-sharing consent for this repository?\n\n${root}`,
       { modal: true },
       "Clear repository cache"
     );

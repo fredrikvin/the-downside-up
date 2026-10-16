@@ -10,6 +10,7 @@ import { javascriptSupport } from "../../src/languages/javascript";
 import type { DownsideUpTestApi } from "../../src/extension";
 import { findGoFunction, initializeGoParserAt } from "../../src/languages/go/syntax";
 import { findRustFunction, initializeRustParserAt } from "../../src/languages/rust/syntax";
+import { chooseExclusionAssignments } from "../../src/presentation/exclusionWizard";
 
 async function waitFor<T>(
   operation: () => Promise<T | undefined>,
@@ -108,6 +109,17 @@ export async function run(): Promise<void> {
     (await vscode.commands.getCommands(true)).includes("downsideUp.selectLanguageModel"),
     "The language model picker command is registered."
   );
+  const exclusionSetup = chooseExclusionAssignments(
+    ["blocked files", "restricted remotes", "allowed repositories"].map((role) => ({
+      title: `Choose ${role}`, hint: "Choose a policy file", current: "Not configured"
+    })),
+    ["rules.conf"]
+  );
+  const exclusionTab = await waitFor(async () => vscode.window.tabGroups.all.flatMap((group) => group.tabs)
+    .find((tab) => tab.label === "Content-exclusion files"), "content-exclusion setup panel");
+  assert.ok(exclusionTab.input instanceof vscode.TabInputWebview, "Policy setup uses a webview rather than a text input.");
+  await vscode.window.tabGroups.close(exclusionTab);
+  assert.equal(await exclusionSetup, undefined, "Closing policy setup cancels without assignments.");
   console.log("Downside Up integration tests: Rust explanation from a selection completed.");
   const rustPanel = await waitForPanel();
   assert.equal(rustPanel.label, "Downside Up: main.rs");

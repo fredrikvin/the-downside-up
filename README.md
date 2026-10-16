@@ -1,5 +1,6 @@
 # The Downside Up
 
+In the VS Code Extensions list and settings, it appears as **Downside Up**.
 The Downside Up is a prototype VS Code extension that shows a document-style
 Downside Up preview beside your source, like the Markdown preview. It lists the
 file's functions at the same position as in the file and adds a plain-language
@@ -271,7 +272,7 @@ optional overview model.
    settings, the **Choose…** link under the setting opens the same picker.
 3. Explain a function. Before the first request for a repository and model,
    review and accept the code-sharing prompt. VS Code also asks once whether
-   The Downside Up may use language models; you can change that later under
+   Downside Up may use language models; you can change that later under
    **Accounts › Manage Language Model Access**.
 
 Requests go through the VS Code Language Model API and use your existing
@@ -319,9 +320,10 @@ these settings at them. Use **Choose file…** beside each setting, or **Choose 
 folder…** to select a folder once and assign its files to the three policies.
 Filenames are not guessed; **Keep current setting** skips a policy, and cancelling
 before saving changes nothing. Selecting a file stays on that step: use the
-**Next** (right-arrow) button to continue, or **Back** to revise a previous choice.
-Each step shows a progress indicator and examples of the expected contents.
-A final review lists all three assignments; use its **Save** checkmark to apply them.
+**Next** button to continue, or **Back** to revise a previous choice.
+The setup panel uses radio-button file choices, without a textbox. Each step shows
+progress and examples of the expected contents.
+A final review lists all three assignments; use **Save** to apply them.
 Only regular files directly in
 that folder are listed, without reading their contents or scanning subfolders.
 These actions are also available in the Command Palette under **Downside Up**.
@@ -503,3 +505,7 @@ the folder, list it in `src/languages/registry.ts`, and, for a Tree-sitter
 grammar, add the grammar's name to `esbuild.config.mjs`. Languages without
 one use `src/languages/editor/` (VS Code document symbols and
 go-to-definition).
+
+## License
+
+This project is licensed under the MIT License; see the `LICENSE` file in the repository.

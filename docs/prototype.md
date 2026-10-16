@@ -2,6 +2,9 @@
 
 ## Product scope
 
+The extension is displayed in VS Code as **Downside Up**; its full name is
+**The Downside Up**.
+
 The Downside Up helps people understand what code does without knowing the
 language. The side-by-side Downside Up preview reads like rendered Markdown.
 By default it is concise: the file name, an AI summary of the file (see
@@ -427,11 +430,13 @@ line. Each setting offers a **Choose file…** command using a local, single-fil
 dialog and saving only to global user settings. **Choose policy folder…** lists
 regular files immediately inside a chosen local folder and asks which file to use
 for each of the three settings, without assuming filenames or reading file contents.
-The four-screen QuickPick flow uses native step/totalSteps indicators, Back buttons,
-remembered choices, and role-specific examples. Accepting a file never advances:
-the user explicitly presses the Next arrow, preventing a double click from selecting
-the same row for the next policy. A final summary lists all assignments; only its
-Save checkmark writes settings. Back from the review revisits the last assignment.
+The four-step setup webview uses radio-button file choices without a textbox,
+step indicators, Back buttons, remembered choices, and role-specific examples.
+Selecting a file never advances: the user explicitly presses Next. Navigation
+rejects duplicate messages from an earlier step. A final summary lists all
+assignments; only Save writes settings. Back from the review revisits the last
+assignment. Closing the panel cancels setup. The panel has no local resource access,
+uses a nonce-restricted content policy, and renders filenames and paths as text.
 Assignments are collected before writing; cancellation leaves every setting unchanged,
 and **Keep current setting** preserves that policy. Picker and write errors are
 shown explicitly. The normal policy-settings change handling applies immediately;

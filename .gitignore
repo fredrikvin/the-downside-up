@@ -1,6 +1,7 @@
 # OS and editor artifacts
 .DS_Store
 Thumbs.db
+.vscode/settings.json
 
 # Dependencies and generated output
 node_modules/

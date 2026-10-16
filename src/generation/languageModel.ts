@@ -41,7 +41,7 @@ const REQUEST_TIMEOUT_MS = 90_000;
 const MAX_OUTPUT_CHARACTERS = 64 * 1024;
 
 export const LANGUAGE_MODEL_JUSTIFICATION =
-  "The Downside Up sends the function you asked it to explain, with bounded repository context, to generate an explanation.";
+  "Downside Up sends the function you asked it to explain, with bounded repository context, to generate an explanation.";
 
 /**
  * Vendors whose models appear in `vscode.lm` but cannot answer extension
@@ -105,7 +105,7 @@ function describeFailure(error: unknown, modelName: string): Error {
     : undefined;
   if (code === "NoPermissions") {
     return new Error(
-      "VS Code has not allowed The Downside Up to use this language model. Explain again and choose Allow, or review access under Accounts › Manage Language Model Access."
+      "VS Code has not allowed Downside Up to use this language model. Explain again and choose Allow, or review access under Accounts › Manage Language Model Access."
     );
   }
   if (code === "Blocked") {

@@ -4,12 +4,12 @@ import { resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as vscode from "vscode";
 import { chooseExclusionFile, chooseExclusionFolder } from "../src/presentation/exclusionPicker";
+import { exclusionWizardHtml, type ExclusionRole } from "../src/presentation/exclusionWizard";
 import { workspace } from "./vscode";
 
 const ui = vi.hoisted(() => ({
   showOpenDialog: vi.fn(),
-  showQuickPick: vi.fn(),
-  createQuickPick: vi.fn(),
+  createWebviewPanel: vi.fn(),
   showErrorMessage: vi.fn(),
   showInformationMessage: vi.fn(),
   update: vi.fn()
@@ -20,8 +20,7 @@ vi.mock("vscode", async (importOriginal) => {
   return {
     ...original,
     ConfigurationTarget: { Global: 1 },
-    ThemeIcon: class { constructor(public readonly id: string) {} },
-    QuickInputButtons: { Back: { tooltip: "Back" } },
+    ViewColumn: { Active: -1 },
     window: ui,
     workspace: {
       ...original.workspace,
@@ -34,9 +33,17 @@ vi.mock("vscode", async (importOriginal) => {
 });
 
 let folder: string;
-type WizardAction = { file?: string; direction?: "next" | "back" | "save" | "cancel" };
+type WizardAction = { file?: string; direction?: "next" | "back" | "save" | "cancel" | "close"; invalid?: boolean; duplicate?: boolean };
 let wizardActions: WizardAction[];
-let wizardViews: Array<{ step: number; items: readonly vscode.QuickPickItem[]; activeItems: readonly vscode.QuickPickItem[]; placeholder: string }>;
+interface WizardState {
+  step: number;
+  revision: number;
+  names: string[];
+  roles: ExclusionRole[];
+  selected: number;
+  assignments: number[];
+}
+let wizardViews: WizardState[];
 const settings = ["blockedFilePatternsFile", "restrictedRemotesFile", "allowedRepositoriesFile"] as const;
 
 beforeEach(async () => {
@@ -44,37 +51,47 @@ beforeEach(async () => {
   workspace.__resetConfiguration();
   wizardActions = [];
   wizardViews = [];
-  ui.createQuickPick.mockImplementation(() => {
+  ui.createWebviewPanel.mockImplementation(() => {
     const handlers = new Map<string, (value?: unknown) => void>();
     const listen = (event: string, handler: (value?: unknown) => void) => {
       handlers.set(event, handler);
       return { dispose: () => handlers.delete(event) };
     };
-    const picker = {
-      step: 0, items: [] as Array<vscode.QuickPickItem & { file?: string }>,
-      activeItems: [] as Array<vscode.QuickPickItem & { file?: string }>,
-      selectedItems: [] as Array<vscode.QuickPickItem & { file?: string }>,
-      buttons: [] as vscode.QuickInputButton[], placeholder: "",
-      onDidAccept: (handler: () => void) => listen("accept", handler),
-      onDidTriggerButton: (handler: (value?: unknown) => void) => listen("button", handler),
-      onDidHide: (handler: () => void) => listen("hide", handler),
-      dispose: vi.fn(),
-      show: () => queueMicrotask(() => {
-        wizardViews.push({ step: picker.step, items: picker.items, activeItems: picker.activeItems, placeholder: picker.placeholder });
-        const action = wizardActions.shift() ?? { direction: "cancel" };
-        if (action.direction === "cancel") { handlers.get("hide")?.(); return; }
-        if (picker.step < 4) {
-          picker.selectedItems = picker.items.filter((item) => item.file === action.file);
-          handlers.get("accept")?.();
-          handlers.get("accept")?.();
-          expect(ui.update).not.toHaveBeenCalled();
-          expect(handlers.has("button")).toBe(true);
+    const panel = {
+      onDidDispose: (handler: () => void) => listen("dispose", handler),
+      dispose: vi.fn(() => handlers.get("dispose")?.()),
+      webview: {
+        set html(_value: string) { queueMicrotask(() => handlers.get("message")?.({ action: "ready" })); },
+        onDidReceiveMessage: (handler: (value?: unknown) => void) => listen("message", handler),
+        postMessage: (state: WizardState) => {
+          const snapshot = structuredClone(state);
+          queueMicrotask(() => {
+            wizardViews.push(snapshot);
+            const action = wizardActions.shift() ?? { direction: "cancel" };
+            if (action.direction === "close") { handlers.get("dispose")?.(); return; }
+            const message = {
+              action: action.direction,
+              revision: snapshot.revision,
+              selected: action.file ? snapshot.names.indexOf(action.file) + 1 : 0
+            };
+            if (action.invalid) {
+              for (const invalid of [null, {}, { ...message, revision: -1 }, { ...message, selected: -1 },
+                { ...message, selected: 1.5 }, { ...message, selected: snapshot.names.length + 1 },
+                { ...message, selected: "../escape" }, { ...message, action: "save" }]) {
+                handlers.get("message")?.(invalid);
+              }
+            }
+            if (snapshot.step < 3) {
+              expect(ui.update).not.toHaveBeenCalled();
+            }
+            handlers.get("message")?.(message);
+            if (action.duplicate) handlers.get("message")?.(message);
+          });
+          return Promise.resolve(true);
         }
-        const button = action.direction === "back" ? vscode.QuickInputButtons.Back : picker.buttons[picker.buttons.length - 1];
-        handlers.get("button")?.(button);
-      })
+      }
     };
-    return picker;
+    return panel;
   });
   folder = await mkdtemp(resolve(tmpdir(), "downside-up-policy-picker-"));
 });
@@ -150,12 +167,16 @@ describe("exclusion folder picker", () => {
     expect(ui.update.mock.calls).toEqual(settings.map((setting, index) => [
       `exclusion.${setting}`, resolve(folder, picked[index]!), vscode.ConfigurationTarget.Global
     ]));
-    expect(wizardViews.map((view) => view.step)).toEqual([1, 2, 3, 4]);
-    expect(wizardViews[0]!.items.map((item) => item.label)).toEqual(["Keep current setting", "allowed.rules", "blocks.rules", "remotes.rules"]);
-    expect(wizardViews[0]!.placeholder).toContain("*.vault");
-    expect(wizardViews[1]!.placeholder).toContain("ssh://");
-    expect(wizardViews[2]!.placeholder).toContain("team/app");
-    expect(wizardViews[3]!.items.map((item) => item.description)).toEqual(picked);
+    expect(wizardViews.map((view) => view.step)).toEqual([0, 1, 2, 3]);
+    expect(wizardViews[0]!.names).toEqual(["allowed.rules", "blocks.rules", "remotes.rules"]);
+    expect(wizardViews[0]!.roles.map((role) => role.hint)).toEqual([
+      expect.stringContaining("*.vault"), expect.stringContaining("ssh://"), expect.stringContaining("team/app")
+    ]);
+    expect(wizardViews[3]!.assignments).toEqual([2, 3, 1]);
+    expect(ui.createWebviewPanel).toHaveBeenCalledWith(
+      "theDownsideUp.exclusionSetup", "Content-exclusion files", vscode.ViewColumn.Active,
+      { enableScripts: true, localResourceRoots: [], retainContextWhenHidden: true }
+    );
   });
 
   it("preserves skipped settings", async () => {
@@ -175,7 +196,7 @@ describe("exclusion folder picker", () => {
   it("handles a cancelled picker and an empty folder without changing settings", async () => {
     ui.showOpenDialog.mockResolvedValueOnce(undefined);
     await chooseExclusionFolder();
-    expect(ui.showQuickPick).not.toHaveBeenCalled();
+    expect(ui.createWebviewPanel).not.toHaveBeenCalled();
     ui.showOpenDialog.mockResolvedValue([vscode.Uri.file(folder)]);
     await chooseExclusionFolder();
     expect(ui.showInformationMessage).toHaveBeenCalledWith(expect.stringContaining("no regular files"));
@@ -193,7 +214,7 @@ describe("exclusion folder picker", () => {
     ui.showOpenDialog.mockResolvedValue([{ scheme: "https", fsPath: "/not-local" }]);
     await chooseExclusionFolder();
     expect(ui.showErrorMessage).toHaveBeenLastCalledWith(expect.stringContaining("local policy folder"));
-    expect(ui.showQuickPick).not.toHaveBeenCalled();
+    expect(ui.createWebviewPanel).not.toHaveBeenCalled();
     await files();
     wizardActions = settings.map(() => ({ file: "allowed.rules", direction: "next" }));
     wizardActions.push({ direction: "save" });
@@ -216,9 +237,9 @@ describe("exclusion folder picker", () => {
       { direction: "save" }
     ];
     await chooseExclusionFolder();
-    expect(wizardViews.map((view) => view.step)).toEqual([1, 2, 1, 2, 3, 4, 3, 4]);
-    expect(wizardViews[2]!.activeItems[0]!.label).toBe("blocks.rules");
-    expect(wizardViews[3]!.activeItems[0]!.label).toBe("blocks.rules");
+    expect(wizardViews.map((view) => view.step)).toEqual([0, 1, 0, 1, 2, 3, 2, 3]);
+    expect(wizardViews[2]!.selected).toBe(2);
+    expect(wizardViews[3]!.selected).toBe(2);
     expect(ui.update.mock.calls).toEqual([
       ["exclusion.blockedFilePatternsFile", resolve(folder, "allowed.rules"), vscode.ConfigurationTarget.Global],
       ["exclusion.restrictedRemotesFile", resolve(folder, "remotes.rules"), vscode.ConfigurationTarget.Global],
@@ -233,5 +254,108 @@ describe("exclusion folder picker", () => {
     await chooseExclusionFolder();
     expect(wizardViews).toHaveLength(4);
     expect(ui.update).not.toHaveBeenCalled();
+  });
+
+  it("ignores invalid assignments and duplicate navigation messages", async () => {
+    await files();
+    wizardActions = [
+      { file: "blocks.rules", direction: "next", invalid: true, duplicate: true },
+      { direction: "next" }, { direction: "next" }, { direction: "save", duplicate: true }
+    ];
+    await chooseExclusionFolder();
+    expect(wizardViews.map((view) => view.step)).toEqual([0, 1, 2, 3]);
+    expect(ui.update).toHaveBeenCalledExactlyOnceWith(
+      "exclusion.blockedFilePatternsFile", resolve(folder, "blocks.rules"), vscode.ConfigurationTarget.Global
+    );
+  });
+
+  it("leaves settings untouched when the panel is closed", async () => {
+    await files();
+    wizardActions = [{ file: "blocks.rules", direction: "next" }, { direction: "close" }];
+    await chooseExclusionFolder();
+    expect(ui.update).not.toHaveBeenCalled();
+  });
+});
+
+describe("exclusion setup webview", () => {
+  it("uses radio choices without a textbox and keeps a restrictive content policy", () => {
+    const html = exclusionWizardHtml("test-nonce");
+    expect(html).toContain('radio.type = "radio"');
+    expect(html).not.toMatch(/type=["'](?:text|search)|createQuickPick|placeholder|innerHTML|outerHTML|insertAdjacentHTML|eval\(/);
+    expect(html).toContain("default-src 'none'; style-src 'nonce-test-nonce'; script-src 'nonce-test-nonce';");
+    expect(html.match(/<script\b[^>]*>/g)).toEqual(['<script nonce="test-nonce">']);
+    expect(html).toContain('text.textContent = name');
+    expect(html).toContain('byId("next").disabled = true');
+    expect(html).toContain('if (!state || pending) return');
+  });
+
+  it("renders file choices and review as text, remembers choices, and sends navigation once", () => {
+    class Element {
+      children: Element[] = [];
+      textContent = "";
+      type = "";
+      name = "";
+      checked = false;
+      disabled = false;
+      className = "";
+      handlers = new Map<string, () => void>();
+      focus = vi.fn();
+      constructor(readonly tag: string) {}
+      append(...children: Element[]) { this.children.push(...children); }
+      replaceChildren() { this.children = []; }
+      addEventListener(event: string, handler: () => void) { this.handlers.set(event, handler); }
+      trigger(event: string) { this.handlers.get(event)?.(); }
+      elements(): Element[] { return [this, ...this.children.flatMap((child) => child.elements())]; }
+    }
+    const elements = new Map<string, Element>();
+    const element = (id: string) => {
+      if (!elements.has(id)) elements.set(id, new Element(id));
+      return elements.get(id)!;
+    };
+    const postMessage = vi.fn();
+    let render: (event: { data: WizardState }) => void = () => { throw new Error("No render handler registered"); };
+    const html = exclusionWizardHtml("test");
+    const start = html.indexOf('<script nonce="test">') + '<script nonce="test">'.length;
+    new Function("acquireVsCodeApi", "document", "window", html.slice(start, html.indexOf("</script>", start)))(
+      () => ({ postMessage }),
+      { getElementById: element, createElement: (tag: string) => new Element(tag) },
+      { addEventListener: (_event: string, handler: typeof render) => { render = handler; } }
+    );
+    expect(postMessage).toHaveBeenCalledExactlyOnceWith({ action: "ready" });
+    const filename = "<img src=x onerror=alert(1)>.rules";
+    const state: WizardState = {
+      step: 0, revision: 0, names: [filename], selected: 0, assignments: [0, 0, 0],
+      roles: settings.map((setting) => ({ title: `Choose ${setting}`, hint: "Expected contents", current: "/current/file" }))
+    };
+    render({ data: state });
+    const choices = element("choices").elements();
+    const radios = choices.filter((choice) => choice.tag === "input");
+    expect(radios.map((radio) => radio.type)).toEqual(["radio", "radio"]);
+    expect(radios.map((radio) => radio.checked)).toEqual([true, false]);
+    expect(choices.some((choice) => choice.textContent === filename)).toBe(true);
+    expect(element("back").disabled).toBe(true);
+    expect(element("hint").textContent).toContain("Expected contents");
+    radios[1]!.trigger("change");
+    expect(postMessage).toHaveBeenCalledTimes(1);
+    element("next").trigger("click");
+    element("next").trigger("click");
+    expect(postMessage).toHaveBeenCalledTimes(2);
+    expect(postMessage).toHaveBeenLastCalledWith({ action: "next", revision: 0, selected: 1 });
+    expect(element("next").disabled).toBe(true);
+    render({ data: { ...state, step: 1, revision: 1, selected: 1 } });
+    expect(element("choices").elements().filter((choice) => choice.tag === "input").map((radio) => radio.checked)).toEqual([false, true]);
+    element("back").trigger("click");
+    expect(postMessage).toHaveBeenLastCalledWith({ action: "back", revision: 1, selected: 1 });
+    render({ data: { ...state, step: 3, revision: 2, assignments: [1, 0, 0] } });
+    expect(element("choices").elements().filter((choice) => choice.tag === "input")).toEqual([]);
+    expect(element("choices").elements().filter((choice) => choice.tag === "dd").map((choice) => choice.textContent)).toEqual([
+      filename, "Keep current setting: /current/file", "Keep current setting: /current/file"
+    ]);
+    expect(element("next").textContent).toBe("Save");
+    element("next").trigger("click");
+    expect(postMessage).toHaveBeenLastCalledWith({ action: "save", revision: 2, selected: 0 });
+    render({ data: { ...state, revision: 3 } });
+    element("cancel").trigger("click");
+    expect(postMessage).toHaveBeenLastCalledWith({ action: "cancel", revision: 3, selected: 0 });
   });
 });
