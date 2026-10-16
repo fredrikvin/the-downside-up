@@ -45,6 +45,7 @@ export interface GoDependencyRequest {
   readonly unreadPaths?: ReadonlySet<string>;
   readonly load: (path: string) => Promise<string | undefined>;
   readonly maxDependencies?: number;
+  readonly directCallsOnly?: boolean;
 }
 
 export interface GoDependencyResult {
@@ -174,19 +175,58 @@ export function importsOf(root: SyntaxNode): { imports: ImportSpec[]; preamble: 
   return { imports, preamble: parts.join("\n") };
 }
 
-function functionUsage(root: SyntaxNode, line: number, name: string): FunctionUsage | undefined {
+function functionUsage(root: SyntaxNode, line: number, name: string, directOnly = false): FunctionUsage | undefined {
   const found = goFunctionNodes(root).find((entry) => entry.node.startPosition.row === line && entry.name.text === name);
   if (!found) return undefined;
   const names: string[] = [];
   const qualified: Array<[string, string]> = [];
   const methods: string[] = [];
   const seen = new Set<string>();
+  const shadowed = new Set<string>();
+  const identifiers = (node: SyntaxNode) => {
+    if (node.type === "identifier") shadowed.add(node.text);
+    namedChildren(node).forEach(identifiers);
+  };
+  const bindings = (node: SyntaxNode) => {
+    if (node.type === "type_spec" || node.type === "type_alias") {
+      const name = node.childForFieldName("name");
+      if (name) shadowed.add(name.text);
+    }
+    if (["parameter_declaration", "variadic_parameter_declaration", "var_spec", "const_spec"].includes(node.type)) {
+      for (const child of namedChildren(node)) if (child.type === "identifier") shadowed.add(child.text);
+    }
+    if (node.type === "short_var_declaration" || node.type === "range_clause") {
+      const left = node.childForFieldName("left");
+      if (left) identifiers(left);
+    }
+    namedChildren(node).forEach(bindings);
+  };
+  if (directOnly) {
+    bindings(found.node);
+    for (const child of namedChildren(root)) {
+      if (child.type === "var_declaration" || child.type === "const_declaration") bindings(child);
+    }
+  }
   const once = (key: string, add: () => void) => {
     if (seen.has(key)) return;
     seen.add(key);
     add();
   };
   const visit = (node: SyntaxNode) => {
+    if (directOnly) {
+      if (node.type === "func_literal") return;
+      if (node.type === "call_expression") {
+        const callee = node.childForFieldName("function");
+        if (callee?.type === "identifier" && !shadowed.has(callee.text)) names.push(callee.text);
+        if (callee?.type === "selector_expression") {
+          const operand = callee.childForFieldName("operand");
+          const field = callee.childForFieldName("field");
+          if (operand?.type === "identifier" && field && !shadowed.has(operand.text)) qualified.push([operand.text, field.text]);
+        }
+      }
+      namedChildren(node).forEach(visit);
+      return;
+    }
     if (node.type === "qualified_type") {
       const pkg = node.childForFieldName("package")?.text;
       const item = node.childForFieldName("name")?.text;
@@ -218,7 +258,7 @@ export async function findGoDependencies(request: GoDependencyRequest): Promise<
   const join = (...parts: string[]) => parts.filter(Boolean).join("/");
 
   const parsedTarget = await withGoSyntaxTree(request.text, (root) => ({
-    usage: functionUsage(root, request.line, request.name),
+    usage: functionUsage(root, request.line, request.name, request.directCallsOnly),
     ...importsOf(root),
     packageName: fileItems(root).packageName
   }));
@@ -288,7 +328,8 @@ export async function findGoDependencies(request: GoDependencyRequest): Promise<
   const added = new Set<string>();
   const ownerTypes: Array<{ dir: string; packageName: string | undefined; name: string }> = [];
   const add = (file: string, item: GoItem, dir: string, pkg: string | undefined): void => {
-    if (file === request.path && item.qualifiedName === usage.qualifiedName) return;
+    if (request.directCallsOnly && item.kind !== "function") return;
+    if (!request.directCallsOnly && file === request.path && item.qualifiedName === usage.qualifiedName) return;
     const key = `${file}\0${item.kind}\0${item.qualifiedName}`;
     if (added.has(key)) return;
     if (dependencies.length >= max) {
@@ -302,13 +343,20 @@ export async function findGoDependencies(request: GoDependencyRequest): Promise<
     for (const result of item.resultTypes ?? []) ownerTypes.push({ dir, packageName: pkg, name: result });
   };
   const lookup = async (dir: string, pkg: string | undefined, name: string, includeTests: boolean): Promise<void> => {
+    const matches: Array<{ file: string; item: GoItem }> = [];
     for (const file of await packageFiles(dir, pkg, includeTests)) {
-      const item = (await parse(file)).items.find((entry) => entry.owner === undefined && entry.name === name);
+      const items = (await parse(file)).items.filter((entry) => entry.owner === undefined && entry.name === name);
+      if (request.directCallsOnly) {
+        for (const item of items) matches.push({ file, item });
+        continue;
+      }
+      const item = items[0];
       if (item) {
         add(file, item, dir, pkg);
         return;
       }
     }
+    if (matches.length === 1) add(matches[0]!.file, matches[0]!.item, dir, pkg);
   };
 
   const ownDir = dirOf(request.path);
@@ -320,7 +368,7 @@ export async function findGoDependencies(request: GoDependencyRequest): Promise<
   for (const name of usage.names) {
     if (importedPackages.has(name)) continue;
     await lookup(ownDir, packageName, name, isTest);
-    for (const dot of dotPackages) await lookup(dot.dir, dot.name, name, false);
+    if (!request.directCallsOnly) for (const dot of dotPackages) await lookup(dot.dir, dot.name, name, false);
   }
   // Method calls on values: the receiver type is unknown, so match methods of the used types.
   for (const method of usage.methods) {
@@ -336,4 +384,3 @@ export async function findGoDependencies(request: GoDependencyRequest): Promise<
   }
   return { dependencies, preamble, limitations: [...limitations] };
 }
-

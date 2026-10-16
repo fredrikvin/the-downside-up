@@ -16,12 +16,21 @@ root).
 
 ## Reading code
 
-**Show callers** beside any function opens a native incoming-call picker,
+The **Show callers** icon beside any function opens an incoming-call picker,
 independent of the active explanation tab. Select a caller to navigate to its
 call site and preview; use VS Code's **Go Back** to return. Only eligible local
 files inside the current repository are listed (up to 100 callers).
-Your language extension must support Call Hierarchy; bundled Rust/Go parsing
-alone does not provide this feature. Dynamic calls and callbacks may be missing.
+Native Call Hierarchy is preferred. When unavailable, bundled Go/Rust parsers
+scan direct free-function calls, labelled **Statically found callers**. The
+fallback reuses package/module dependency resolution and rejects uncertain
+receiver methods, interface/trait dispatch, macros, closures, shadowed names,
+and ambiguous declarations. It is incomplete: at most 2,000 filesystem entries,
+100 loaded files, 2 MiB total text (256 KiB per file), 500 functions, eight
+seconds between operations, and 100 results. Native-provider errors are reported,
+not silently replaced by fallback results. No results means none found within
+the supported analysis and limits, not proof of no callers.
+The scan respects exclusions and unsaved buffers, is cancellable, and checks a
+selected fallback caller's text again before navigation.
 Lookup makes no AI requests. After navigation, current cached explanations
 appear normally, and enabled prefetch prioritizes functions near the destination
 using existing sharing consent. Opening the picker does not preload its results.

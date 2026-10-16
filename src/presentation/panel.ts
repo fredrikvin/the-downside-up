@@ -309,6 +309,9 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
 
     .ai-section { margin: 0 0 14px; }
     .explain { flex: none; font: inherit; font-size: 12px; color: var(--vscode-textLink-foreground); background: none; border: 1px solid var(--separator); border-radius: 4px; padding: 2px 8px; cursor: pointer; }
+    .callers { flex: none; display: inline-flex; align-items: center; padding: 3px; color: var(--vscode-descriptionForeground); background: transparent; border: 0; border-radius: 3px; cursor: pointer; }
+    .callers svg { width: 14px; height: 14px; }
+    .callers:is(:hover, :focus-visible) { color: var(--vscode-foreground); background: var(--vscode-toolbar-hoverBackground); }
     .prefetch-consent { max-width: 860px; box-sizing: border-box; margin: 12px 0; padding: 10px 14px; border: 1px solid var(--vscode-textLink-foreground); border-radius: 4px; }
     .prefetch-consent p { margin-bottom: 6px; }
     .prefetch-consent button { font: inherit; cursor: pointer; }
@@ -579,6 +582,7 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
       model: "M8 1 10 6 15 8 10 10 8 15 6 10 1 8 6 6Z",
       chevron: "m4 6 4 4 4-4",
       refresh: "M13 6A5.5 5.5 0 1 0 13.3 10M13 2v4H9",
+      callers: "M12 3H8v10h4M8 8H2m3-3L2 8l3 3",
       clear: "M2 4h12M6 4V2h4v2M4 4l1 10h6l1-10M7 6v5M9 6v5",
       cancel: "m4 4 8 8M12 4l-8 8",
       project: "M1.5 3.5h5l2 2h6v8h-13ZM4 8h8M4 11h5",
@@ -1219,10 +1223,11 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
         nameLink.append(el("code", "", entry.kind === "impl" ? entry.qualifiedName : entry.name));
         heading.append(nameLink);
         if (entry.explainable) {
-          const callers = el("button", "callers explain", "Show callers");
+          const callers = el("button", "callers");
           callers.type = "button";
-          callers.title = "Find direct callers using the language extension; no AI request";
+          callers.title = "Show callers — find functions that call this one; no AI request";
           callers.setAttribute("aria-label", "Show callers of " + entry.name);
+          callers.append(icon("callers"));
           callers.addEventListener("click", () => post({ type: "showCallers", entryId: entry.id }));
           heading.append(callers);
         }

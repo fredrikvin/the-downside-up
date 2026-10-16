@@ -52,6 +52,28 @@ beforeAll(async () => {
 });
 
 describe("Go function discovery", () => {
+  it("resolves only direct free-function calls for the caller fallback", async () => {
+    const files = {
+      "go.mod": "module example.test/demo\n",
+      "main.go": `package demo
+import other "example.test/demo/other"
+func Target() {}
+func Caller() { Target(); other.Target() }
+func Reference() { _ = Target }
+func Shadow(Target func()) { Target() }
+func Closure() { _ = func() { Target() } }
+func Local() { Target := func() {}; Target() }
+func Method() { value.Target() }
+`,
+      "other/other.go": "package other\nfunc Target() {}\n"
+    };
+    const direct = async (name: string) => (await findGoDependencies(
+      request(files, "main.go", name, { directCallsOnly: true })
+    )).dependencies.map((entry) => `${entry.path}:${entry.item.name}`);
+    expect(await direct("Caller")).toEqual(["other/other.go:Target", "main.go:Target"]);
+    for (const name of ["Reference", "Shadow", "Closure", "Local", "Method"]) expect(await direct(name), name).toEqual([]);
+  });
+
   it("names methods by receiver type and numbers repeated init functions", async () => {
     const source = [
       "package demo",

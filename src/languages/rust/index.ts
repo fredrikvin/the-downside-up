@@ -98,5 +98,7 @@ export const rustSupport: LanguageSupport = {
       .catch(() => ({ dependencies: [], limitations: [UNRESOLVED_DEPENDENCIES] }));
     return { ...found, local };
   },
+  findDirectCalls: (request) => findRustDependencies({ ...request, directCallsOnly: true }),
+  directCallManifests: ["Cargo.toml"],
   fileImports: rustFileImports
 };

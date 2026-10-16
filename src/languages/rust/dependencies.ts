@@ -53,6 +53,7 @@ export interface RustDependencyRequest {
   readonly unreadPaths?: ReadonlySet<string>;
   readonly load: (path: string) => Promise<string | undefined>;
   readonly maxDependencies?: number;
+  readonly directCallsOnly?: boolean;
 }
 
 export interface RustDependencyResult {
@@ -187,7 +188,7 @@ function findFunctionNode(root: SyntaxNode, line: number, name: string): SyntaxN
   return found;
 }
 
-function functionUsage(root: SyntaxNode, fn: SyntaxNode, fileModule: readonly string[]): FunctionUsage {
+function functionUsage(root: SyntaxNode, fn: SyntaxNode, fileModule: readonly string[], directOnly = false): FunctionUsage {
   const inline: string[] = [];
   const containers: Array<{ node: SyntaxNode; scope: readonly string[] }> = [];
   for (let parent = fn.parent; parent; parent = parent.parent) {
@@ -212,7 +213,38 @@ function functionUsage(root: SyntaxNode, fn: SyntaxNode, fileModule: readonly st
   const seenNames = new Set<string>();
   const seenPaths = new Set<string>();
   const seenMethods = new Set<string>();
+  const shadowed = new Set<string>();
+  const patternNames = (node: SyntaxNode) => {
+    if (node.type === "identifier") shadowed.add(node.text);
+    for (const child of named(node)) patternNames(child);
+  };
+  const collectBindings = (node: SyntaxNode) => {
+    const pattern = node.childForFieldName("pattern");
+    if (pattern) patternNames(pattern);
+    if (node !== fn && node.type.endsWith("_item")) {
+      const name = node.childForFieldName("name");
+      if (name) shadowed.add(name.text);
+    }
+    for (const child of named(node)) collectBindings(child);
+  };
+  if (directOnly) collectBindings(fn);
   const visit = (node: SyntaxNode) => {
+    if (directOnly) {
+      if (node.type === "macro_invocation" || node.type === "closure_expression" || node.type === "function_item") return;
+      if (node.type === "call_expression") {
+        let callee = node.childForFieldName("function");
+        if (callee?.type === "generic_function") callee = callee.childForFieldName("function");
+        if (callee?.type === "identifier" && !shadowed.has(callee.text)) names.push(callee.text);
+        if (callee?.type === "scoped_identifier" && !callee.text.includes("<")) {
+          const path = segments(callee.text);
+          if (!shadowed.has(path[0]!)) paths.push(path);
+        }
+      }
+      // Block-local imports need lexical resolution; omit this caller rather than guess.
+      if (node.type === "use_declaration") return;
+      for (const child of named(node)) visit(child);
+      return;
+    }
     if (node.type === "token_tree") {
       // Macro arguments are raw tokens: recover `.method(` calls and `a::b` paths.
       const tokens = node.children.filter((entry): entry is SyntaxNode => entry !== null);
@@ -271,6 +303,7 @@ function functionUsage(root: SyntaxNode, fn: SyntaxNode, fileModule: readonly st
     const part = fn.childForFieldName(field);
     if (part) visit(part);
   }
+  if (directOnly && fn.descendantsOfType("use_declaration").length) return { scope, bindings, globs: [], names: [], paths: [], methods: [] };
   return { scope, bindings, globs, names, paths, methods };
 }
 
@@ -421,7 +454,7 @@ export async function findRustDependencies(request: RustDependencyRequest): Prom
 
   const usage = await withRustSyntaxTree(request.text, (root) => {
     const fn = findFunctionNode(root, request.line, request.name);
-    return fn ? functionUsage(root, fn, fileModule) : undefined;
+    return fn ? functionUsage(root, fn, fileModule, request.directCallsOnly) : undefined;
   });
   if (!usage) return { dependencies: [], limitations: [...limitations] };
 
@@ -429,7 +462,8 @@ export async function findRustDependencies(request: RustDependencyRequest): Prom
   const added = new Set<string>();
   const ownerTypes: Array<{ file: string; name: string }> = [];
   const add = (file: string, item: RustItem): void => {
-    if (file === request.path) return;
+    if (request.directCallsOnly && item.kind !== "function") return;
+    if (file === request.path && !request.directCallsOnly) return;
     const key = `${file}\0${item.kind}\0${item.qualifiedName}`;
     if (added.has(key)) return;
     if (dependencies.length >= max) {
@@ -445,6 +479,10 @@ export async function findRustDependencies(request: RustDependencyRequest): Prom
   const findItem = async (location: ModuleLocation, name: string, owner?: string): Promise<RustItem | undefined> => {
     const items = await itemsIn(location.file);
     const inModule = items.filter((item) => scopeKey(item.modules) === scopeKey(location.inline));
+    if (request.directCallsOnly) {
+      const matches = inModule.filter((item) => item.owner === undefined && item.name === name);
+      return matches.length === 1 ? matches[0] : undefined;
+    }
     return owner
       ? inModule.find((item) => item.kind === "method" && item.owner === owner && item.name === name)
       : inModule.find((item) => item.owner === undefined && item.name === name);
@@ -499,6 +537,13 @@ export async function findRustDependencies(request: RustDependencyRequest): Prom
     const binding = bindingFor(name);
     if (binding) {
       await resolvePath(binding.path, scopeOf(binding));
+      continue;
+    }
+    if (request.directCallsOnly) {
+      if (usage.globs.length) continue;
+      const location = locate(crate, usage.scope);
+      const item = location && await findItem(location, name);
+      if (location && item) add(location.file, item);
       continue;
     }
     for (const visible of visibleScopes) {

@@ -67,6 +67,7 @@ import { checkContentExclusions } from "./presentation/exclusionDiagnostics";
 import { innermostAt, pseudocodeLayout, stepRanges, stepsAt, type StepRange } from "./presentation/stepLines";
 import { findFunctionWithEditorTools } from "./languages/editor/symbols";
 import { incomingCallers } from "./languages/editor/callers";
+import { staticCallers } from "./context/callers";
 import { bundledLanguageFor, initializeLanguage } from "./languages/registry";
 import {
   ExplanationPanel,
@@ -2825,8 +2826,37 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
             await vscode.window.showInformationMessage(`Caller lookup is off for this file because ${exclusion}.`);
             return;
           }
-          const result = await incomingCallers(shown.document.uri, new vscode.Position(entry.nameLine, entry.nameStart));
+          const position = new vscode.Position(entry.nameLine, entry.nameStart);
+          let result = await incomingCallers(shown.document.uri, position);
           if (preview !== shown || shown.document.version !== version) return;
+          let staticLookup = false;
+          let lookupCancelled = false;
+          if (!result.available) {
+            const support = bundledLanguageFor({ languageId: shown.document.languageId, path: shown.document.uri.path });
+            if (support?.findDirectCalls) {
+              await initializeLanguage(support, context.extensionPath);
+              const target = await support.findFunction(shown.document, position);
+              if (target) {
+                staticLookup = true;
+                result = {
+                  available: true,
+                  callers: await vscode.window.withProgress({
+                    location: vscode.ProgressLocation.Notification,
+                    title: "Finding statically resolved callers (bounded local scan)",
+                    cancellable: true
+                  }, async (_progress, token) => {
+                    const callers = await staticCallers(shown.root, target, support, async (path) => {
+                      if (await sharingExclusion(shown.root, resolve(shown.root, path))) return undefined;
+                      return repositoryText(shown.root, path);
+                    }, () => token.isCancellationRequested || preview !== shown || shown.document.version !== version || !panel);
+                    lookupCancelled = token.isCancellationRequested;
+                    return callers;
+                  })
+                };
+              }
+            }
+          }
+          if (lookupCancelled || preview !== shown || shown.document.version !== version) return;
           if (!result.available) {
             await vscode.window.showInformationMessage("Incoming call lookup is unavailable for this function. It requires a language extension with Call Hierarchy support.");
             return;
@@ -2843,18 +2873,26 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
           }
           if (preview !== shown || shown.document.version !== version) return;
           if (!choices.length) {
-            await vscode.window.showInformationMessage("No callers found in eligible files of this repository. Dynamic calls and callbacks may be missing.");
+            await vscode.window.showInformationMessage(staticLookup
+              ? "No statically resolved direct callers found within the scan limits. Methods, traits/interfaces, macros, callbacks, and files outside the scan may be missing."
+              : "No callers found in eligible files of this repository. Dynamic calls and callbacks may be missing.");
             return;
           }
           const picked = await vscode.window.showQuickPick(choices, {
-            title: `Callers of ${entry.name}`,
-            placeHolder: "Open a caller. Use VS Code's Go Back to return. Up to 100 callers; dynamic calls may be missing.",
+            title: `${staticLookup ? "Statically found callers" : "Callers"} of ${entry.name}`,
+            placeHolder: staticLookup
+              ? "Bounded direct-call scan; methods, dynamic calls, and macros omitted. Go Back returns."
+              : "Open a caller. Use VS Code's Go Back to return. Up to 100 callers; dynamic calls may be missing.",
             matchOnDescription: true
           });
           if (!picked || preview !== shown || shown.document.version !== version) return;
           const { caller } = picked;
           if (await sharingExclusion(shown.root, caller.uri.fsPath)) {
             await vscode.window.showWarningMessage("This caller is now excluded and cannot be opened from caller lookup.");
+            return;
+          }
+          if (caller.source !== undefined && await repositoryText(shown.root, filePath(shown.root, caller.uri)) !== caller.source) {
+            await vscode.window.showInformationMessage("This caller changed during lookup. Use Show callers again to refresh its location.");
             return;
           }
           await reveal(caller.uri, caller.position.line, caller.position.character, caller.position.character);

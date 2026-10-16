@@ -4,6 +4,8 @@ export interface CallerLocation {
   readonly name: string;
   readonly uri: vscode.Uri;
   readonly position: vscode.Position;
+  /** Local fallback snapshot, checked again before navigation after the picker. */
+  readonly source?: string;
 }
 
 /** Native incoming calls only, not references that may merely mention the function. */

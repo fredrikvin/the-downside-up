@@ -22,5 +22,7 @@ export const goSupport: LanguageSupport = {
   findDependencies: (request) =>
     findGoDependencies(request)
       .catch(() => ({ dependencies: [], preamble: "", limitations: [UNRESOLVED_DEPENDENCIES] })),
+  findDirectCalls: (request) => findGoDependencies({ ...request, directCallsOnly: true }),
+  directCallManifests: ["go.mod", "go.work"],
   fileImports: goFileImports
 };

@@ -4,7 +4,7 @@ import { resolve } from "node:path";
 import * as vscode from "vscode";
 import { findFunctionWithEditorTools } from "../../src/languages/editor/symbols";
 import { buildFileOverview } from "../../src/context/fileOverview";
-import { findRepositoryRoot, gatherInventory } from "../../src/context/inventory";
+import { findRepositoryRoot, gatherInventory, sharingExclusion } from "../../src/context/inventory";
 import { findCalledFunctions, gatherFunctionContext } from "../../src/context/related";
 import { javascriptSupport } from "../../src/languages/javascript";
 import type { DownsideUpTestApi } from "../../src/extension";
@@ -12,6 +12,9 @@ import { findGoFunction, initializeGoParserAt } from "../../src/languages/go/syn
 import { findRustFunction, initializeRustParserAt } from "../../src/languages/rust/syntax";
 import { chooseExclusionAssignments } from "../../src/presentation/exclusionWizard";
 import { incomingCallers } from "../../src/languages/editor/callers";
+import { staticCallers } from "../../src/context/callers";
+import { goSupport } from "../../src/languages/go";
+import { rustSupport } from "../../src/languages/rust";
 
 async function waitFor<T>(
   operation: () => Promise<T | undefined>,
@@ -190,6 +193,25 @@ export async function run(): Promise<void> {
   }, "TypeScript incoming call hierarchy");
   assert.ok(nativeCallers.callers.some((caller) => caller.name === "checkout"), "Native incoming calls locate persist's caller.");
   assert.equal(api.allExplanations().length, callersBefore, "Looking up callers does not request explanations.");
+  for (const { root, path, support } of [
+    { root: rustRoot, path: "src/main.rs", support: rustSupport },
+    { root: goRoot, path: "main.go", support: goSupport }
+  ]) {
+    await support.initialize!(extension.extensionPath);
+    const document = await vscode.workspace.openTextDocument(vscode.Uri.file(resolve(root, path)));
+    const fn = (await support.listFunctions!(document.getText(), path)).find((item) => item.name === "checkout");
+    assert.ok(fn);
+    const callers = await staticCallers(root, {
+      uri: document.uri, name: fn.name,
+      range: new vscode.Range(fn.startLine, 0, fn.endLine, 0)
+    }, support, async (file) => {
+      const absolute = resolve(root, file);
+      if (await sharingExclusion(root, absolute)) return undefined;
+      return (await vscode.workspace.openTextDocument(vscode.Uri.file(absolute))).getText();
+    }, () => false);
+    assert.ok(callers.some((caller) => caller.name === "main"), `${support.name} fallback finds checkout's main caller without a language server.`);
+  }
+  assert.equal(api.allExplanations().length, callersBefore, "Static caller lookup does not request explanations.");
   const hoverText = async (document: vscode.TextDocument, needle: string, offset: number): Promise<string> => {
     const hovers = await vscode.commands.executeCommand<vscode.Hover[]>(
       "vscode.executeHoverProvider",

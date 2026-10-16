@@ -162,9 +162,20 @@ prefetching (below). After edits, file changes,
 or a model change, open explanations are rechecked against the cache locally
 and marked outdated when their recorded inputs no longer match.
 
-Function headings have **Show callers**, independent of the
+Function headings have a compact **Show callers** icon, independent of the
 explanation format. It uses native incoming Call Hierarchy, never references
-as a proxy for calls; no bundled fallback is provided. Lookup requires trust
+as a proxy for calls. When native lookup is unavailable (not when it fails),
+Go and Rust provide a local direct-call fallback via their `LanguageSupport`.
+This reverses direct free-function dependencies using existing package/module
+resolution, not text name matches or uncertain receiver-type guesses. It skips
+references, receiver methods, macros, closures, shadowed local names and
+ambiguous declarations; coverage remains conservative and incomplete.
+Fallback limits: 2,000 filesystem entries, 100 loaded files, 2 MiB of text,
+256 KiB per file, 500 functions, eight seconds checked between operations, and
+100 results. It is cancellable, reads unsaved buffers, labels results
+**Statically found callers**, and checks selected source snapshots again before
+navigation. No results is explicitly scoped to the scan limits.
+Lookup requires trust
 and respects sharing exclusions for the source and results, restricts navigation
 to local files within the repository, and bounds queries to eight prepared
 targets and 100 caller functions. Unsupported lookup and no eligible callers

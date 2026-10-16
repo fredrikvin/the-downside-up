@@ -32,6 +32,10 @@ export interface LanguageSupport {
   textFingerprint?(source: string, path: string): Promise<string>;
   /** Items the function uses directly, for explanation context, tracking, hovers, and prefetching. */
   findDependencies(request: DependencyRequest): Promise<DependencyResult>;
+  /** Conservative direct calls for local caller lookup; never inferred receiver methods. */
+  findDirectCalls?(request: DependencyRequest): Promise<DependencyResult>;
+  /** Manifest basenames needed to resolve direct calls in a bounded local scan. */
+  readonly directCallManifests?: readonly string[];
   /**
    * Background for explaining this kind of function, such as how a React
    * component runs. It must be the language support's own fixed text, never

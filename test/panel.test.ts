@@ -308,12 +308,15 @@ describe("preview webview document", () => {
     };
     const unexplained = renderEntry(entry, new Map()).elements();
     expect(unexplained.filter((node) => node.className === "explain").map((node) => node.textContent)).toEqual(["Explain"]);
-    expect(unexplained.find((node) => node.textContent === "Show callers")?.attributes.get("aria-label")).toBe("Show callers of run");
-    unexplained.find((node) => node.textContent === "Show callers")?.listeners.get("click")?.();
+    const callers = unexplained.find((node) => node.className === "callers");
+    expect(callers?.attributes.get("aria-label")).toBe("Show callers of run");
+    expect(callers?.textContent).toBe("");
+    expect(callers?.elements().some((node) => node.tagName === "svg")).toBe(true);
+    callers?.listeners.get("click")?.();
     expect(messages).toEqual([{ type: "showCallers", entryId: "f" }]);
     const pending = renderEntry(entry, new Map([["f", loading]])).elements();
     expect(pending.filter((node) => node.className === "explain")).toEqual([]);
-    expect(pending.some((node) => node.textContent === "Show callers")).toBe(true);
+    expect(pending.some((node) => node.className === "callers")).toBe(true);
     expect(pending.some((node) => node.id === "f-ai")).toBe(true);
     expect(pending.filter((node) => node.className.startsWith("skeleton"))).toHaveLength(4);
     expect(pending.find((node) => node.attributes.get("role") === "status")?.children).toContainEqual(

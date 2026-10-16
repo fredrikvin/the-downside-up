@@ -44,6 +44,29 @@ beforeAll(async () => {
 });
 
 describe("Rust cross-file dependencies", () => {
+  it("resolves direct free-function calls without treating references or methods as callers", async () => {
+    const files = {
+      "Cargo.toml": '[package]\nname = "demo"\n',
+      "src/main.rs": `mod other;
+use crate::other::target as imported;
+fn target() {}
+fn caller() { target(); imported(); other::target(); }
+fn reference() { let _f = target; }
+fn shadow(target: fn()) { target(); }
+fn local() { let target = || {}; target(); }
+fn closure() { let _f = || { target(); }; }
+fn methods() { value.target(); }
+fn macros() { invoke!(target()); }
+`,
+      "src/other.rs": "pub fn target() {}\n"
+    };
+    const direct = async (name: string) => (await findRustDependencies(
+      request(files, "src/main.rs", name, { directCallsOnly: true })
+    )).dependencies.map((entry) => `${entry.path}:${entry.item.name}`).sort();
+    expect(await direct("caller")).toEqual(["src/main.rs:target", "src/other.rs:target"]);
+    for (const name of ["reference", "shadow", "local", "closure", "methods", "macros"]) expect(await direct(name), name).toEqual([]);
+  });
+
   it("finds types, functions, and methods a function uses from other files", async () => {
     expect(await dependencies(fixture(), "src/main.rs", "checkout")).toEqual([
       "src/inventory.rs method Catalog::find_available",

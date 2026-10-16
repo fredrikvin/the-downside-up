@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.35.0
+
+- Add conservative bundled Go/Rust caller lookup when native incoming Call
+  Hierarchy is unavailable. Bounded, cancellable scans find direct free-function
+  calls without a language server or AI requests and disclose incomplete coverage.
+- Replace the Show callers text button with a compact accessible icon beside
+  each function name.
+
 ## 0.34.0
 
 - Add Show callers to function headings for steps, pseudocode, and flowcharts,
