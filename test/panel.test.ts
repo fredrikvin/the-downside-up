@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { panelHtml, type ExplanationView, type PanelState, type Crumb } from "../src/presentation/panel";
 import type { Flowchart } from "../src/core/types";
 
@@ -32,7 +32,7 @@ function webviewHelpers() {
     if (!elements.has(id)) elements.set(id, new TestElement("button"));
     return elements.get(id)!;
   };
-  const helpers = new Function("acquireVsCodeApi", "document", "window", script + "\nreturn { layoutFlow, downwardPath, renderEntry, renderAiBody, missingFormat, renderHeader, renderCrumbs };")(
+  const helpers = new Function("acquireVsCodeApi", "document", "window", script + "\nreturn { layoutFlow, downwardPath, renderEntry, renderAiBody, missingFormat, renderHeader, renderCrumbs, renderActivity };")(
     () => ({ getState: () => ({}), postMessage: () => undefined }),
     {
       getElementById: element,
@@ -49,9 +49,31 @@ function webviewHelpers() {
     missingFormat(view: ExplanationView, format: string): TestElement;
     renderHeader(state: Pick<PanelState, "models" | "provider" | "busy" | "hasRepository" | "stats" | "statsError">): void;
     renderCrumbs(crumbs: readonly Crumb[]): void;
+    renderActivity(state: Pick<PanelState, "busy" | "notice" | "folder">): void;
   };
   return { ...helpers, element };
 }
+
+it("shows elapsed activity across updates and clears the timer when work stops", () => {
+  vi.useFakeTimers();
+  try {
+    const { renderActivity, element } = webviewHelpers();
+    renderActivity({ busy: true, notice: { tone: "progress", text: "Mapping the project…" } });
+    expect(element("activity").hidden).toBe(false);
+    expect(element("activityStage").textContent).toBe("Mapping the project…");
+    vi.advanceTimersByTime(65_000);
+    expect(element("activityTime").textContent).toContain("1:05 elapsed");
+    renderActivity({ busy: true, notice: { tone: "progress", text: "Saving…" } });
+    expect(element("activityStage").textContent).toBe("Saving…");
+    vi.advanceTimersByTime(1000);
+    expect(element("activityTime").textContent).toContain("1:06 elapsed");
+    renderActivity({ busy: false });
+    expect(element("activity").hidden).toBe(true);
+    expect(vi.getTimerCount()).toBe(0);
+  } finally {
+    vi.useRealTimers();
+  }
+});
 
 describe("preview webview document", () => {
   it("keeps a restrictive policy and renders content only as text", () => {

@@ -97,6 +97,30 @@ function fakeModel(send: SendRequest, maxInputTokens = 100_000, countsTokens = t
 }
 
 describe("VS Code language model generation", () => {
+  it("allows slow models past 90 seconds, then cancels after ten minutes without retrying", async () => {
+    vi.useFakeTimers();
+    try {
+      let token: FakeToken | undefined;
+      const { provider, sendRequest } = fakeModel(async (_messages, _options, current) => {
+        token = current;
+        return {
+          text: (async function* () {
+            await new Promise<void>((resolve) => current.onCancellationRequested(resolve));
+          })()
+        };
+      });
+      const result = provider.explainFunction(promptInput).catch((error: unknown) => error);
+      await vi.advanceTimersByTimeAsync(90_001);
+      expect(token?.isCancellationRequested).toBe(false);
+      await vi.advanceTimersByTimeAsync(600_000 - 90_001);
+      expect(await result).toMatchObject({ message: expect.stringContaining("timed out after 10 minutes") });
+      expect(token?.isCancellationRequested).toBe(true);
+      expect(sendRequest).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("sends one delimited user message with the schema and parses fenced JSON across chunks", async () => {
     const serialized = JSON.stringify(explanation);
     const { provider, sendRequest } = fakeModel(async () =>

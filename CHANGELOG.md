@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.30.1
+
+- Allow VS Code language-model requests up to ten minutes instead of 90 seconds,
+  while preserving manual cancellation and no automatic retries.
+- Show a sticky animated activity strip, current stage, and elapsed time during
+  active requests. Replace the misleading one-to-two-minute mapping message.
+
 ## 0.30.0
 
 - Enable pseudocode and flowchart views by default for new explanations.

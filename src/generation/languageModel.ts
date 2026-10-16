@@ -37,7 +37,7 @@ import {
   parsePartFlows
 } from "./schema";
 
-const REQUEST_TIMEOUT_MS = 90_000;
+const REQUEST_TIMEOUT_MS = 10 * 60_000;
 const MAX_OUTPUT_CHARACTERS = 64 * 1024;
 
 export const LANGUAGE_MODEL_JUSTIFICATION =
@@ -267,7 +267,7 @@ export class LanguageModelProvider implements GenerationProvider {
       }
     } catch (error) {
       if (signal?.aborted) throw cancelled();
-      if (timedOut) throw new Error("The language model request timed out after 90 seconds.");
+      if (timedOut) throw new Error("The language model request timed out after 10 minutes. No automatic retry was made; try again or choose a faster model.");
       if (error instanceof LocalLimitError) throw error;
       throw describeFailure(error, this.model.name);
     } finally {
@@ -276,7 +276,7 @@ export class LanguageModelProvider implements GenerationProvider {
       tokenSource.dispose();
     }
     if (signal?.aborted) throw cancelled();
-    if (timedOut) throw new Error("The language model request timed out after 90 seconds.");
+    if (timedOut) throw new Error("The language model request timed out after 10 minutes. No automatic retry was made; try again or choose a faster model.");
     if (!output.trim()) {
       throw new Error(
         `${this.model.name} (${this.model.vendor}) returned no output. Some models listed by VS Code cannot answer extension requests; run “Downside Up: Choose Language Model” and pick another model, such as one from the “copilot” vendor.`

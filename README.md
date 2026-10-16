@@ -256,6 +256,11 @@ To install a locally packaged VSIX, run
 
 ## Provider setup
 
+While requests are active, the preview shows an activity strip, the current
+stage, and elapsed time. Slower models may take several minutes; VS Code
+language-model requests allow up to ten minutes, and you can cancel at any time.
+Elapsed time is not an estimate of completion time.
+
 The `downsideUp.provider` setting defaults to `mock`. Mock output is
 deterministic placeholder content, not semantic analysis. There are two live
 providers, each with its own section in the extension's settings (**VS Code

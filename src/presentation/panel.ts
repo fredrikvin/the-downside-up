@@ -420,9 +420,13 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
     .repo summary { cursor: pointer; font-weight: 600; }
     .repo p { white-space: pre-line; }
     footer { margin-top: 24px; }
+    .activity { position: sticky; top: 0; z-index: 10; padding: 8px 0; background: var(--vscode-editor-background); border-top: 3px solid var(--vscode-progressBar-background, #3794ff); }
+    .activity::before { content: ""; position: absolute; top: -3px; left: 0; width: 100%; height: 3px; background: linear-gradient(90deg, transparent, var(--vscode-editor-background), transparent); background-size: 200% 100%; animation: shimmer 1.4s linear infinite; }
+    @media (prefers-reduced-motion: reduce) { .activity::before { animation: none; } }
   </style>
 </head>
 <body>
+  <div id="activity" class="activity" hidden><span id="activityStage" role="status"></span><span id="activityTime" class="muted small"></span></div>
   <header class="header">
     <nav class="toolbar" aria-label="Downside Up actions">
       <div class="model-selectors" role="group" aria-label="AI models">
@@ -465,6 +469,30 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
     const structureLayout = (${structureLayout.toString()});
     const vscode = acquireVsCodeApi();
     const byId = (id) => document.getElementById(id);
+    let activityStarted;
+    let activityTimer;
+    function renderActivity(next) {
+      const busy = next.busy;
+      byId("activity").hidden = !busy;
+      byId("activityStage").textContent = busy
+        ? (next.notice?.tone === "progress" ? next.notice.text : next.folder?.mapping || "Preparing explanations…")
+        : "";
+      if (!busy) {
+        clearInterval(activityTimer);
+        activityTimer = undefined;
+        activityStarted = undefined;
+        byId("activityTime").textContent = "";
+        return;
+      }
+      if (activityStarted !== undefined) return;
+      activityStarted = Date.now();
+      const tick = () => {
+        const seconds = Math.floor((Date.now() - activityStarted) / 1000);
+        byId("activityTime").textContent = " · " + Math.floor(seconds / 60) + ":" + String(seconds % 60).padStart(2, "0") + " elapsed · Use Cancel to stop";
+      };
+      tick();
+      activityTimer = setInterval(tick, 1000);
+    }
     const HEADING_KINDS = new Set(["function", "type", "impl", "module", "macro"]);
     const DETAIL_SECTIONS = [
       ["role", "Where it fits"],
@@ -1513,7 +1541,7 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
       if (folder.mapping) {
         const loading = el("div", "loading");
         loading.setAttribute("role", "status");
-        loading.append(el("span", "spinner"), el("span", "", folder.mapping + " The first time takes a minute or two."));
+        loading.append(el("span", "spinner"), el("span", "", folder.mapping + " Some models take several minutes. You can cancel at any time."));
         box.append(loading, renderSkeleton(true));
         return box;
       }
@@ -1648,6 +1676,7 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
       const focusedEntry = document.activeElement && document.activeElement.closest ? document.activeElement.closest(".entry") : null;
       const focusedClass = document.activeElement ? document.activeElement.className : "";
       state = next;
+      renderActivity(next);
       const loading = next.loading;
       const file = loading ? undefined : next.document;
       const folder = file || loading ? undefined : next.folder;

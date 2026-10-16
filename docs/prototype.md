@@ -762,7 +762,12 @@ so the instructions and JSON Schema are sent in a single user message, and the
 reply is validated with the same parser as other providers. Malformed replies
 fail without an automatic retry. The request is checked against the model's
 `maxInputTokens` before sending, the output is capped, and requests time out
-after 90 seconds. Token usage comes from the model's `countTokens` and is
+after 10 minutes, allowing slower reasoning and overview models time to finish.
+The preview shows a sticky animated activity strip, current stage, and elapsed
+time while requests are active; reduced motion disables the strip animation.
+Elapsed time covers the continuous busy period, not a provider progress estimate.
+No ETA is inferred from file counts, since provider latency is unknown.
+Token usage comes from the model's `countTokens` and is
 labelled as an estimate (falling back to a byte-based estimate when a vendor
 reports zero). Permission, quota/rate-limit/policy blocks, empty replies, and
 unavailable models are reported with actionable messages; there is never a
