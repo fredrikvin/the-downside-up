@@ -15,6 +15,7 @@ import { incomingCallers } from "../../src/languages/editor/callers";
 import { staticCallers } from "../../src/context/callers";
 import { goSupport } from "../../src/languages/go";
 import { rustSupport } from "../../src/languages/rust";
+import { pythonSupport } from "../../src/languages/python";
 
 async function waitFor<T>(
   operation: () => Promise<T | undefined>,
@@ -138,6 +139,7 @@ export async function run(): Promise<void> {
   const goRoot = resolve(__dirname, "../../fixtures/go-app");
   const reactRoot = resolve(__dirname, "../../fixtures/react-app");
   const servicesRoot = resolve(__dirname, "../../fixtures/services-app");
+  const pythonRoot = resolve(__dirname, "../../fixtures/python-app");
   // VS Code rejects a second folder change in this session, so all folders are added at once.
   assert.ok(vscode.workspace.updateWorkspaceFolders(
     1,
@@ -145,8 +147,9 @@ export async function run(): Promise<void> {
     { uri: vscode.Uri.file(jsRoot), name: "js-app" },
     { uri: vscode.Uri.file(goRoot), name: "go-app" },
     { uri: vscode.Uri.file(reactRoot), name: "react-app" },
-    { uri: vscode.Uri.file(servicesRoot), name: "services-app" }
-  ), "The JavaScript, Go, React, and services fixture folders are added.");
+    { uri: vscode.Uri.file(servicesRoot), name: "services-app" },
+    { uri: vscode.Uri.file(pythonRoot), name: "python-app" }
+  ), "The JavaScript, Go, React, services, and Python fixture folders are added.");
   const jsFile = resolve(jsRoot, "src/checkout.js");
   const jsDocument = await vscode.workspace.openTextDocument(vscode.Uri.file(jsFile));
   const jsEditor = await vscode.window.showTextDocument(jsDocument, vscode.ViewColumn.One);
@@ -195,7 +198,8 @@ export async function run(): Promise<void> {
   assert.equal(api.allExplanations().length, callersBefore, "Looking up callers does not request explanations.");
   for (const { root, path, support } of [
     { root: rustRoot, path: "src/main.rs", support: rustSupport },
-    { root: goRoot, path: "main.go", support: goSupport }
+    { root: goRoot, path: "main.go", support: goSupport },
+    { root: pythonRoot, path: "main.py", support: pythonSupport }
   ]) {
     await support.initialize!(extension.extensionPath);
     const document = await vscode.workspace.openTextDocument(vscode.Uri.file(resolve(root, path)));
@@ -401,6 +405,31 @@ export async function run(): Promise<void> {
     await rm(badgePath, { force: true });
   }
   console.log("Downside Up integration tests: review mode explained the changed functions.");
+
+  const pythonDocument = await vscode.workspace.openTextDocument(vscode.Uri.file(resolve(pythonRoot, "main.py")));
+  const pythonCursor = pythonDocument.positionAt(pythonDocument.getText().indexOf("def checkout") + 6);
+  const pythonTarget = await pythonSupport.findFunction(pythonDocument, pythonCursor);
+  assert.equal(pythonTarget?.analysis, "python-tree-sitter", "Python discovery does not need Pylance.");
+  const pythonInventoryDocument = await vscode.workspace.openTextDocument(vscode.Uri.file(resolve(pythonRoot, "library/inventory.py")));
+  const pythonMethod = await pythonSupport.findFunction(pythonInventoryDocument,
+    pythonInventoryDocument.positionAt(pythonInventoryDocument.getText().indexOf("def find") + 5));
+  assert.equal(pythonMethod?.qualifiedName, "Catalog.find");
+  const pythonOutline = await buildFileOverview(pythonInventoryDocument, "library/inventory.py");
+  assert.ok(pythonOutline.entries.some((entry) => entry.name === "reserve" && entry.kindLabel === "Method"));
+  const pythonEditor = await vscode.window.showTextDocument(pythonDocument, vscode.ViewColumn.One);
+  const pythonBefore = api.allExplanations().length;
+  pythonEditor.selection = new vscode.Selection(pythonCursor, pythonCursor);
+  await vscode.commands.executeCommand("downsideUp.showFileOverview");
+  assert.equal(api.allExplanations().length, pythonBefore, "Opening Python with only a cursor does not generate.");
+  pythonEditor.selection = new vscode.Selection(pythonCursor, pythonCursor.translate(0, 1));
+  await vscode.commands.executeCommand("downsideUp.showFileOverview");
+  await waitFor(async () => api.previewExplanations().some((view) => view.functionName === "checkout" && view.status === "current") ? true : undefined,
+    "the Python explanation from a selection");
+  await api.previewFolder("");
+  const pythonFolder = await waitFor(async () => api.shownFolder()?.edges.length ? api.shownFolder() : undefined,
+    "the Python repository's import structure");
+  assert.ok(pythonFolder.edges.includes("main.py > library"), "Python import diagrams use bundled resolution.");
+  console.log("Downside Up integration tests: Python discovery, callers, explanation, and structure completed.");
 
   const goDocument = await vscode.workspace.openTextDocument(vscode.Uri.file(resolve(goRoot, "main.go")));
   await waitFor(

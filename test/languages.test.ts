@@ -125,9 +125,9 @@ describe("language analysis", () => {
     expect(bundledLanguageFor({ languageId: "rust" })?.name).toBe("Rust");
     expect(bundledLanguageFor({ languageId: "plaintext", path: "/repo/cmd/main.GO" })?.name).toBe("Go");
     expect(bundledLanguageFor({ languageId: "typescriptreact", path: "/repo/src/App.tsx" })?.name).toBe("JavaScript/TypeScript");
-    expect(bundledLanguageFor({ languageId: "python", path: "/repo/src/app.py" })).toBeUndefined();
-    expect(languageFor({ languageId: "python", path: "/repo/src/app.py" }).name).toBe("Editor tooling");
+    expect(bundledLanguageFor({ languageId: "python", path: "/repo/src/app.py" })?.name).toBe("Python");
+    expect(languageFor({ languageId: "ruby", path: "/repo/src/app.rb" }).name).toBe("Editor tooling");
     expect(bundledLanguageIdForPath("src/lib.rs")).toBe("rust");
-    expect(bundledLanguageIdForPath("src/app.py")).toBeUndefined();
+    expect(bundledLanguageIdForPath("src/app.py")).toBe("python");
   });
 });

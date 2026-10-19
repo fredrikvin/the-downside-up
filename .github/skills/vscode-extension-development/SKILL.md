@@ -43,11 +43,11 @@ contract and project-specific constraints.
   overviews through new prompt or schema versions is acceptable. Bump versions
   whenever formats change; do not avoid, batch, or migrate such changes to
   preserve caches, and do not flag the one-time regeneration as a cost.
-- Rust, Go, JavaScript, and TypeScript discovery use bundled Tree-sitter WASM
+- Rust, Go, Python, JavaScript, and TypeScript discovery use bundled Tree-sitter WASM
   (JavaScript and TypeScript resolve uses with the built-in TypeScript
   go-to-definition); other languages use VS
   Code document-symbol providers and go-to-definition where available. Do not
-  assume rust-analyzer, gopls, or another language server is installed.
+  assume rust-analyzer, gopls, Pylance, or another language server is installed.
 - Add or change language behavior in `src/languages/<language>/` behind its
   `LanguageSupport` (`src/languages/support.ts`) and registry entry; a new
   Tree-sitter grammar also needs its name in `esbuild.config.mjs`.

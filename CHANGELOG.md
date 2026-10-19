@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.36.0
+
+- Add bundled Python function discovery and local file outlines without Pylance:
+  functions, async functions, class methods, properties, nested functions,
+  docstrings, imports, and values.
+- Statically resolve Python helpers, repository imports, and same-class
+  `self`/`cls` methods for explanation context, freshness, hovers, and prefetch.
+  Syntax-aware fingerprints tolerate formatting while preserving indentation
+  structure, literals, and comments.
+- Add Python import diagrams and conservative module-level direct caller lookup,
+  using the same bounded, exclusion-aware scan as Go/Rust. Dynamic dispatch,
+  inheritance, star imports, and re-exports are not resolved.
+
 ## 0.35.1
 
 - Make function names navigate to their source instead of requesting an

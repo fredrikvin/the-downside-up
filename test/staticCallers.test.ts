@@ -4,6 +4,7 @@ import { Position, Range, Uri } from "vscode";
 import { staticCallers } from "../src/context/callers";
 import { goSupport } from "../src/languages/go";
 import { rustSupport } from "../src/languages/rust";
+import { pythonSupport } from "../src/languages/python";
 
 const scan = vi.hoisted(() => ({ files: [] as string[] }));
 vi.mock("../src/context/inventory", () => ({
@@ -13,12 +14,14 @@ vi.mock("../src/context/inventory", () => ({
 beforeAll(async () => {
   await goSupport.initialize!(resolve("."));
   await rustSupport.initialize!(resolve("."));
+  await pythonSupport.initialize!(resolve("."));
 });
 
 describe("bounded local caller scan", () => {
   it.each([
     { support: goSupport, manifest: "go.mod", path: "main.go", text: "package main\nfunc target() {}\nfunc caller() { target() }\n" },
-    { support: rustSupport, manifest: "Cargo.toml", path: "src/main.rs", text: "fn target() {}\nfn caller() { target(); }\n" }
+    { support: rustSupport, manifest: "Cargo.toml", path: "src/main.rs", text: "fn target() {}\nfn caller() { target(); }\n" },
+    { support: pythonSupport, manifest: "pyproject.toml", path: "app.py", text: "def target():\n    pass\n\ndef caller():\n    target()\n" }
   ])("reverses $support.name direct calls without a language server", async ({ support, manifest, path, text }) => {
     const root = resolve("fixtures");
     scan.files = [manifest, path];

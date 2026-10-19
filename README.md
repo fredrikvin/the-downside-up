@@ -48,7 +48,7 @@ and billing.
   regardless of the selected steps, pseudocode, or flowchart tab.
 
 Caller lookup prefers a language extension's incoming Call Hierarchy. Without
-it, Go and Rust use a bounded local scan of direct free-function calls, labelled
+it, Go, Rust, and Python use a bounded local scan of direct free-function calls, labelled
 **Statically found callers**. That fallback omits uncertain receiver methods,
 interface/trait dispatch, macros, and closures; results are not exhaustive.
 Results are limited to eligible files in the current repository. Lookup itself
@@ -56,8 +56,12 @@ makes no AI requests. Navigation
 shows cached explanations; with prefetch enabled and sharing already approved,
 the existing reader-focused queue loads missing explanations.
 
-Rust, Go, JavaScript, and TypeScript (including JSX and React) have bundled
-function discovery. JavaScript/TypeScript dependency lookup uses VS Code's
+Rust, Go, Python, JavaScript, and TypeScript (including JSX and React) have bundled
+function discovery. Python supports functions, async functions, class methods,
+properties, and nested functions without Pylance. It statically follows local
+helpers, repository imports, and same-class `self`/`cls` methods; dynamic
+dispatch, inheritance, star imports, and re-exports are not resolved.
+JavaScript/TypeScript dependency lookup uses VS Code's
 built-in TypeScript tooling. Other languages depend on installed extensions
 providing document symbols and go-to-definition; support varies.
 

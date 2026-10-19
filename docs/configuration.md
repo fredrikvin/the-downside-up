@@ -20,7 +20,7 @@ The **Show callers** icon beside any function opens an incoming-call picker,
 independent of the active explanation tab. Select a caller to navigate to its
 call site and preview; use VS Code's **Go Back** to return. Only eligible local
 files inside the current repository are listed (up to 100 callers).
-Native Call Hierarchy is preferred. When unavailable, bundled Go/Rust parsers
+Native Call Hierarchy is preferred. When unavailable, bundled Go/Rust/Python parsers
 scan direct free-function calls, labelled **Statically found callers**. The
 fallback reuses package/module dependency resolution and rejects uncertain
 receiver methods, interface/trait dispatch, macros, closures, shadowed names,
@@ -85,10 +85,14 @@ using existing sharing consent. Opening the picker does not preload its results.
   sideways scrollbar. Very narrow columns may still need smaller text.
   The explanation also uses the functions the function calls, including from
   other files, plus the signatures of the functions those call, and is marked
-  outdated when any of them change. For Rust and Go, it also uses the types,
+  outdated when any of them change. For Rust, Go, and Python, it also uses the types,
   constants, and methods the function uses, and their files are described,
   and their functions and calls found, with bundled parsers, so no language
-  server is needed. JavaScript and TypeScript (including JSX and React) are
+  server is needed. Python supports `def`, `async def`, class methods,
+  properties, and nested functions (not lambdas). It follows same-file helpers,
+  imports of repository modules, and same-class `self`/`cls` methods without
+  Pylance; dynamic dispatch, inheritance, star imports, and re-exports are not
+  resolved. JavaScript and TypeScript (including JSX and React) are
   described and their functions found with bundled parsers too: arrow
   functions, components (also inside `memo` or `forwardRef`), hooks, and
   class and object methods are all functions you can explain, and the
@@ -170,8 +174,10 @@ which of them import which: importers above what they import, so entry points
 sit on top and foundations below; folders that most of the others use sit in
 a bottom row without arrows, and items with no imports to or from the others
 in a row of their own. Click a box or name to preview that folder or open
-that file. The diagram is built locally from imports (Rust, Go, JavaScript,
-and TypeScript, including `tsconfig` path aliases); it does not show other
+that file. The diagram is built locally from imports (Rust, Go, Python, JavaScript,
+and TypeScript, including `tsconfig` path aliases); Python follows absolute
+and package-relative imports under the repository root or a `src/` layout.
+It does not show other
 connections, such as dependency injection or calls between services, and
 nothing is generated or sent. The folder preview stays until you switch to
 another file.
@@ -477,10 +483,12 @@ and its tracked files and unsaved buffers are unchanged. Clicking or refocusing 
 editor does not invalidate explanations just because language tools answer
 differently under load; actual source edits still trigger freshness checks.
 
-**Formatting changes:** Go, Rust, JavaScript, and TypeScript use syntax-aware
+**Formatting changes:** Go, Rust, Python, JavaScript, and TypeScript use syntax-aware
 fingerprints for functions, imports, dependency signatures, caller files, and
 file summaries. Indentation, spacing, and blank lines do not outdate them;
 literal contents, comments, and syntax-sensitive newlines remain meaningful.
+In Python, changing indentation that changes the parsed structure outdates
+the explanation; reindenting without changing structure does not.
 Other languages conservatively ignore line-ending differences, trailing spaces,
 and blank lines while preserving indentation and in-line spacing; potential
 multiline literals or continuations fall back to exact text.
@@ -514,7 +522,7 @@ your provider's usage limits or billing.
 
 Hovering a call to a function shows the purpose from its saved AI
 explanation, if one is current. Calls are found the same way as for
-explanations, so outside Rust and Go this needs
+explanations, so outside Rust, Go, and Python this needs
 go-to-definition (built in for JavaScript and TypeScript, where hovering a
 rendered component such as `<CartItem>` works too). This only reads the local cache and never
 generates; turn it off with **Downside Up › Hover: Saved Explanations**

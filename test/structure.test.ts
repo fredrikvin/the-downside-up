@@ -7,9 +7,10 @@ import { folderStructure } from "../src/context/structure";
 import { initializeGoParserAt } from "../src/languages/go/syntax";
 import { initializeJavaScriptParsersAt } from "../src/languages/javascript/syntax";
 import { initializeRustParserAt } from "../src/languages/rust/syntax";
+import { initializePythonParserAt } from "../src/languages/python/syntax";
 
 beforeAll(async () => {
-  await Promise.all([initializeRustParserAt(resolve(".")), initializeGoParserAt(resolve(".")), initializeJavaScriptParsersAt(resolve("."))]);
+  await Promise.all([initializeRustParserAt(resolve(".")), initializeGoParserAt(resolve(".")), initializeJavaScriptParsersAt(resolve(".")), initializePythonParserAt(resolve("."))]);
 });
 
 async function structureOf(fixture: string, folder: string) {
@@ -55,6 +56,11 @@ describe("folder listings and structure", () => {
       "src/main.rs > src/storage.rs x1",
       "src/storage.rs > src/inventory.rs x1"
     ]);
+  });
+
+  it("connects Python files through absolute and package-relative imports", async () => {
+    expect((await structureOf("python-app", "")).edges).toEqual(["main.py > library x2"]);
+    expect((await structureOf("python-app", "library")).edges).toEqual(["library/storage.py > library/inventory.py x1"]);
   });
 
   it("connects TypeScript files through relative imports", async () => {

@@ -2,12 +2,21 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { buildFileOverview, type OutlineEntry } from "../src/context/fileOverview";
 import type { Description } from "../src/context/outlineText";
 import { scanImports } from "../src/context/imports";
+import { pythonSupport } from "../src/languages/python";
+import * as registry from "../src/languages/registry";
 import { commands, DocumentSymbol, Position, Range, SymbolKind, Uri } from "./vscode";
 
 afterEach(() => vi.restoreAllMocks());
 
 const flat = (description: Description): string =>
   description.map((segment) => (segment.code ? `\`${segment.text}\`` : segment.text)).join("");
+
+function unavailablePythonParser() {
+  vi.spyOn(registry, "bundledLanguageFor").mockReturnValue({
+    ...pythonSupport,
+    describeSource: async () => { throw new Error("Parser unavailable"); }
+  });
+}
 
 function documentFor(path: string, languageId: string, source: string) {
   return {
@@ -56,8 +65,9 @@ const python = [
   "        pass"
 ].join("\n");
 
-describe("local document-ordered file description", () => {
+describe("local document-ordered editor fallback", () => {
   it("describes imports, values, functions, classes, and comments where they appear", async () => {
+    unavailablePythonParser();
     const checkout = symbol("checkout", SymbolKind.Function, [8, 0], [10, 15], 10, [
       symbol("book", SymbolKind.Variable, [9, 4], [9, 64], 4)
     ]);
@@ -91,10 +101,11 @@ describe("local document-ordered file description", () => {
     expect(checkoutEntry.reference).toMatchObject({ path: "app/catalog.py", line: 8, startCharacter: 10, endCharacter: 18 });
     expect(overview.entries.filter((entry) => entry.explainable).map((entry) => entry.name)).toEqual(["checkout", "add"]);
     expect(new Set(overview.entries.map((entry) => entry.id)).size).toBe(overview.entries.length);
-    expect(overview.limitations).toEqual([]);
+    expect(overview.limitations).toEqual(["The bundled Python parser was unavailable, so editor symbols were used."]);
   });
 
   it("still describes imports and comments when no symbol provider answers", async () => {
+    unavailablePythonParser();
     vi.spyOn(commands, "executeCommand").mockResolvedValue(undefined);
     const source = "import os\nfrom .models import (\n    Book,\n    Shelf as Rack,\n)\n\n# Settings below.\nVALUE = 1\n";
 
@@ -107,7 +118,7 @@ describe("local document-ordered file description", () => {
       "Settings below."
     ]);
     expect(overview.entries[1]).toMatchObject({ startLine: 1, endLine: 4 });
-    expect(overview.limitations[0]).toContain("No VS Code document-symbol provider");
+    expect(overview.limitations.join(" ")).toContain("No VS Code document-symbol provider");
   });
 
   it("does not describe oversized files", async () => {

@@ -22,7 +22,7 @@ import, module, function/method, type, constant/static, local variable
 binding, and standalone comment in plain language, in source order and
 without regrouping, with attached doc comments and attributes. These
 descriptions are deterministic and local (Tree-sitter for
-Rust, Go, JavaScript, and TypeScript; VS Code document symbols plus line-based import and comment
+Rust, Go, Python, JavaScript, and TypeScript; VS Code document symbols plus line-based import and comment
 detection for other languages) and are labelled as not AI-generated. Go
 descriptions also explain Go-specific meaning, such as exported names,
 pointer and value receivers, multiple and named results, `iota` groups,
@@ -167,11 +167,15 @@ and marked outdated when their recorded inputs no longer match.
 Function headings have a compact **Show callers** icon, independent of the
 explanation format. It uses native incoming Call Hierarchy, never references
 as a proxy for calls. When native lookup is unavailable (not when it fails),
-Go and Rust provide a local direct-call fallback via their `LanguageSupport`.
+Go, Rust, and Python provide a local direct-call fallback via their `LanguageSupport`.
 This reverses direct free-function dependencies using existing package/module
 resolution, not text name matches or uncertain receiver-type guesses. It skips
 references, receiver methods, macros, closures, shadowed local names and
 ambiguous declarations; coverage remains conservative and incomplete.
+Python targets are module-level functions only; decorated targets, star
+imports, re-exports, and conditional or reassigned bindings are not inferred.
+Calls inside nested functions belong to those functions, not their enclosing
+function; defaults and decorators are not counted as calls made by the body.
 Fallback limits: 2,000 filesystem entries, 100 loaded files, 2 MiB of text,
 256 KiB per file, 500 functions, eight seconds checked between operations, and
 100 results. It is cancellable, reads unsaved buffers, labels results
@@ -332,10 +336,16 @@ generated text as plain text, and can be turned off with
 `downsideUp.hover.savedExplanations`. Like the rest of the extension it is
 available once a Downside Up command has activated it.
 
-The core is language-neutral. Rust and Go function discovery and source
-fingerprinting use bundled Tree-sitter WASM grammars, so neither needs a
+The core is language-neutral. Rust, Go, and Python function discovery and source
+fingerprinting use bundled Tree-sitter WASM grammars, so none needs a
 language server; Go methods are identified by receiver type (for example
-`Catalog.Add`). JavaScript and TypeScript, including JSX and React, also use
+`Catalog.Add`). Python discovers `def` and `async def`, decorated class methods
+(including static/class methods and properties), and nested functions, qualified
+by their enclosing classes/functions (`Catalog.find`, `outer.inner`).
+Property setters/deleters have distinct identities. Lambdas are not separate
+explainable functions. Python's local outline uses module/class/function
+docstrings, attached comments, imports, classes and bases, values, and signatures.
+JavaScript and TypeScript, including JSX and React, also use
 bundled Tree-sitter grammars (TypeScript for `.ts`, `.mts`, and `.cts`, since
 generic arrow functions such as `<T>(x: T) => x` read as JSX in TSX; TSX for
 `.tsx` and all JavaScript). Their functions are function declarations,
@@ -353,7 +363,7 @@ languages use VS Code document-symbol providers,
 including nested symbols such as class methods; unnamed functions that
 providers name by position (such as TypeScript's `find() callback`) are
 treated as part of the function around them. The fixtures exercise Rust, Go,
-JavaScript, and React with TypeScript.
+Python, JavaScript, and React with TypeScript.
 
 Language support is modular. Each language with bundled analysis is a folder
 under `src/languages/` (parser, local file description, and dependency
@@ -377,7 +387,7 @@ collaboration, and marketplace publishing are out of scope.
 
 Before the first explanation, the extension gathers bounded local evidence:
 project manifests, README and architecture-style documents, selected source
-files, and a small symbol outline. Rust, Go, JavaScript, and TypeScript symbols use Tree-sitter; other
+files, and a small symbol outline. Rust, Go, Python, JavaScript, and TypeScript symbols use Tree-sitter; other
 symbols use VS Code providers where available. Function context adds related types,
 imports, directly related helpers, and references where tooling can resolve
 them. For JavaScript and TypeScript, it adds the file's import and
@@ -416,7 +426,7 @@ types, found by following `use` declarations and paths (`crate::`, `self::`,
 from `tests/`, `examples/`, or `bin/` files) with Tree-sitter and Cargo's
 file layout. Items are sent whole up to 4 KiB each and 16 KiB in total; a
 larger item is sent as its signature only, and items beyond the budget are
-omitted with a stated limitation. At depth 2, for Rust and Go, the signatures
+omitted with a stated limitation. At depth 2, for Rust, Go, and Python, the signatures
 (not bodies) of the functions and methods that the depth-1 functions sent whole
 call are added, from up to 8 such functions, at most 12 signatures and 4 KiB in
 total; anything already tracked is skipped. External crates and the standard library are
@@ -426,7 +436,16 @@ types, constants, and variables the function uses directly: from any file of
 its own package (test files only for tests) and from imported packages inside
 the same module, found through `go.mod`'s module path. Methods are matched for
 the types the function names and the types returned by functions it calls.
-The standard library and other modules are not followed. Snippets sent to the model are labelled with their file path and what
+The standard library and other modules are not followed.
+Python adds module imports and `__all__`, and uses the same depth-1/body and
+depth-2/signature budgets. It statically resolves same-file and enclosing-scope
+definitions, imported repository symbols, module-qualified calls, and same-class
+`self`/`cls` methods. Parameter/local bindings, reassignment, conditional
+definitions, and ambiguous module roots are handled conservatively; imports
+are resolved only against eligible paths and loaded through the shared
+unsaved-buffer-aware reader. Each lookup inspects at most 80 names and 80
+attribute references, reads at most 40 modules, and honors the shared deadline.
+Snippets sent to the model are labelled with their file path and what
 they contain, and the model is asked to refer to code by file, function, and
 type names in plain prose rather than by identifiers. The "related code" links
 under an explanation come from the extension's own analysis, so navigation only
@@ -667,7 +686,10 @@ repository files or folders it imports: JavaScript and TypeScript relative
 specifiers in imports, re-exports, `require`, and `import()`, with `.js` to
 `.ts` mapping, `index` files, and `paths` from the nearest `tsconfig.json` or
 `jsconfig.json`; Go imports inside the module named by the nearest `go.mod`
-(package folders); Rust `mod` declarations and `crate::` paths (module files).
+(package folders); Rust `mod` declarations and `crate::` paths (module files);
+Python absolute and relative imports (`module.py` or `module/__init__.py`),
+using the repository root, `src/` layout, and the source's package/script root.
+Ambiguous roots and unresolvable imports are omitted, not guessed.
 Other languages contribute no edges and the preview says so. Results are
 cached per file by modification time and size. Imports are counted per
 importing file and target and summed into edges between the folder's direct
@@ -876,10 +898,13 @@ their `impl` type and trait (for example `Catalog::add` or
 `<StoreError as Display>::fmt`), so same-named methods in different `impl`
 blocks have separate explanations; explanations of Rust methods saved by
 versions before 0.4.0 are therefore not reused. Rust structural fingerprints
-preserve meaningful tokens, syntax structure, and literals. Go, Rust, JavaScript,
+preserve meaningful tokens, syntax structure, and literals. Go, Rust, Python, JavaScript,
 and TypeScript ignore formatting whitespace in functions, imports, dependency
 signatures, and caller evidence. Pure newline tokens in Go are omitted, but syntax
 structure is retained so a newline changing control flow is not ignored.
+Python fingerprints preserve indentation through the syntax tree: changing
+the block structure invalidates cached results, but equivalent reindentation
+does not. String/docstring/f-string contents and comments remain meaningful.
 Rust imports are collected as complete syntax nodes, including multiline imports.
 Languages using VS Code symbols conservatively normalize CRLF, trailing horizontal
 whitespace, and blank lines; indentation and in-line spacing remain meaningful.
@@ -1012,8 +1037,8 @@ values, wrapper notes, plain JavaScript descriptions, hooks, rendered
 components, and helpers in order of first use, hovered-name-only lookups,
 waiting for TypeScript to load the project, and the props type and depth-2
 signatures with their freshness). Extension
-host tests exercise Rust, Go, JavaScript, and React discovery (Go without a language
-server), distinct identities for
+host tests exercise Rust, Go, Python, JavaScript, and React discovery (Go and
+Python without a language server), distinct identities for
 same-named Rust methods in different `impl` blocks, document-ordered outlines,
 explanations requested by selecting text and opening the preview, preview creation, selection changes during an in-flight
 request, saved explanations listed as ready after closing and reopening the
@@ -1142,6 +1167,13 @@ webview's content-security policy.
   file's own module (not `go.work` workspaces, `replace` targets, or
   `vendor/`), and package files beyond the scanner's 2,000-file limit are
   skipped with a stated limitation.
+- Python analysis is syntactic, not an interpreter or type checker. It does
+  not resolve inheritance, dynamic dispatch, wildcard imports, re-export
+  chains, decorators' runtime replacements, monkey-patching, or custom
+  `sys.path`/import hooks. Absolute imports use bounded repository, `src/`,
+  and package/script roots; ambiguous matches are omitted. Dependencies inside
+  nested functions are attributed to those functions, not the enclosing body.
+  There is no dedicated notebook or `.pyi` stub support.
 - The project map is the overview model's reading of bounded evidence
   (READMEs, manifests, API contracts, deployment facts, folder markers, and
   some source files), not an analysis of calls: levels can be wrong and
@@ -1152,15 +1184,15 @@ webview's content-security policy.
 - Structure diagrams show imports only: dependency injection, plugin
   registries, message queues, HTTP calls between services, Rust `super::`
   and `self::` paths, Go imports of other modules, TypeScript `baseUrl`
-  imports without `paths`, and languages other than Rust, Go, JavaScript, and
+  imports without `paths`, and languages other than Rust, Go, Python, JavaScript, and
   TypeScript are not drawn. A child folder counts as one box, however large.
 - Callers are tracked only when VS Code tooling reports them. In languages
-  other than Rust, Go, JavaScript, and TypeScript, only called functions are tracked (not the types,
+  other than Rust, Go, Python, JavaScript, and TypeScript, only called functions are tracked (not the types,
   constants, or variables a function uses), and only when the installed
   language extension provides go-to-definition. Call sites are found
   textually (a name followed by `(`), so calls through references (passing a
   function as a value), decorators, operators, or interpolation inside quoted
-  strings (such as Python f-strings) are missed, and a slow language server can
+  strings are missed, and a slow language server can
   leave calls out (stated as a limitation), which can show an explanation as
   outdated until the server answers again. Each name is resolved at its first
   call site only.
@@ -1201,7 +1233,7 @@ webview's content-security policy.
   accessibility inspection has not been completed.
 - Local descriptions are syntactic: they restate declarations, signatures,
   imports, and comments, not behavior. Languages other than Rust, Go,
-  JavaScript, and TypeScript depend
+  Python, JavaScript, and TypeScript depend
   on the installed symbol provider's detail; import detection covers JavaScript/
   TypeScript, Python, Go, Java/Kotlin/Scala/Groovy, C#, C/C++, PHP, Ruby, and
   Swift.

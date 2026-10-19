@@ -4,7 +4,7 @@ import { createRequire } from "node:module";
 import { resolve } from "node:path";
 const require = createRequire(import.meta.url);
 // Tree-sitter grammars of the bundled languages (src/languages/registry.ts).
-const grammars = ["rust", "go", "typescript", "tsx"];
+const grammars = ["rust", "go", "typescript", "tsx", "python"];
 const treeSitterRuntime = require.resolve("web-tree-sitter/tree-sitter.wasm");
 
 const outdir = resolve("dist");

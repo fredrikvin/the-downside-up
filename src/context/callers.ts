@@ -43,7 +43,7 @@ export async function staticCallers(
       if (++checked > 500 || Date.now() >= deadline) return callers;
       const result = await support.findDirectCalls({
         root, path, text, line: fn.startLine, name: fn.name,
-        readablePaths, load: async (file) => texts.get(file), maxDependencies: 100
+        readablePaths, load: async (file) => texts.get(file), maxDependencies: 100, deadline
       });
       if (result.dependencies.some(({ path: file, item }) =>
         resolve(root, file) === resolve(target.uri.fsPath) &&

@@ -2,6 +2,7 @@ import { extname } from "node:path";
 import { editorSupport } from "./editor";
 import { goSupport } from "./go";
 import { javascriptSupport } from "./javascript";
+import { pythonSupport } from "./python";
 import { rustSupport } from "./rust";
 import type { LanguageSupport } from "./support";
 import { formatTolerantFingerprint } from "../core/fingerprint";
@@ -11,7 +12,7 @@ import { formatTolerantFingerprint } from "../core/fingerprint";
  * a `LanguageSupport`, list it here, and, for a Tree-sitter grammar, add the
  * grammar to `esbuild.config.mjs`.
  */
-const BUNDLED: readonly LanguageSupport[] = [rustSupport, goSupport, javascriptSupport];
+const BUNDLED: readonly LanguageSupport[] = [rustSupport, goSupport, javascriptSupport, pythonSupport];
 
 export interface LanguageFile {
   readonly languageId?: string;
