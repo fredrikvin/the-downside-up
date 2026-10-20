@@ -67,13 +67,21 @@ JavaScript/TypeScript dependency lookup uses VS Code's
 built-in TypeScript tooling. Other languages depend on installed extensions
 providing document symbols and go-to-definition; support varies.
 
-SQL has bundled lexer-based support for `CREATE FUNCTION`, `PROCEDURE`,
-`TRIGGER`, and `VIEW` (including materialized views), with table/column outlines
-and bounded cross-file dependency lookup. Common PostgreSQL, MySQL, T-SQL,
-and SQLite forms work without a database or language server. This is not a
-full dialect parser: dynamic SQL, embedded SQL, and standalone queries are
-not supported as explainable units. Repeated definitions use lexical file
-order, not actual migration execution order.
+SQL previews show **tables and queries by default**, not just routines. Table
+cards list columns, types, required values, defaults, generated expressions,
+keys, and relationships with source links. PostgreSQL dump constraints and
+indexes declared later in the same file are folded into their table cards;
+enums list their values and sequences show their definition.
+
+Queries use sqlc `-- name: ... :one/:many/:exec` names when available, or
+numbered statement headings, with local input and result-mode details.
+Choose **Explain** on a table, query, view, or routine for a plain-language AI
+explanation grounded in eligible schema definitions. Opening the preview never
+executes SQL or requests AI explanations (unless prefetch was enabled).
+Common PostgreSQL, MySQL, T-SQL, and SQLite forms need no database or language
+server. This is not a full dialect parser: dynamic and embedded SQL are not
+resolved. Repeated definitions use lexical file order, not actual migration
+execution order; ALTER folding is limited to statements in the same file.
 
 ## Initialize, refresh, and clear
 

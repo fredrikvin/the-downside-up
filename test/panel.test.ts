@@ -82,6 +82,34 @@ it("shows elapsed activity across updates and clears the timer when work stops",
 });
 
 describe("preview webview document", () => {
+  it("renders local schema tables as text with host-owned column/relationship links and an explicit Explain action", () => {
+    const { renderEntry, messages } = webviewHelpers();
+    const schemaEntry = {
+      id: "entry-0", kind: "type", kindLabel: "Table", name: "books", qualifiedName: "public.books",
+      startLine: 1, endLine: 5, depth: 0, explainable: true, showCallers: false,
+      description: [{ text: "Stores books." }],
+      notes: [[{ text: "References " }, { text: "users", code: true, referenceId: "entry-5" }]],
+      previewTable: {
+        headers: ["Column", "Type", "Required", "Default / rules"],
+        rows: [[
+          [{ text: "id", code: true, referenceId: "entry-1" }],
+          [{ text: "integer", code: true }], [{ text: "Yes" }], [{ text: "<script>not executable</script>" }]
+        ]]
+      }
+    };
+    const rendered = renderEntry(schemaEntry, new Map());
+    const elements = rendered.elements();
+    expect(elements.filter((node) => node.tagName === "table")).toHaveLength(1);
+    expect(elements.filter((node) => node.tagName === "th").map((node) => node.textContent)).toEqual(schemaEntry.previewTable.headers);
+    expect(elements.some((node) => node.tagName === "script")).toBe(false);
+    expect(elements.some((node) => node.className === "callers")).toBe(false);
+    expect(messages).toEqual([]);
+    elements.find((node) => node.tagName === "a" && node.children.some((child) => child instanceof TestElement && child.textContent === "id"))?.listeners.get("click")?.({ preventDefault() {}, stopPropagation() {} });
+    expect(messages).toEqual([{ type: "navigate", referenceId: "entry-1" }]);
+    elements.find((node) => node.tagName === "button" && node.textContent === "Explain")?.listeners.get("click")?.();
+    expect(messages.at(-1)).toEqual({ type: "expand", entryId: "entry-0" });
+  });
+
   it("offers repository initialization only when context is missing, without generating on render", () => {
     const { renderHeader, element, messages } = webviewHelpers();
     const base = { provider: "mock", models: { explanation: "Mock" }, busy: false, hasRepository: true };

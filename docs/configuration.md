@@ -97,8 +97,19 @@ using existing sharing consent. Opening the picker does not preload its results.
   imports of repository modules, and same-class `self`/`cls` methods without
   Pylance; dynamic dispatch, inheritance, star imports, and re-exports are not
   resolved. SQL uses a bundled lexer to find `CREATE FUNCTION`, `PROCEDURE`,
-  `TRIGGER`, and `VIEW` (including materialized views), plus table/column, type,
-  and index outlines. Common PostgreSQL dollar bodies, MySQL `DELIMITER`,
+  `TRIGGER`, and `VIEW` (including materialized views), plus tables, types,
+  indexes, sequences, and standalone queries. Schema objects and queries stay
+  visible with the default concise settings. Table cards show columns, types,
+  required/optional values, defaults, generated expressions, keys and foreign-key
+  relationships. Column and same-file relationship links navigate to
+  host-validated source locations. Same-file `ALTER TABLE` keys/defaults and
+  `CREATE INDEX` statements are folded into their owning table. Enum values and
+  sequence definitions are shown locally. **Explain** is available for schema
+  objects as well as queries; data objects do not show a caller button.
+  sqlc `-- name: QueryName :mode` annotations name queries and describe whether
+  they return one/many rows or execution results; unnamed statements get
+  numbered headings. Query previews list inputs and syntactically referenced
+  relations. Common PostgreSQL dollar bodies, MySQL `DELIMITER`,
   T-SQL `GO`, and SQLite trigger blocks need no database or language server.
   Related table/view definitions and routine calls are resolved from eligible
   `.sql` files, with basic schema qualification and `SET search_path`/`USE`
@@ -106,9 +117,11 @@ using existing sharing consent. Opening the picker does not preload its results.
   by name. Duplicate definitions use the last lexical file/statement, with a
   limitation, not actual migration execution order. Lookups inspect at most
   100 files, 2 MiB (256 KiB per file), and 160 references within the shared
-  deadline and dependency budgets. Dynamic SQL, non-SQL routine bodies,
-  embedded SQL, and standalone statements as explainable units are not
-  supported. This is not a complete dialect parser or database catalog.
+  deadline and dependency budgets. Table constraints/indexes are included in
+  explanation context and freshness tracking. ALTER association is same-file
+  only, not migration replay; not every ALTER operation is interpreted.
+  Dynamic SQL, non-SQL routine bodies, and embedded SQL are not resolved.
+  This is not a complete dialect parser or database catalog.
   SQL contributes no import-diagram edges.
   JavaScript and TypeScript (including JSX and React) are
   described and their functions found with bundled parsers too: arrow
@@ -513,6 +526,7 @@ boundaries are preserved. SQL/PL/pgSQL dollar-quoted routine bodies are
 normalized as SQL, while other dollar literals and non-SQL bodies remain
 literal. Executable comments and optimizer hints remain meaningful. A change
 to a referenced table or view definition also outdates an explanation.
+sqlc name/result-mode annotations are meaningful inputs and remain tracked.
 Other languages conservatively ignore line-ending differences, trailing spaces,
 and blank lines while preserving indentation and in-line spacing; potential
 multiline literals or continuations fall back to exact text.

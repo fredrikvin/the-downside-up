@@ -14,7 +14,7 @@ export interface SqlName {
 }
 
 export interface SqlDefinition {
-  readonly kind: "function" | "procedure" | "trigger" | "view" | "table" | "type" | "index";
+  readonly kind: "function" | "procedure" | "trigger" | "view" | "table" | "type" | "index" | "sequence" | "extension" | "query";
   readonly name: SqlName;
   readonly qualifiedName: string;
   readonly source: string;
@@ -25,10 +25,11 @@ export interface SqlDefinition {
   readonly endLine: number;
   readonly tokens: readonly SqlToken[];
   readonly body: readonly SqlToken[];
+  readonly annotation?: string;
 }
 
 export const explainableSql = (entry: SqlDefinition): boolean =>
-  ["function", "procedure", "trigger", "view"].includes(entry.kind);
+  entry.kind !== "extension";
 
 export function sqlName(tokens: readonly SqlToken[], index: number): SqlName | undefined {
   const identifier = (token: SqlToken | undefined) => token?.closed && ["word", "identifier"].includes(token.kind);
@@ -110,8 +111,38 @@ function argumentTypes(tokens: readonly SqlToken[], index: number): string | und
 
 export function sqlDefinitions(source: string): SqlDefinition[] {
   const definitions: SqlDefinition[] = [];
+  const comments = lexSql(source).filter((token) => token.kind === "comment");
+  let queryIndex = 0;
+  const queryNames = new Map<string, number>();
   for (const tokens of sqlStatements(source)) {
-    if (!word(tokens[0], "create") || tokens.some((token) => !token.closed)) continue;
+    if (tokens.some((token) => !token.closed)) continue;
+    if (["select", "with", "insert", "update", "delete", "merge", "values", "call", "exec", "execute"].some((key) => word(tokens[0], key))) {
+      const first = tokens[0]!;
+      const previousEnd = definitions.at(-1)?.end ?? 0;
+      const preceding = comments.filter((token) => token.start >= previousEnd && token.end <= first.start);
+      const annotation = [...preceding].reverse().find((token) => /^--\s*name:\s*\S+\s+:\w+\s*$/i.test(token.text));
+      const match = annotation ? /^--\s*name:\s*(\S+)\s+(:\w+)\s*$/i.exec(annotation.text) : undefined;
+      const operation = first.text.toUpperCase();
+      const display = match?.[1] ?? `${operation} query ${++queryIndex}`;
+      const count = (queryNames.get(display) ?? 0) + 1;
+      queryNames.set(display, count);
+      const qualifiedName = count === 1 ? display : `${display} #${count}`;
+      const start = annotation?.start ?? first.start;
+      const end = tokens.at(-1)!.end;
+      const nameStart = match ? annotation!.start + annotation!.text.indexOf(match[1]!) : first.start;
+      definitions.push({
+        kind: "query", name: {
+          name: display, qualified: display, parts: [display],
+          start: nameStart, end: nameStart + (match?.[1]?.length ?? first.text.length), next: 0
+        },
+        qualifiedName, annotation: match?.[2], source: source.slice(start, end),
+        signature: source.slice(first.start, end), start, end,
+        startLine: sqlPosition(source, start).line, endLine: sqlPosition(source, end).line,
+        tokens, body: tokens
+      });
+      continue;
+    }
+    if (!word(tokens[0], "create")) continue;
     let index = 1;
     if (word(tokens[index], "or") && (word(tokens[index + 1], "replace") || word(tokens[index + 1], "alter"))) index += 2;
     while (["temporary", "temp", "unlogged", "unique", "materialized"].some((modifier) => word(tokens[index], modifier))) index++;
@@ -119,7 +150,7 @@ export function sqlDefinitions(source: string): SqlDefinition[] {
       while (index < Math.min(tokens.length, 24) && !word(tokens[index], "function") && !word(tokens[index], "procedure") && !word(tokens[index], "trigger")) index++;
     }
     const kind = tokens[index]?.text.toLowerCase();
-    if (!kind || !["function", "procedure", "trigger", "view", "table", "type", "index"].includes(kind)) continue;
+    if (!kind || !["function", "procedure", "trigger", "view", "table", "type", "index", "sequence", "extension"].includes(kind)) continue;
     index++;
     if (word(tokens[index], "if") && word(tokens[index + 1], "not") && word(tokens[index + 2], "exists")) index += 3;
     const name = sqlName(tokens, index);

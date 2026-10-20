@@ -76,9 +76,11 @@ export function visibleOutline(entries: readonly OutlineEntry[], include: Outlin
       case "macro": shown = include.modules; break;
       default: shown = true;
     }
+    if (entry.alwaysVisible) shown = true;
+    if (entry.kind === "field" && ancestors.some((ancestor) => ancestor.previewTable)) shown = false;
     if (shown) {
       const depth = ancestors.filter((ancestor) => visibleIds.has(ancestor.id)).length;
-      const detailed = entry.kind !== "function" || include.functionDetails;
+      const detailed = entry.alwaysVisible || entry.kind !== "function" || include.functionDetails;
       visible.push({
         ...entry,
         depth,

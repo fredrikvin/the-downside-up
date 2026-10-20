@@ -356,12 +356,25 @@ explainable functions. Python's local outline uses module/class/function
 docstrings, attached comments, imports, classes and bases, values, and signatures.
 SQL uses its own bundled bounded lexer, not Tree-sitter or a database
 connection. Explainable units in `.sql` files are `CREATE FUNCTION`,
-`PROCEDURE`, `TRIGGER`, and `VIEW` (including materialized views); tables,
-columns, types, and indexes are local outline entries only. It recognizes
+`PROCEDURE`, `TRIGGER`, and `VIEW` (including materialized views), tables,
+types, indexes, sequences, and standalone query statements. These objects are
+visible by default, independent of optional type/function-detail settings.
+Table cards render structured column/type/required/default rows, generated
+expressions, keys and foreign-key relationships. Column and same-file
+relationship links resolve local qualified names to unique host-owned outline
+references before rendering; unresolved or ambiguous targets stay plain text.
+Embedded column entries provide navigation/scroll anchors rather than duplicate
+rows. Caller buttons are omitted on non-routine SQL units. It recognizes
 common PostgreSQL dollar-quoted bodies, MySQL custom delimiters, T-SQL GO
 batches, and SQLite trigger blocks, including quoted object names and
 BEGIN/END blocks. Routine overload identities include their syntactic
-argument types. Standalone queries and embedded SQL are not explainable units.
+argument types. Named sqlc query annotations provide query identities and result
+modes; unnamed SELECT/WITH/INSERT/UPDATE/DELETE/MERGE/VALUES/CALL/EXEC statements
+use numbered headings. Duplicate named queries get distinct qualified names.
+Query previews show syntactic parameters and relations locally. Embedded SQL
+is not supported. Schema/query explanations use language-owned guidance that
+describes schema rules or query behavior instead of inventing application
+control flow. SQL is never executed.
 JavaScript and TypeScript, including JSX and React, also use
 bundled Tree-sitter grammars (TypeScript for `.ts`, `.mts`, and `.cts`, since
 generic arrow functions such as `<T>(x: T) => x` read as JSX in TSX; TSX for
@@ -475,6 +488,16 @@ lexical file/statement, with a stated limitation: this is not migration
 execution order. Overloads are matched by name rather than argument types,
 and all matching overloads are disclosed as candidates. SQL source is never
 executed, and no database connection, SQL language server, or extra WASM is needed.
+Same-file PostgreSQL `ALTER TABLE [ONLY]` constraints/defaults, table comments,
+and `CREATE INDEX` definitions are associated with their CREATE table, shown
+locally, and included/tracked in explanation context for that table and queries
+that use it. This is not replay across migration files. Primary/unique keys,
+foreign keys and delete actions, defaults, generated columns, enum values, and
+sequence definitions are derived from source, not a database. Other ALTER
+operations may be retained as context without being reflected in the card.
+Ordinary comments are formatting-insensitive; sqlc name/mode annotations remain
+meaningful fingerprint inputs. Unnamed query identities are ordinal, so inserting
+an earlier unnamed query can change them.
 Snippets sent to the model are labelled with their file path and what
 they contain, and the model is asked to refer to code by file, function, and
 type names in plain prose rather than by identifiers. The "related code" links

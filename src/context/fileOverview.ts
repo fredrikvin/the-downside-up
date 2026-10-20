@@ -442,7 +442,7 @@ async function describeWithEditorSymbols(
 }
 
 function finalize(drafts: readonly OutlineEntryDraft[], path: string): OutlineEntry[] {
-  return [...drafts]
+  const entries: OutlineEntry[] = [...drafts]
     .sort((left, right) => left.startLine - right.startLine || left.depth - right.depth)
     .slice(0, MAX_ENTRIES)
     .map((draft, index) => {
@@ -460,6 +460,23 @@ function finalize(drafts: readonly OutlineEntryDraft[], path: string): OutlineEn
         }
       };
     });
+  const resolveLinks = (description: Description): Description => description.map((segment) => {
+    if (!segment.target) return segment;
+    const matches = entries.filter((entry) => entry.qualifiedName === segment.target);
+    const { target: _target, ...text } = segment;
+    return matches.length === 1 ? { ...text, referenceId: matches[0]!.id } : text;
+  });
+  return entries.map((entry) => ({
+    ...entry,
+    description: resolveLinks(entry.description),
+    notes: entry.notes.map(resolveLinks),
+    ...(entry.previewTable ? {
+      previewTable: {
+        headers: entry.previewTable.headers,
+        rows: entry.previewTable.rows.map((row) => row.map(resolveLinks))
+      }
+    } : {})
+  }));
 }
 
 /**

@@ -1,6 +1,7 @@
 import type { Dependency, DependencyItem, DependencyRequest, DependencyResult } from "../support";
 import { dollarBody, lexSql, sqlBodyLanguage, sqlFingerprint, word, type SqlToken } from "./lexer";
-import { sqlDefinitions, sqlName, sqlPreamble, type SqlDefinition, type SqlName } from "./syntax";
+import { sqlDefinitions, sqlName, sqlPreamble, sqlStatements, type SqlDefinition, type SqlName } from "./syntax";
+import { sqlSchemaDetails } from "./schema";
 
 interface Reference {
   readonly name: SqlName;
@@ -52,7 +53,7 @@ function references(entry: SqlDefinition, direct: boolean): { refs: Reference[];
   const bodyTokens = entry.body.flatMap((token) => token.kind === "dollar" && (!language || ["sql", "plpgsql"].includes(language))
     ? lexSql(dollarBody(token)) : [token]).filter((token) => token.kind !== "comment");
   // A trigger's ON relation is in its header, not its body.
-  const tokens = entry.kind === "trigger" ? [
+  const tokens = ["table", "type", "index", "sequence"].includes(entry.kind) ? entry.tokens : entry.kind === "trigger" ? [
     ...entry.tokens.slice(0, entry.tokens.length - entry.body.length), ...bodyTokens
   ] : bodyTokens;
   const ctes = cteNames(tokens);
@@ -72,8 +73,8 @@ function references(entry: SqlDefinition, direct: boolean): { refs: Reference[];
       const next = tokens[i + 1];
       if (next?.kind === "string" || next?.kind === "dollar" || next?.text === "(") dynamic = true;
     }
-    const relation = ["from", "join", "into", "update"].some((keyword) => word(token, keyword)) ||
-      entry.kind === "trigger" && word(token, "on");
+    const relation = ["from", "join", "into", "update", "references"].some((keyword) => word(token, keyword)) ||
+      ["trigger", "index"].includes(entry.kind) && word(token, "on");
     if (!direct && relation) {
       let index = i + 1;
       if (word(tokens[index], "only")) index++;
@@ -112,20 +113,21 @@ function references(entry: SqlDefinition, direct: boolean): { refs: Reference[];
     }
     if (i > 0 && tokens[i - 1]?.text === ".") continue;
     const name = sqlName(tokens, i);
-    if (name && tokens[name.next]?.text === "(" && !word(tokens[i - 1], "into") &&
+    if (name && tokens[name.next]?.text === "(" &&
+        !["into", "references", "on", "table", "index", "type"].some((key) => word(tokens[i - 1], key)) &&
         !(name.parts.length === 1 && token.kind === "word" && NON_CALLS.has(name.parts[0]!))) add(name, true);
     if (!direct && token.text === "::") add(sqlName(tokens, i + 1), false);
   }
   return { refs, dynamic };
 }
 
-function itemOf(entry: SqlDefinition): DependencyItem {
+function itemOf(entry: SqlDefinition, source = entry.source): DependencyItem {
   return {
     kind: ["function", "procedure"].includes(entry.kind) ? "function" : entry.kind,
     label: `${entry.kind} ${entry.qualifiedName}`,
     name: entry.name.name, qualifiedName: entry.qualifiedName, line: entry.startLine,
-    source: entry.source, signature: entry.signature,
-    fingerprint: sqlFingerprint(entry.source), signatureFingerprint: sqlFingerprint(entry.signature)
+    source, signature: entry.signature,
+    fingerprint: sqlFingerprint(source), signatureFingerprint: sqlFingerprint(entry.signature)
   };
 }
 
@@ -161,19 +163,44 @@ export async function findSqlDependencies(
   const target = definitions.find((entry) => entry.startLine === request.line && entry.name.name === request.name);
   if (!target) return { dependencies: [], limitations: ["The SQL unit could not be resolved."] };
   const preamble = sqlPreamble(request.text, target.start);
+  const targetSchema = sqlSchemaDetails(request.text, target, definitions);
+  const supplements: Dependency[] = targetSchema.supplements && !request.directCallsOnly ? [{
+    path: request.path, item: {
+      ...itemOf(target, targetSchema.supplements), kind: "schema",
+      signature: targetSchema.supplements,
+      signatureFingerprint: sqlFingerprint(targetSchema.supplements),
+      qualifiedName: `${target.qualifiedName} schema details`,
+      label: `schema details for ${target.qualifiedName}`
+    }
+  }] : [];
+  const local = supplements.filter(({ item }) => Buffer.byteLength(item.source) <= 4 * 1024);
   const limitations = new Set<string>([
     "SQL lookup is syntactic, not database-aware; search paths, aliases, dialect extensions, and runtime objects may be unresolved."
   ]);
-  const { refs, dynamic } = references(target, request.directCallsOnly ?? false);
+  const direct = request.directCallsOnly ?? false;
+  const { refs, dynamic } = direct && !["function", "procedure", "trigger", "view", "query"].includes(target.kind)
+    ? { refs: [], dynamic: false } : references({
+      ...target, tokens: [...target.tokens, ...targetSchema.tokens]
+    }, direct);
   const selectedRefs = refs.filter((ref) => !request.onlyName || ref.name.name === request.onlyName);
   if (dynamic) limitations.add("Dynamic SQL is not resolved or tracked.");
   const language = sqlBodyLanguage(target.tokens);
   if (language && !["sql", "plpgsql"].includes(language)) limitations.add("Non-SQL routine bodies are not resolved.");
   const expired = () => request.deadline !== undefined && Date.now() >= request.deadline;
   const max = Math.max(0, request.maxDependencies ?? 16);
-  const dependencies: Dependency[] = [];
-  if (!selectedRefs.length || !max) return { dependencies, preamble, limitations: [...limitations] };
-  const catalog: Array<{ path: string; entry: SqlDefinition }> = definitions.map((entry) => ({ path: request.path, entry }));
+  const dependencies: Dependency[] = supplements.filter(({ item }) => Buffer.byteLength(item.source) > 4 * 1024);
+  if (!selectedRefs.length || !max) return { dependencies, local, preamble, limitations: [...limitations] };
+  const catalog: Array<{ path: string; entry: SqlDefinition; source: string }> = [];
+  const append = (path: string, text: string, entries: SqlDefinition[]) => {
+    const statements = sqlStatements(text);
+    for (const entry of entries) {
+      if (expired()) break;
+      if (!["table", "view", "function", "procedure", "type"].includes(entry.kind)) continue;
+      const extra = entry.kind === "table" ? sqlSchemaDetails(text, entry, entries, statements).supplements : "";
+      catalog.push({ path, entry, source: [entry.source, extra].filter(Boolean).join("\n") });
+    }
+  };
+  append(request.path, request.text, definitions);
   let bytes = Buffer.byteLength(request.text);
   let loaded = 1;
   for (const path of [...request.readablePaths].filter((path) => /\.sql$/i.test(path) && path !== request.path).sort()) {
@@ -191,7 +218,7 @@ export async function findSqlDependencies(
       continue;
     }
     bytes += size;
-    catalog.push(...sqlDefinitions(text).map((entry) => ({ path, entry })));
+    append(path, text, sqlDefinitions(text));
   }
   if (expired()) limitations.add("SQL dependency lookup stopped at its time limit.");
   if (request.unreadPaths?.size) limitations.add("SQL definitions outside the readable inventory were not inspected.");
@@ -225,7 +252,7 @@ export async function findSqlDependencies(
       }
     }
     if (matches.length > 1 && ref.call) limitations.add("SQL routine overloads are matched by name, not argument types; all matching overloads are candidates.");
-    for (const { path, entry } of matches) {
+    for (const { path, entry, source } of matches) {
       if (path === request.path && entry.start === target.start) continue;
       const key = `${path}:${entry.start}`;
       if (added.has(key)) continue;
@@ -234,9 +261,9 @@ export async function findSqlDependencies(
         break;
       }
       added.add(key);
-      dependencies.push({ path, item: itemOf(entry) });
+      dependencies.push({ path, item: itemOf(entry, source) });
     }
   }
   if (expired()) limitations.add("SQL dependency lookup stopped at its time limit.");
-  return { dependencies, preamble, limitations: [...limitations] };
+  return { dependencies, local, preamble, limitations: [...limitations] };
 }

@@ -121,7 +121,7 @@ export function sqlFingerprint(source: string): string {
     if (!language || ["sql", "plpgsql"].includes(language)) bodies.add(token);
   }
   const normalize = (entries: readonly SqlToken[]): unknown[] => entries
-    .filter((token) => token.kind !== "comment" || !token.closed || /^\/\*[!+]/.test(token.text))
+    .filter((token) => token.kind !== "comment" || !token.closed || /^\/\*[!+]|^--\s*name:/i.test(token.text))
     .map((token) => token.closed && bodies.has(token)
       ? ["body", normalize(lexSql(dollarBody(token)))]
       : [token.kind, token.kind === "word" ? token.text.toLowerCase() : token.text, token.closed]);

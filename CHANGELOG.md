@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.38.0
+
+- Show SQL schema objects and queries in the default concise preview.
+  Tables have column/type/required/default cards, generated expressions, keys,
+  and clickable column/foreign-key references. Associate same-file PostgreSQL
+  `ALTER TABLE` constraints/defaults and indexes with their table; show enum
+  values and sequence definitions.
+- Add explicit explanations for tables, types, indexes, sequences, and
+  standalone queries. Use sqlc query names and result modes where present;
+  show positional/named inputs and referenced relations locally.
+- Include table constraints and indexes in query explanation context and
+  freshness tracking. Keep schema/query previews local and SQL unexecuted;
+  AI generation still follows explicit actions or existing opt-in prefetch.
+
 ## 0.37.0
 
 - Add bundled SQL discovery for functions, procedures, triggers, views, and

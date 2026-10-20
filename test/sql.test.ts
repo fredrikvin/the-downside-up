@@ -42,7 +42,7 @@ describe("bundled SQL lexer and discovery", () => {
     expect(sqlDefinitions("CREATE FUNCTION bad() RETURNS int AS $$ unclosed")).toEqual([]);
   });
 
-  it("discovers PostgreSQL routines, triggers and materialized views, not ad-hoc statements", async () => {
+  it("discovers PostgreSQL routines, triggers, materialized views and standalone queries", async () => {
     const source = `-- header
 CREATE OR REPLACE FUNCTION public.calculate(x integer) RETURNS integer LANGUAGE plpgsql AS $fn$
 BEGIN
@@ -56,7 +56,7 @@ CREATE MATERIALIZED VIEW public.saved AS SELECT * FROM public.items;
 SELECT * FROM public.saved;`;
     const units = await listSqlFunctions(source);
     expect(units.map((entry) => entry.qualifiedName)).toEqual([
-      "public.calculate(integer)", "public.refresh()", "changed", "public.saved"
+      "public.calculate(integer)", "public.refresh()", "changed", "public.saved", "SELECT query 1"
     ]);
     expect(units[0]?.source).toContain("RETURN 0;");
     expect(units[0]?.source).not.toContain("CREATE PROCEDURE");
@@ -66,7 +66,7 @@ SELECT * FROM public.saved;`;
     expect(target?.analysis).toBe("sql-lexer");
     expect(target?.selection.start).toEqual(new Position(1, 27));
     expect(target?.name).toBe("calculate");
-    expect(await sqlSupport.findFunction(document, new Position(10, 5))).toBeUndefined();
+    expect((await sqlSupport.findFunction(document, new Position(10, 5)))?.name).toBe("SELECT query 1");
     expect(bundledLanguageFor({ path: "app.SQL" })).toBe(sqlSupport);
     expect(bundledLanguageIdForPath("app.sql")).toBe("sql");
   });
@@ -93,7 +93,7 @@ CREATE TRIGGER changed AFTER INSERT ON items BEGIN
   UPDATE totals SET value = value + 1;
 END;
 CREATE VIEW saved AS SELECT * FROM items;`;
-    expect((await listSqlFunctions(sqlite)).map((entry) => entry.name)).toEqual(["changed", "saved"]);
+    expect((await listSqlFunctions(sqlite)).map((entry) => entry.name)).toEqual(["items", "changed", "saved"]);
     expect(sqlStatements(sqlite)).toHaveLength(3);
   });
 
@@ -167,7 +167,7 @@ CREATE VIEW available AS SELECT title FROM books;`;
     expect(outline.drafts.map((entry) => `${entry.kindLabel}:${entry.name}`))
       .toEqual(["Table:books", "Column:id", "Column:title", "Type:status", "Index:by_title", "View:available"]);
     expect(outline.drafts.at(-1)?.documentation).toBe("Saved available titles.");
-    expect(outline.drafts.filter((entry) => entry.explainable).map((entry) => entry.name)).toEqual(["available"]);
+    expect(outline.drafts.filter((entry) => entry.explainable).map((entry) => entry.name)).toEqual(["books", "status", "by_title", "available"]);
     expect(sqlPreamble("USE catalog;\nCREATE VIEW v AS SELECT 1;\nSET search_path TO public;"))
       .toBe("USE catalog;\nSET search_path TO public;");
   });

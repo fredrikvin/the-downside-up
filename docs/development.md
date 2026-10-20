@@ -24,6 +24,8 @@ The fixtures are in `fixtures/rust-app`, `fixtures/go-app`, `fixtures/js-app`,
 bundled grammar; they need neither Python nor Pylance installed.
 SQL tests use the bundled lexer and need neither a database nor a SQL language
 server. There is no additional SQL WASM asset or runtime dependency.
+SQL fixtures cover local table cards, later ALTER constraints/indexes, enum
+values, sequences, sqlc-named queries, and explicit schema/query explanations.
 
 ## Architecture and conventions
 

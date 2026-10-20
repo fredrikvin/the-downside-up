@@ -304,6 +304,10 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
     .kind { font-size: .7em; font-weight: 500; text-transform: uppercase; letter-spacing: .06em; color: var(--vscode-descriptionForeground); }
     .heading-name code { font-size: .92em; background: none; padding: 0; }
     .line-item { margin: 6px 0; }
+    .preview-table { width: 100%; border-collapse: collapse; margin: 10px 0 18px; font-size: .9em; table-layout: fixed; }
+    .preview-table th, .preview-table td { text-align: left; vertical-align: top; padding: 6px 8px; border-bottom: 1px solid var(--separator); overflow-wrap: anywhere; }
+    .preview-table th { color: var(--vscode-descriptionForeground); font-weight: 600; }
+    .preview-table code { white-space: pre-wrap; }
     .comment { font-style: italic; white-space: pre-line; color: var(--vscode-descriptionForeground); }
     .notes { list-style: none; padding: 0; margin: -6px 0 12px; font-size: .9em; color: var(--vscode-descriptionForeground); }
 
@@ -539,7 +543,12 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
     }
     function segments(parent, description) {
       for (const segment of description || []) {
-        parent.append(segment.code ? el("code", "", segment.text) : document.createTextNode(segment.text));
+        const content = segment.code ? el("code", "", segment.text) : document.createTextNode(segment.text);
+        if (segment.referenceId) {
+          const link = action("", () => post({ type: "navigate", referenceId: segment.referenceId }));
+          link.append(content);
+          parent.append(link);
+        } else parent.append(content);
       }
       return parent;
     }
@@ -1220,7 +1229,7 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
         nameLink.title = "Go to source: " + entry.name;
         nameLink.append(el("code", "", entry.kind === "impl" ? entry.qualifiedName : entry.name));
         heading.append(nameLink);
-        if (entry.explainable) {
+        if (entry.explainable && entry.showCallers !== false) {
           const callers = el("button", "callers");
           callers.type = "button";
           callers.title = "Show callers — find functions that call this one; no AI request";
@@ -1249,6 +1258,27 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
         const notes = el("ul", "notes");
         for (const note of entry.notes) notes.append(segments(el("li"), note));
         section.append(notes);
+      }
+      if (entry.previewTable) {
+        const table = el("table", "preview-table");
+        table.setAttribute("aria-label", entry.kindLabel + " details for " + entry.name);
+        const head = el("thead");
+        const headings = el("tr");
+        for (const label of entry.previewTable.headers) {
+          const cell = el("th", "", label);
+          cell.setAttribute("scope", "col");
+          headings.append(cell);
+        }
+        head.append(headings);
+        table.append(head);
+        const body = el("tbody");
+        for (const row of entry.previewTable.rows) {
+          const line = el("tr");
+          for (const cell of row) line.append(segments(el("td"), cell));
+          body.append(line);
+        }
+        table.append(body);
+        section.append(table);
       }
       if (view) {
         const ai = el("div", "ai-section");

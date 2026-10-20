@@ -34,6 +34,15 @@ export interface OutlineEntryDraft {
   readonly notes: readonly Description[];
   /** True when the entry is a function body that Explain can target. */
   readonly explainable: boolean;
+  /** Primary local objects that stay visible independently of optional details. */
+  readonly alwaysVisible?: boolean;
+  /** False for explainable data objects that cannot have routine callers. */
+  readonly showCallers?: boolean;
+  /** Locally built structured details; never generated HTML. */
+  readonly previewTable?: {
+    readonly headers: readonly string[];
+    readonly rows: readonly (readonly Description[])[];
+  };
 }
 
 export interface OutlineEntry extends OutlineEntryDraft {

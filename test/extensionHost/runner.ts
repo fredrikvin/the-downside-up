@@ -444,6 +444,11 @@ export async function run(): Promise<void> {
   const sqlOutline = await buildFileOverview(sqlSchema, "schema.sql");
   assert.ok(sqlOutline.entries.some((entry) => entry.kindLabel === "Column" && entry.name === "title"));
   assert.ok(sqlOutline.entries.some((entry) => entry.kindLabel === "View" && entry.explainable));
+  const booksPreview = sqlOutline.entries.find((entry) => entry.qualifiedName === "public.books")!;
+  assert.ok(booksPreview.alwaysVisible && booksPreview.explainable, "SQL tables remain visible with concise preview settings and can be explicitly explained.");
+  assert.ok(booksPreview.previewTable?.rows.some((row) => row[0]?.some((segment) => segment.text === "title")));
+  assert.ok(booksPreview.notes.flat().some((segment) => segment.text.includes("Primary key: id")), "Later ALTER TABLE constraints are folded into the card.");
+  assert.ok(booksPreview.previewTable?.rows[0]?.[0]?.[0]?.referenceId, "Column links use host-owned references.");
   const sqlContext = await gatherFunctionContext(sqlTarget!, sqlDocument, await gatherInventory(sqlRoot));
   assert.ok(sqlContext.inputs.some((input) => input.path === "routines.sql" && input.description.includes("reserve")));
   const sqlEditor = await vscode.window.showTextDocument(sqlDocument, vscode.ViewColumn.One);
@@ -457,6 +462,30 @@ export async function run(): Promise<void> {
     view.functionName === "public.checkout(integer)" && view.status === "current") ? true : undefined,
   "the SQL explanation from a selection");
   console.log("Downside Up integration tests: SQL discovery, callers, context, outlines, and explicit explanation completed.");
+
+  const sqlQueryDocument = await vscode.workspace.openTextDocument(vscode.Uri.file(resolve(sqlRoot, "queries.sql")));
+  const sqlQueryCursor = sqlQueryDocument.positionAt(sqlQueryDocument.getText().indexOf("GetAvailableBooks") + 4);
+  const sqlQueryTarget = await sqlSupport.findFunction(sqlQueryDocument, sqlQueryCursor);
+  assert.equal(sqlQueryTarget?.qualifiedName, "GetAvailableBooks", "sqlc query annotations name explainable units.");
+  const sqlQueryContext = await gatherFunctionContext(sqlQueryTarget!, sqlQueryDocument, await gatherInventory(sqlRoot));
+  assert.ok(sqlQueryContext.inputs.some((input) => input.path === "schema.sql" && input.description.includes("public.books")));
+  assert.ok(sqlQueryContext.text.includes("books_pkey"), "Queries receive schema constraints declared in later ALTER statements.");
+  const sqlQueryEditor = await vscode.window.showTextDocument(sqlQueryDocument, vscode.ViewColumn.One);
+  const queryBefore = api.allExplanations().length;
+  sqlQueryEditor.selection = new vscode.Selection(sqlQueryCursor, sqlQueryCursor);
+  await vscode.commands.executeCommand("downsideUp.showFileOverview");
+  assert.equal(api.allExplanations().length, queryBefore, "Opening query previews never generates.");
+  sqlQueryEditor.selection = new vscode.Selection(sqlQueryCursor, sqlQueryCursor.translate(0, 1));
+  await vscode.commands.executeCommand("downsideUp.showFileOverview");
+  await waitFor(async () => api.previewExplanations().some((view) =>
+    view.functionName === "GetAvailableBooks" && view.status === "current") ? true : undefined, "a named SQL query explanation");
+  const sqlTableEditor = await vscode.window.showTextDocument(sqlSchema, vscode.ViewColumn.One);
+  const tableCursor = sqlSchema.positionAt(sqlSchema.getText().indexOf("TABLE public.books") + 14);
+  sqlTableEditor.selection = new vscode.Selection(tableCursor, tableCursor.translate(0, 1));
+  await vscode.commands.executeCommand("downsideUp.showFileOverview");
+  await waitFor(async () => api.previewExplanations().some((view) =>
+    view.functionName === "public.books" && view.status === "current") ? true : undefined, "an explicit SQL table explanation");
+  console.log("Downside Up integration tests: schema cards, constraint context, and named query/table explanations completed.");
 
   const goDocument = await vscode.workspace.openTextDocument(vscode.Uri.file(resolve(goRoot, "main.go")));
   await waitFor(

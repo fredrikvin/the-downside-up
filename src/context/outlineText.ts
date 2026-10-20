@@ -2,6 +2,9 @@
 export interface TextSegment {
   readonly text: string;
   readonly code?: true;
+  /** Local outline qualified name; resolved to a host-owned reference before rendering. */
+  readonly target?: string;
+  readonly referenceId?: string;
 }
 
 export type Description = readonly TextSegment[];
