@@ -7,6 +7,9 @@ The extension is displayed in VS Code as **Downside Up**; its full name is
 
 The Downside Up helps people understand what code does without knowing the
 language. The side-by-side Downside Up preview reads like rendered Markdown.
+File, folder/project, and change previews omit a repeated general-help footer;
+contextual notices, consent controls, model attribution, and result
+limitations remain where they apply.
 By default it is concise: the file name, an AI summary of the file (see
 below), and one heading per function or method in source order. Attached function
 and method doc comments are hidden by default; `downsideUp.preview.include.functionComments`
@@ -348,6 +351,10 @@ through host-validated ids and reveal the lines in the visible original or
 modified side of the diff without moving the comparison. This is a
 description of what changed, not an automated correctness or security
 review.
+
+Paired visual comparisons and a subsequent illustrative **Trace a case**
+feature are planned in [Visual behavior comparisons](diff-flow-plan.md);
+they are not implemented by the current textual change view.
 
 Comparison records are saved in the repository cache beside explanations,
 under a key made from both sides' identities (`working`, `index`, or a

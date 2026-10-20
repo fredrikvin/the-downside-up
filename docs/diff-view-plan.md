@@ -234,11 +234,12 @@ instructions to perform a broad refactor.
 
 ## Follow-on: graphical flow changes
 
-After the textual comparison is reliable, add an annotated flow view that
-distinguishes unchanged, added, changed, and removed behavior. Ground nodes
-and edges in the appropriate source side, use accessible labels rather than
-color alone, and do not mechanically diff two independently generated charts.
-Decide the exact graph schema and layout in that follow-on implementation.
+The follow-on is specified in [Visual behavior comparisons](diff-flow-plan.md):
+paired Steps / Pseudocode / Flowchart views with matched operations,
+changed-edge highlighting, responsive layout, local expansion, and checked
+source links. It also records the remaining lifecycle prerequisites.
+**Trace a case** follows that visual-comparison delivery as a separate phase.
+These additions are planned, not part of the initial textual comparison.
 
 ## Resume instruction
 

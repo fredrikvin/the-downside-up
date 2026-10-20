@@ -83,6 +83,15 @@ it("shows elapsed activity across updates and clears the timer when work stops",
 });
 
 describe("preview webview document", () => {
+  it("omits the shared help footer while keeping contextual notices and limitations", () => {
+    const html = panelHtml("n");
+    expect(html).not.toContain("<footer");
+    expect(html).not.toContain("Function headings and other items come from the code itself.");
+    expect(html).toContain('id="notice"');
+    expect(html).toContain('id="prefetchConsent"');
+    expect(html).toContain('id="limitations"');
+  });
+
   it("renders local schema tables as text with host-owned column/relationship links and an explicit Explain action", () => {
     const { renderEntry, messages } = webviewHelpers();
     const schemaEntry = {

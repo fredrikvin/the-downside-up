@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.39.2
+
+- Remove the repeated help footer from all preview pages. Contextual notices,
+  sharing-consent controls, model attribution, and result limitations remain.
+
 ## 0.39.0
 
 - Explain what a change does. With the preview open, a native VS Code diff of
