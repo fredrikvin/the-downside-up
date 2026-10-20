@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { baseChoices, changedLinesSince, parseChangedLines, recentCommits, touchesChange } from "../src/context/changes";
-import { nextReview } from "../src/presentation/prefetch";
+import { nextReviewFile } from "../src/presentation/prefetch";
 
 describe("changed lines from a diff", () => {
   it("reads new-side ranges, removals, and deleted files", () => {
@@ -101,14 +101,11 @@ describe("changes in a Git repository", () => {
 });
 
 describe("review order", () => {
-  const item = (path: string, startLine: number, endLine: number) => ({ path, startLine, endLine, nameLine: startLine });
-
-  it("prefers changed functions near the reader in the file being read, then diff order", () => {
-    const pending = [item("a.ts", 0, 5), item("b.ts", 0, 5), item("b.ts", 40, 60), item("b.ts", 100, 120)];
-    expect(nextReview(pending, { path: "b.ts", focusLine: 90 })).toBe(pending[3]);
-    expect(nextReview(pending, { path: "b.ts", focusLine: 45 })).toBe(pending[2]);
-    expect(nextReview(pending, { path: "c.ts", focusLine: 0 })).toBe(pending[0]);
-    expect(nextReview(pending, undefined)).toBe(pending[0]);
-    expect(nextReview([], undefined)).toBeUndefined();
+  it("prefers the file being read, then diff order", () => {
+    const pending = [{ path: "a.ts" }, { path: "b.ts" }, { path: "c.ts" }];
+    expect(nextReviewFile(pending, "b.ts")).toBe(pending[1]);
+    expect(nextReviewFile(pending, "z.ts")).toBe(pending[0]);
+    expect(nextReviewFile(pending, undefined)).toBe(pending[0]);
+    expect(nextReviewFile([], "a.ts")).toBeUndefined();
   });
 });

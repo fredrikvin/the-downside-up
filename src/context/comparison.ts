@@ -121,7 +121,18 @@ function repositoryPath(root: string, fsPath: string): string | undefined {
   return rel === "" || rel.startsWith("..") || isAbsolute(rel) ? undefined : rel.split(sep).join("/");
 }
 
+/** The scheme of an empty document standing in for a missing side of an added or deleted file. */
+export const EMPTY_SCHEME = "downside-up-empty";
+
 async function sideFromUri(root: string, uri: DiffUri): Promise<SideRef | string> {
+  if (uri.scheme === EMPTY_SCHEME) {
+    // The query names the revision the file is absent from; without one the file is absent from the working tree.
+    const path = repositoryPath(root, uri.fsPath);
+    if (!path) return "A file outside the repository cannot be explained.";
+    if (!uri.query) return { path, source: { kind: "working" } };
+    const hash = await resolveRevision(root, uri.query);
+    return hash ? { path, source: { kind: "revision", hash } } : `The Git revision "${uri.query}" could not be resolved.`;
+  }
   if (uri.scheme === "file") {
     const path = repositoryPath(root, uri.fsPath);
     return path ? { path, source: { kind: "working" } } : "A file outside the repository cannot be explained.";
@@ -234,6 +245,11 @@ export async function readComparison(ref: ComparisonRef, options: SnapshotOption
   return { root: ref.root, original, modified };
 }
 
+/** What a snapshot was read from and says; a different signature later means a different pair of versions. */
+export function snapshotSignature(snapshot: ComparisonSnapshot): string {
+  return [snapshot.original, snapshot.modified].map((side) => `${side.path}\0${side.identity}\0${side.state}\0${side.fingerprint}`).join("\n");
+}
+
 /** Why a snapshot cannot be explained, or undefined when both sides are usable. */
 export function comparisonProblem(snapshot: ComparisonSnapshot): string | undefined {
   for (const [name, side] of [["original", snapshot.original], ["modified", snapshot.modified]] as const) {
@@ -265,7 +281,7 @@ export interface ChangedFile {
 export async function changedFilesSince(root: string, base: string, limit = MAX_CHANGED_FILES): Promise<{ files: ChangedFile[]; truncated: boolean }> {
   const hash = await resolveRevision(root, base);
   if (!hash) throw new Error(`The Git revision "${base}" could not be resolved.`);
-  const tokens = (await gitText(root, ["diff", "--name-status", "-M", "-z", "--no-ext-diff", hash])).split("\0");
+  const tokens = (await gitText(root, ["diff", "--name-status", "--relative", "-M", "-z", "--no-ext-diff", hash])).split("\0");
   const files: ChangedFile[] = [];
   for (let index = 0; index < tokens.length;) {
     const status = tokens[index++] ?? "";

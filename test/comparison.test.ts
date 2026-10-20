@@ -66,6 +66,20 @@ describe("native diff identity", () => {
     });
   });
 
+  it("reads the empty stand-in document of an added or deleted file as absent, with the same identity as a batch comparison", async () => {
+    await writeFile(join(root, "new.txt"), "fresh\n");
+    const head = git("rev-parse", "HEAD");
+    const added = await refOf({ scheme: "downside-up-empty", fsPath: join(root, "new.txt"), query: head }, fileUri("new.txt"));
+    expect(added.original).toEqual({ path: "new.txt", source: { kind: "revision", hash: head } });
+    const snapshot = await readComparison(added);
+    expect(snapshot.original.state).toBe("absent");
+    expect(snapshot.modified.text).toBe("fresh\n");
+    const deleted = await refOf(gitUri("a.txt", "HEAD"), { scheme: "downside-up-empty", fsPath: join(root, "a.txt"), query: "" });
+    expect(deleted.modified.source).toEqual({ kind: "working" });
+    await rm(join(root, "a.txt"));
+    expect((await readComparison(deleted)).modified.state).toBe("absent");
+  });
+
   it("keeps different paths for a rename", async () => {
     git("mv", "old.txt", "new.txt");
     const ref = await refOf(gitUri("old.txt", "HEAD"), gitUri("new.txt", ""));
@@ -155,5 +169,19 @@ describe("changed files since a commit", () => {
     expect(renamed.modified.path).toBe("new.txt");
     expect(renamed.original.state).toBe("present");
     expect((await changedFilesSince(root, "HEAD", 2)).truncated).toBe(true);
+  });
+
+  it("lists paths relative to a project folder inside a larger repository", async () => {
+    await mkdir(join(root, "app"));
+    await writeFile(join(root, "app", "x.txt"), "one\n");
+    git("add", ".");
+    git("commit", "-q", "-m", "two");
+    await writeFile(join(root, "app", "x.txt"), "two\n");
+    await writeFile(join(root, "a.txt"), "changed outside\n");
+    const { files } = await changedFilesSince(join(root, "app"), "HEAD");
+    expect(files).toEqual([{ status: "modified", path: "x.txt" }]);
+    const snapshot = await readComparison(await baseComparisonRef(join(root, "app"), "HEAD", files[0]!));
+    expect(snapshot.original.text).toBe("one\n");
+    expect(snapshot.modified.text).toBe("two\n");
   });
 });

@@ -40,26 +40,10 @@ export function prefetchFocusLine(
   return Math.floor((visible.start + visible.end) / 2);
 }
 
-/** A changed function waiting to be explained in review mode. */
-export interface ReviewCandidate extends Omit<PrefetchCandidate, "key"> {
-  /** Repository-relative path of its file. */
-  readonly path: string;
-}
-
 /**
- * Picks the next changed function to explain: in the file being read, the
- * one nearest the reading position; otherwise the first one in diff order.
- * So jumping to a changed function that is still waiting moves it forward.
+ * Picks the next changed file to explain in review mode: the file being read
+ * first, otherwise the first one in diff order.
  */
-export function nextReview<T extends ReviewCandidate>(
-  pending: readonly T[],
-  reading: { readonly path: string; readonly focusLine: number } | undefined
-): T | undefined {
-  const here = reading ? pending.filter((candidate) => candidate.path === reading.path) : [];
-  if (reading && here.length) {
-    return [...here].sort((left, right) =>
-      prefetchDistance(left, reading.focusLine) - prefetchDistance(right, reading.focusLine) || left.nameLine - right.nameLine
-    )[0];
-  }
-  return pending[0];
+export function nextReviewFile<T extends { readonly path: string }>(pending: readonly T[], readingPath: string | undefined): T | undefined {
+  return pending.find((candidate) => candidate.path === readingPath) ?? pending[0];
 }

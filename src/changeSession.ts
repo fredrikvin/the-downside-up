@@ -20,6 +20,8 @@ export interface ChangeSessionHost {
   readonly service: ExplanationService;
   /** Opens one-based lines of one side of the shown diff, checked by the caller's snapshot. */
   readonly reveal: (uri: vscode.Uri, startLine: number, endLine: number) => Promise<void>;
+  /** Runs an explicit request in a shared request slot. */
+  readonly schedule: <T>(task: () => Promise<T>) => Promise<T>;
   /** The shown state changed; draw it again. */
   readonly changed: () => void;
 }
@@ -39,6 +41,15 @@ interface Shown {
   controller?: AbortController;
 }
 
+/** Reading options for a snapshot: unsaved editor text stands in for the working file, and exclusions are checked per side. */
+export function snapshotOptions(): SnapshotOptions {
+  const buffers = new Map<string, string>();
+  for (const document of vscode.workspace.textDocuments) {
+    if (document.uri.scheme === "file" && document.isDirty) buffers.set(document.uri.fsPath, document.getText());
+  }
+  return { buffers, exclusion: (root, path) => sharingExclusion(root, path).catch(() => "its exclusion could not be checked") };
+}
+
 const toDiffUri = (uri: vscode.Uri): DiffUri => ({ scheme: uri.scheme, fsPath: uri.fsPath, query: uri.query });
 const capitalized = (text: string): string => text.charAt(0).toUpperCase() + text.slice(1);
 
@@ -56,6 +67,11 @@ export class ChangeSession {
   get active(): boolean { return this.shown !== undefined; }
   get busy(): boolean { return Boolean(this.shown?.controller); }
   get root(): string | undefined { return this.shown?.root; }
+  /** Repository-relative path of the shown file, once read. */
+  get path(): string | undefined {
+    const snapshot = this.shown?.snapshot;
+    return snapshot ? (snapshot.modified.state === "absent" ? snapshot.original.path : snapshot.modified.path) : undefined;
+  }
   get fileName(): string | undefined { return this.shown ? basename(this.shown.modifiedUri.path) : undefined; }
 
   shows(original: vscode.Uri, modified: vscode.Uri): boolean {
@@ -101,14 +117,6 @@ export class ChangeSession {
     return folder ? findRepositoryRoot(folder.uri.fsPath) : undefined;
   }
 
-  private options(): SnapshotOptions {
-    const buffers = new Map<string, string>();
-    for (const document of vscode.workspace.textDocuments) {
-      if (document.uri.scheme === "file" && document.isDirty) buffers.set(document.uri.fsPath, document.getText());
-    }
-    return { buffers, exclusion: (root, path) => sharingExclusion(root, path).catch(() => "its exclusion could not be checked") };
-  }
-
   private async load(shown: Shown): Promise<void> {
     shown.problem = undefined;
     shown.saved = undefined;
@@ -128,7 +136,7 @@ export class ChangeSession {
       return;
     }
     shown.ref = resolved.ref;
-    const snapshot = await readComparison(resolved.ref, this.options());
+    const snapshot = await readComparison(resolved.ref, snapshotOptions());
     shown.snapshot = snapshot;
     shown.problem = comparisonProblem(snapshot);
     if (!shown.problem) shown.saved = await this.host.service.findComparison(snapshot);
@@ -145,13 +153,14 @@ export class ChangeSession {
     shown.detail = "Reading both versions…";
     this.host.changed();
     try {
-      const snapshot = await readComparison(ref, this.options());
+      const snapshot = await readComparison(ref, snapshotOptions());
       shown.snapshot = snapshot;
       shown.problem = comparisonProblem(snapshot);
       if (shown.problem) return;
       shown.detail = "Explaining the changes…";
       this.host.changed();
-      const result = await this.host.service.explainComparison(snapshot, () => readComparison(ref, this.options()), controller.signal);
+      const result = await this.host.schedule(() =>
+        this.host.service.explainComparison(snapshot, () => readComparison(ref, snapshotOptions()), controller.signal));
       if (this.shown === shown) shown.saved = result;
     } catch (error) {
       if (controller.signal.aborted) {

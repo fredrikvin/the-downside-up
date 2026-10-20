@@ -2,7 +2,17 @@ import { readFile, stat } from "node:fs/promises";
 import { basename, isAbsolute, relative, resolve, sep } from "node:path";
 import * as vscode from "vscode";
 import { hasConsent, withConsent } from "./cache/consent";
-import { ChangeSession } from "./changeSession";
+import { ChangeSession, snapshotOptions } from "./changeSession";
+import {
+  baseComparisonRef,
+  changedFilesSince,
+  comparisonProblem,
+  EMPTY_SCHEME,
+  snapshotSignature,
+  readComparison,
+  type ChangedFile,
+  type ComparisonRef
+} from "./context/comparison";
 import { FileRepositoryCacheStore } from "./cache/store";
 import {
   ExplanationService,
@@ -57,9 +67,9 @@ import {
   resolveLanguageModel
 } from "./generation/languageModel";
 import { formatUsage } from "./generation/provider";
-import { nextPrefetch, nextReview, prefetchFocusLine } from "./presentation/prefetch";
+import { nextPrefetch, nextReviewFile, prefetchFocusLine } from "./presentation/prefetch";
 import { prefetchOnboarding } from "./presentation/prefetchOnboarding";
-import { baseChoices, changedLinesSince, recentCommits, touchesChange } from "./context/changes";
+import { baseChoices, recentCommits } from "./context/changes";
 import { clearPolicyCache } from "./context/policy";
 import { RequestScheduler, singleFlight } from "./presentation/requestScheduler";
 import { outlineInclude, visibleOutline } from "./presentation/outlineFilter";
@@ -183,20 +193,18 @@ interface Wakeable {
   wake?: () => void;
 }
 
-/** A changed function that review mode explains ahead of the reader. */
+/** A changed file that review mode explains ahead of the reader, as the two versions that were confirmed. */
 interface ReviewItem {
+  /** Path of the file in the working tree, or of the deleted file. */
   readonly path: string;
-  readonly uri: vscode.Uri;
-  readonly name: string;
-  readonly qualifiedName: string;
-  readonly startLine: number;
-  readonly endLine: number;
-  readonly nameLine: number;
-  readonly nameStart: number;
-  status: "pending" | "explaining" | "done" | "failed" | "skipped";
+  readonly file: ChangedFile;
+  readonly ref: ComparisonRef;
+  /** The versions as confirmed; reading something else later marks the item outdated. */
+  readonly confirmed: string;
+  status: "pending" | "explaining" | "done" | "failed" | "skipped" | "outdated";
 }
 
-/** Review mode: explains the functions changed since a base commit, nearest the reader first. */
+/** Review mode: explains how each file changed since a base commit, the file being read first. */
 interface ReviewSession extends Wakeable {
   readonly root: string;
   /** Such as "since main (merge base 1a2b3c4)". */
@@ -204,6 +212,8 @@ interface ReviewSession extends Wakeable {
   readonly items: ReviewItem[];
   readonly retried: Set<ReviewItem>;
   stopped: boolean;
+  /** The latest failure, for the notice shown when review stops. */
+  lastError?: string;
 }
 
 /** The AI explanation section of one function, kept while the preview is open. */
@@ -362,6 +372,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
   const change = new ChangeSession({
     get service() { return service; },
     reveal: revealChangeLines,
+    schedule: (task) => scheduler.schedule("explicit", task),
     changed: () => render()
   });
 
@@ -2577,10 +2588,11 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
   };
 
   const MAX_REVIEW_FAILURES = 3;
+  const MAX_REVIEW_FILES = 200;
   const reviewStatus = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 50);
   reviewStatus.command = "downsideUp.showChangedFunctions";
 
-  /** Shows review progress in the status bar; clicking it lists the changed functions. */
+  /** Shows review progress in the status bar; clicking it lists the changed files. */
   const updateReviewStatus = (): void => {
     const session = reviewSession;
     void vscode.commands.executeCommand("setContext", "downsideUp.hasReview", Boolean(session));
@@ -2589,15 +2601,16 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       return;
     }
     const count = (status: ReviewItem["status"]) => session.items.filter((item) => item.status === status).length;
-    const finished = count("done") + count("failed") + count("skipped");
+    const finished = count("done") + count("failed") + count("skipped") + count("outdated");
     const total = session.items.length;
-    const failed = count("failed") ? `, ${count("failed")} failed` : "";
+    const problems = [count("failed") ? `${count("failed")} failed` : "", count("outdated") ? `${count("outdated")} changed since` : ""].filter(Boolean);
+    const extra = problems.length ? `, ${problems.join(", ")}` : "";
     reviewStatus.text = session.stopped
-      ? `$(circle-slash) Downside Up: ${count("done")} of ${total} changed functions explained${failed}`
+      ? `$(circle-slash) Downside Up: ${count("done")} of ${total} changed files explained${extra}`
       : finished === total
-        ? `$(check) Downside Up: ${count("done")} of ${total} changed functions explained${failed}`
-        : `$(sync~spin) Downside Up: explaining changed functions, ${finished} of ${total}`;
-    reviewStatus.tooltip = `Changed functions ${session.base}. Click to go to one${session.stopped || finished === total ? "" : " or stop"}.`;
+        ? `$(check) Downside Up: ${count("done")} of ${total} changed files explained${extra}`
+        : `$(sync~spin) Downside Up: explaining changed files, ${finished} of ${total}`;
+    reviewStatus.tooltip = `Changed files ${session.base}. Click to open one${session.stopped || finished === total ? "" : " or stop"}.`;
     reviewStatus.show();
   };
 
@@ -2606,7 +2619,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     if (!reviewSession) return;
     reviewSession.stopped = true;
     wakeSession(reviewSession);
-    for (const item of reviewSession.items) if (item.status === "explaining" || item.status === "pending") item.status = "pending";
+    for (const item of reviewSession.items) if (item.status === "explaining") item.status = "pending";
     updateReviewStatus();
   };
 
@@ -2616,34 +2629,66 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     updateReviewStatus();
   };
 
-  /** The reader's file and position, when the shown file is in the review's repository. */
-  const readingPosition = (root: string): { path: string; focusLine: number } | undefined => {
-    if (!preview || preview.root !== root) return undefined;
-    const editor = vscode.window.visibleTextEditors.find((candidate) => sameUri(candidate.document.uri, preview!.document.uri));
-    const visible = editor?.visibleRanges[0];
-    return {
-      path: filePath(root, preview.document.uri),
-      focusLine: prefetchFocusLine(
-        editor?.selection.active.line ?? lastEditorTopLine ?? 0,
-        visible ? { start: visible.start.line, end: visible.end.line } : undefined
-      )
-    };
-  };
-
-  /** Finds a changed function in its file as it is now. */
-  const reviewTarget = async (root: string, item: ReviewItem): Promise<SelectedFunction | undefined> => {
-    const document = await vscode.workspace.openTextDocument(item.uri);
-    const line = Math.min(item.nameLine, document.lineCount - 1);
-    const target = await findFunctionTarget(document, new vscode.Position(line, item.nameStart));
-    return target && target.qualifiedName === item.qualifiedName ? { root, target, document } : undefined;
+  /** The file being read, when it is in the review's repository: the one shown or its diff. */
+  const readingPath = (root: string): string | undefined => {
+    if (preview?.root === root) return filePath(root, preview.document.uri);
+    return change.active && change.root === root ? change.path : undefined;
   };
 
   /**
-   * Explains the changed functions in the background with the request slots
-   * explicit requests leave free: in the file being read, nearest the reader
-   * first, then in diff order. Explanations already current are kept. A
-   * failed function is retried once after a pause; after several failures
-   * review mode stops with a notice.
+   * Explains one changed file as the two versions that were confirmed. If
+   * either has changed since, the item is marked outdated instead of
+   * explaining something the reader did not confirm.
+   */
+  const explainReviewItem = async (
+    session: ReviewSession,
+    item: ReviewItem,
+    mode: "explicit" | "prefetch",
+    shouldStart: () => boolean
+  ): Promise<void> => {
+    const snapshot = await readComparison(item.ref, snapshotOptions());
+    if (snapshotSignature(snapshot) !== item.confirmed) {
+      item.status = "outdated";
+      return;
+    }
+    if (comparisonProblem(snapshot)) {
+      item.status = "skipped";
+      return;
+    }
+    if ((await service.findComparison(snapshot))?.current) {
+      item.status = "done";
+      return;
+    }
+    const controller = new AbortController();
+    if (mode === "prefetch") prefetchSignals.add(controller.signal);
+    try {
+      await scheduler.schedule(mode, async () => {
+        if (!shouldStart()) throw new DOMException("Review stopped.", "AbortError");
+        return service.explainComparison(snapshot, () => readComparison(item.ref, snapshotOptions()), controller.signal);
+      });
+      item.status = "done";
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") {
+        // Not started, for example because review mode stopped, or sharing was not approved.
+        item.status = "pending";
+        return;
+      }
+      const message = errorMessage(error);
+      if (/changed while/.test(message)) {
+        item.status = "outdated";
+        return;
+      }
+      item.status = "failed";
+      session.lastError = message;
+    }
+  };
+
+  /**
+   * Explains the changed files in the background with the request slots
+   * explicit requests leave free: the file being read first, then in diff
+   * order. Explanations already current are kept. A failed file is retried
+   * once after a pause; after several failures review mode stops with a
+   * notice.
    */
   const runReview = async (session: ReviewSession): Promise<void> => {
     const active = () => !session.stopped && reviewSession === session;
@@ -2652,7 +2697,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
         await waitForWake(session);
         continue;
       }
-      const item = nextReview(session.items.filter((candidate) => candidate.status === "pending"), readingPosition(session.root));
+      const item = nextReviewFile(session.items.filter((candidate) => candidate.status === "pending"), readingPath(session.root));
       if (!item) {
         if (session.items.some((candidate) => candidate.status === "explaining")) {
           await waitForWake(session);
@@ -2663,51 +2708,25 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       }
       if (!(await prefetchAllowed(session.root))) {
         if (!active()) return;
-        notice = { tone: "info", text: "Explaining changed functions stopped: code sharing is not approved for this repository and model, or the workspace is not trusted." };
+        notice = { tone: "info", text: "Explaining changed files stopped: code sharing is not approved for this repository and model, or the workspace is not trusted." };
         render();
         stopReview();
         return;
       }
       item.status = "explaining";
       updateReviewStatus();
-      const value = await reviewTarget(session.root, item).catch(() => undefined);
-      if (!active()) {
-        item.status = "pending";
-        return;
-      }
-      if (!value) {
-        item.status = "skipped";
-        updateReviewStatus();
-        continue;
-      }
-      const state = stateFor(value);
-      if (state.controller || (state.view.status === "current" && state.view.explanation)) {
-        // Already explained, or being explained by an explicit request.
-        item.status = "done";
-        updateReviewStatus();
-        continue;
-      }
-      if (state.view.status === "failed" || state.view.status === "cancelled" || state.view.status === "outdated") forget(state);
-      const fresh = stateFor(value);
-      void generate(fresh, { prefetch: { shouldStart: active } })
+      void explainReviewItem(session, item, "prefetch", active)
+        .catch(() => { item.status = "failed"; })
         .then(async () => {
-          if (fresh.view.status === "current") item.status = "done";
-          else if (fresh.view.status === "failed" && active() && !session.retried.has(item)) {
-            // Back off briefly, for example after a rate limit, then try this function once more.
+          if (item.status === "failed" && active() && !session.retried.has(item)) {
+            // Back off briefly, for example after a rate limit, then try this file once more.
             session.retried.add(item);
             await new Promise((resolveWait) => setTimeout(resolveWait, 5_000));
-            if (fresh.view.status === "failed") forget(fresh);
             item.status = "pending";
-          } else if (fresh.view.status === "failed") {
-            item.status = "failed";
-            if (session.items.filter((candidate) => candidate.status === "failed").length >= MAX_REVIEW_FAILURES && active()) {
-              notice = { tone: "error", text: `Explaining changed functions stopped after several errors: ${fresh.view.error ?? "generation failed"}` };
-              render();
-              stopReview();
-            }
-          } else {
-            // Not started, for example because review mode stopped first.
-            item.status = "pending";
+          } else if (item.status === "failed" && session.items.filter((candidate) => candidate.status === "failed").length >= MAX_REVIEW_FAILURES && active()) {
+            notice = { tone: "error", text: `Explaining changed files stopped after several errors: ${session.lastError ?? "generation failed"}` };
+            render();
+            stopReview();
           }
           updateReviewStatus();
         })
@@ -2715,55 +2734,59 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     }
   };
 
+  const plural = (count: number, noun: string): string => `${count} ${noun}${count === 1 ? "" : "s"}`;
+
   /**
-   * Starts review mode for the functions changed since `base`. Running the
+   * Starts review mode for the files changed since `base`. Running the
    * command is the explicit request; when code sharing is not approved yet,
-   * the first function is explained as an ordinary request, which asks.
+   * the first file is explained as an ordinary request, which asks.
    */
   const startReview = async (root: string, base: string, baseLabel: string, confirm: boolean): Promise<number> => {
-    const changed = await changedLinesSince(root, base);
+    const { files, truncated } = await changedFilesSince(root, base, MAX_REVIEW_FILES);
+    const options = snapshotOptions();
     const items: ReviewItem[] = [];
     let excluded = 0;
-    const paths = [...changed.keys()].sort();
-    for (const path of paths.slice(0, MAX_REVIEW_FILES)) {
-      const absolute = resolve(root, path);
-      if (!isWithin(root, absolute)) continue;
-      if (await sharingExclusion(root, absolute).catch(() => "unreadable")) {
-        excluded++;
-        continue;
-      }
-      const document = await vscode.workspace.openTextDocument(vscode.Uri.file(absolute)).then((value) => value, () => undefined);
-      if (!document) continue;
-      const ranges = changed.get(path)!;
-      const overview = await buildFileOverview(document, path).catch(() => undefined);
-      for (const entry of overview?.entries ?? []) {
-        if (!entry.explainable || !touchesChange(ranges, entry.startLine, entry.endLine)) continue;
-        items.push({
-          path,
-          uri: document.uri,
-          name: entry.name,
-          qualifiedName: entry.qualifiedName,
-          startLine: entry.startLine,
-          endLine: entry.endLine,
-          nameLine: entry.nameLine,
-          nameStart: entry.nameStart,
-          status: "pending"
-        });
+    let skipped = 0;
+    for (let index = 0; index < files.length; index += 8) {
+      const prepared = await Promise.all(files.slice(index, index + 8).map(async (file) => {
+        const ref = await baseComparisonRef(root, base, file);
+        const snapshot = await readComparison(ref, options);
+        return { file, ref, snapshot, saved: comparisonProblem(snapshot) ? undefined : await service.findComparison(snapshot) };
+      }).map((work) => work.catch(() => undefined)));
+      for (const entry of prepared) {
+        if (!entry) {
+          skipped++;
+          continue;
+        }
+        const { file, ref, snapshot, saved } = entry;
+        if (snapshot.original.state === "excluded" || snapshot.modified.state === "excluded") {
+          excluded++;
+        } else if (comparisonProblem(snapshot)) {
+          skipped++;
+        } else {
+          items.push({ path: file.path, file, ref, confirmed: snapshotSignature(snapshot), status: saved?.current ? "done" : "pending" });
+        }
       }
     }
-    const files = new Set(items.map((item) => item.path)).size;
+    const pending = items.filter((item) => item.status === "pending").length;
+    const kinds = (["added", "deleted", "renamed"] as const)
+      .map((kind) => [kind, items.filter((item) => item.file.status === kind).length] as const)
+      .filter(([, count]) => count > 0)
+      .map(([kind, count]) => `${count} ${kind}`);
     const notes = [
-      paths.length > MAX_REVIEW_FILES ? `Only the first ${MAX_REVIEW_FILES} of ${paths.length} changed files are included.` : "",
-      excluded ? `${excluded} changed file${excluded === 1 ? " is" : "s are"} excluded from AI explanations and skipped.` : ""
+      truncated ? `Only the first ${MAX_REVIEW_FILES} changed files are included.` : "",
+      excluded ? `${plural(excluded, "changed file")} ${excluded === 1 ? "is" : "are"} excluded from AI explanations and skipped.` : "",
+      skipped ? `${plural(skipped, "changed file")} ${skipped === 1 ? "is" : "are"} skipped because ${skipped === 1 ? "it is" : "they are"} binary, too large, or could not be read.` : "",
+      kinds.length ? `Includes ${kinds.join(", ")}.` : ""
     ].filter(Boolean).join(" ");
     if (items.length === 0) {
-      if (confirm) await vscode.window.showInformationMessage(`No changed functions were found ${baseLabel}. ${notes}`.trim());
+      if (confirm) await vscode.window.showInformationMessage(`No changed files could be explained ${baseLabel}. ${notes}`.trim());
       return 0;
     }
-    if (confirm) {
-      const accept = "Explain Changed Functions";
+    if (confirm && pending > 0) {
+      const accept = "Explain Changed Files";
       const answer = await vscode.window.showInformationMessage(
-        `Explain ${items.length} changed function${items.length === 1 ? "" : "s"} in ${files} file${files === 1 ? "" : "s"} ${baseLabel} in the background? Functions with a current explanation are skipped; each new explanation is a request to your model provider.`,
+        `Explain ${plural(pending, "changed file")} ${baseLabel} in the background? That is ${plural(pending, "request")} to your model provider, each sending the two versions of one file. The other ${items.length - pending} of ${items.length} already have a current explanation.`,
         { modal: true, detail: notes || undefined },
         accept
       );
@@ -2773,24 +2796,17 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     const session: ReviewSession = { root, base: baseLabel, items, retried: new Set(), stopped: false, woken: false };
     reviewSession = session;
     updateReviewStatus();
-    if (!(await prefetchAllowed(root))) {
-      // The first function is an ordinary request, so code sharing is approved the usual way.
-      const first = items[0]!;
-      const value = await reviewTarget(root, first).catch(() => undefined);
-      if (value && reviewSession === session) {
-        first.status = "explaining";
-        updateReviewStatus();
-        const state = stateFor(value);
-        await generate(state);
-        first.status = state.view.status === "current" ? "done" : "failed";
-        updateReviewStatus();
-      }
+    if (pending > 0 && !(await prefetchAllowed(root))) {
+      // The first file is an ordinary request, so code sharing is approved the usual way.
+      const first = items.find((item) => item.status === "pending")!;
+      first.status = "explaining";
+      updateReviewStatus();
+      await explainReviewItem(session, first, "explicit", () => reviewSession === session).catch(() => { first.status = "failed"; });
+      updateReviewStatus();
     }
     void runReview(session).catch(() => stopReview());
     return items.length;
   };
-
-  const MAX_REVIEW_FILES = 200;
 
   /** Asks which changes to review and starts review mode. */
   const reviewChangesCommand = async (): Promise<void> => {
@@ -2808,7 +2824,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     }
     const pickCommit = { label: "$(git-commit) Changes since a commit…", description: "choose from recent commits", phrase: "", commit: "" };
     const picked = await vscode.window.showQuickPick([...choices, pickCommit], {
-      title: "Explain changed functions",
+      title: "Explain changed files",
       placeHolder: "Compare the checked-out code with…"
     });
     if (!picked) return;
@@ -2818,7 +2834,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       const commits = await recentCommits(root);
       const commit = await vscode.window.showQuickPick(
         commits.map((entry) => ({ label: entry.subject, description: `${entry.shortHash} · ${entry.when}`, commit: entry })),
-        { title: "Explain functions changed since…", placeHolder: "The changes after this commit, up to the checked-out code, are included", matchOnDescription: true }
+        { title: "Explain files changed since…", placeHolder: "The changes after this commit, up to the checked-out code, are included", matchOnDescription: true }
       );
       if (!commit) return;
       base = commit.commit.hash;
@@ -2827,12 +2843,29 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     if (!panel) {
       const editor = vscode.window.activeTextEditor ?? lastTextEditor;
       ensurePanel();
-      if (editor?.document.uri.scheme === "file") await previewDocument(editor.document);
+      if (!routeToChange(editor, false) && editor?.document.uri.scheme === "file") await previewDocument(editor.document);
     }
     await startReview(root, base, label, true);
   };
 
-  /** Lists the changed functions with their state; choosing one opens it, and the preview follows. */
+  /** Opens the native diff of a reviewed file: the base version against the working file, as confirmed. */
+  const openReviewDiff = async (session: ReviewSession, item: ReviewItem): Promise<void> => {
+    const source = item.ref.original.source;
+    if (source.kind !== "revision") return;
+    const originalFile = vscode.Uri.file(resolve(session.root, item.ref.original.path));
+    const workingFile = vscode.Uri.file(resolve(session.root, item.ref.modified.path));
+    // Git has no version of an added file and the working tree none of a deleted one; an empty document stands in.
+    const left = item.file.status === "added"
+      ? originalFile.with({ scheme: EMPTY_SCHEME, query: source.hash })
+      : originalFile.with({ scheme: "git", query: JSON.stringify({ path: originalFile.fsPath, ref: source.hash }) });
+    const right = item.file.status === "deleted" ? workingFile.with({ scheme: EMPTY_SCHEME, query: "" }) : workingFile;
+    await vscode.commands.executeCommand("vscode.diff", left, right, `${basename(item.path)} (${session.base})`, {
+      viewColumn: vscode.ViewColumn.One,
+      preview: true
+    });
+  };
+
+  /** Lists the changed files with their state; choosing one opens its diff, and the preview follows. */
   const showChangedFunctionsCommand = async (): Promise<void> => {
     const session = reviewSession;
     if (!session) {
@@ -2840,23 +2873,28 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       return;
     }
     const icons: Record<ReviewItem["status"], string> = {
-      pending: "$(circle-outline)", explaining: "$(sync~spin)", done: "$(check)", failed: "$(error)", skipped: "$(circle-slash)"
+      pending: "$(circle-outline)", explaining: "$(sync~spin)", done: "$(check)", failed: "$(error)", skipped: "$(circle-slash)", outdated: "$(history)"
     };
     const running = !session.stopped && session.items.some((item) => item.status === "pending" || item.status === "explaining");
     const control = running
-      ? { label: "$(debug-stop) Stop explaining changed functions", action: "stop" as const }
+      ? { label: "$(debug-stop) Stop explaining changed files", action: "stop" as const }
       : { label: "$(close) Close review mode", action: "dismiss" as const };
     const resume = !running && session.items.some((item) => item.status === "pending")
-      ? [{ label: "$(debug-start) Continue explaining changed functions", action: "resume" as const }]
+      ? [{ label: "$(debug-start) Continue explaining changed files", action: "resume" as const }]
       : [];
     const picked = await vscode.window.showQuickPick<vscode.QuickPickItem & { item?: ReviewItem; action?: "stop" | "dismiss" | "resume" }>(
       [
-        ...session.items.map((item) => ({ label: `${icons[item.status]} ${item.qualifiedName}`, description: item.path, item })),
+        ...session.items.map((item) => ({
+          label: `${icons[item.status]} ${item.path}`,
+          description: item.file.status === "modified" ? undefined : item.file.status,
+          detail: item.status === "outdated" ? "Changed since it was confirmed; open the diff and choose Explain changes." : undefined,
+          item
+        })),
         { label: "", kind: vscode.QuickPickItemKind.Separator },
         ...resume,
         control
       ],
-      { title: `Changed functions ${session.base}`, placeHolder: "Go to a changed function", matchOnDescription: true }
+      { title: `Changed files ${session.base}`, placeHolder: "Open the diff of a changed file", matchOnDescription: true }
     );
     if (!picked) return;
     if (picked.action === "stop") stopReview();
@@ -2866,9 +2904,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       updateReviewStatus();
       void runReview(session).catch(() => stopReview());
     } else if (picked.item) {
-      const position = new vscode.Position(picked.item.nameLine, picked.item.nameStart);
-      const document = await vscode.workspace.openTextDocument(picked.item.uri);
-      await vscode.window.showTextDocument(document, { selection: new vscode.Range(position, position), viewColumn: vscode.ViewColumn.One });
+      await openReviewDiff(session, picked.item);
     }
   };
 
@@ -3563,6 +3599,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     onTextSelectionChange,
     onConfigChange,
     vscode.languages.registerHoverProvider({ scheme: "file" }, hoverProvider),
+    vscode.workspace.registerTextDocumentContentProvider(EMPTY_SCHEME, { provideTextDocumentContent: () => "" }),
     new vscode.Disposable(() => {
       cancelExplanations();
       if (selectionTimer) clearTimeout(selectionTimer);
@@ -3610,11 +3647,16 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     fileSummary: () => fileSummary && preview && fileSummary.uri === preview.document.uri.toString()
       ? { text: fileSummary.text, current: fileSummary.current }
       : undefined,
+    shownChange: () => {
+      const view = change.view(() => "test-link");
+      return view ? { fileName: view.fileName, facts: view.facts, status: view.status, explained: Boolean(view.result), links: view.result?.changes.reduce((sum, item) => sum + item.links.length, 0) ?? 0 } : undefined;
+    },
+    explainChange: () => change.explain(),
     reviewChanges: (base: string) => {
-      const root = preview?.root;
+      const root = preview?.root ?? change.root;
       return root ? startReview(root, base, "for testing", false) : Promise.resolve(0);
     },
-    reviewItems: () => (reviewSession?.items ?? []).map((item) => ({ qualifiedName: item.qualifiedName, path: item.path, status: item.status })),
+    reviewItems: () => (reviewSession?.items ?? []).map((item) => ({ path: item.path, change: item.file.status, status: item.status })),
     stopReview: () => dismissReview(),
     shownFolder: () => folderPreview && !preview
       ? {
@@ -3681,7 +3723,10 @@ export interface DownsideUpTestApi {
   flowsKind(): "files" | "parts" | undefined;
   previewFolder(path: string): Promise<void>;
   reviewChanges(base: string): Promise<number>;
-  reviewItems(): Array<{ qualifiedName: string; path: string; status: string }>;
+  reviewItems(): Array<{ path: string; change: string; status: string }>;
+  /** The native diff shown in the preview, or undefined. */
+  shownChange(): { fileName: string; facts: string; status: string; explained: boolean; links: number } | undefined;
+  explainChange(): Promise<void>;
   stopReview(): void;
   previewExplanations(): Array<{ functionName: string; status: string }>;
   prefetchApproval(): string[] | undefined;

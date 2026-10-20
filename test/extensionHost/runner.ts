@@ -377,6 +377,7 @@ export async function run(): Promise<void> {
   console.log("Downside Up integration tests: React components, hooks, and props types resolved.");
 
   const badgePath = resolve(reactRoot, "src/Badge.tsx");
+  const nextBadgePath = resolve(reactRoot, "src/Badge.next.tsx");
   const replaceInCartItem = async (from: string, to: string) => {
     const text = cartItemDocument.getText();
     const start = text.indexOf(from);
@@ -390,25 +391,43 @@ export async function run(): Promise<void> {
     await replaceInCartItem(">Remove<", ">Delete<");
     await writeFile(badgePath, "export function Badge({ count }: { count: number }) {\n  return <span>{count}</span>;\n}\n");
     await vscode.window.showTextDocument(cartViewDocument, vscode.ViewColumn.One);
-    assert.equal(await api.reviewChanges("HEAD"), 2, "Only the changed and the new function are queued.");
+    const badgeUri = vscode.Uri.file(badgePath);
+    const nextBadgeUri = vscode.Uri.file(nextBadgePath);
+    await writeFile(nextBadgePath, "export function Badge({ count }: { count: number }) {\n  return <b>{count}</b>;\n}\n");
+    const requestsBefore = api.allExplanations().length;
+    await vscode.commands.executeCommand("vscode.diff", badgeUri, nextBadgeUri, "Badge (test)");
+    await vscode.commands.executeCommand("downsideUp.showFileOverview");
+    const unexplained = await waitFor(async () => api.shownChange()?.fileName === "Badge.next.tsx" ? api.shownChange() : undefined, "a native diff in the preview");
+    assert.equal(unexplained.status, "ready", "Opening a diff only looks up a saved explanation.");
+    assert.equal(api.allExplanations().length, requestsBefore);
+    await api.explainChange();
+    assert.equal(api.shownChange()?.status, "current", "Explain changes is the explicit request for one diff.");
+    await vscode.window.showTextDocument(cartViewDocument, vscode.ViewColumn.One);
+    await waitFor(async () => api.shownChange() === undefined ? true : undefined, "an ordinary file to replace the diff in the preview");
+    assert.equal(await api.reviewChanges("HEAD"), 3, "The changed file and the two new files are queued.");
     assert.deepEqual(
-      api.reviewItems().map((item) => `${item.path} ${item.qualifiedName}`).sort(),
-      ["src/Badge.tsx Badge", "src/CartItem.tsx CartItem"]
+      api.reviewItems().map((item) => `${item.path} ${item.change}`).sort(),
+      ["src/Badge.next.tsx added", "src/Badge.tsx added", "src/CartItem.tsx modified"]
     );
     await waitFor(
       async () => api.reviewItems().every((item) => item.status === "done") ? true : undefined,
-      "the changed functions to be explained in review mode"
+      "the changed files to be explained in review mode"
     );
-    assert.ok(
-      api.allExplanations().some((view) => view.functionName === "Badge" && view.path.endsWith("src/Badge.tsx") && view.status === "current"),
-      "A function in a file that is not shown is explained ahead of the reader."
-    );
+    // The diff a review opens for an added file describes the same two versions the batch explained.
+    const emptyBadge = badgeUri.with({ scheme: "downside-up-empty", query: "HEAD" });
+    await vscode.commands.executeCommand("vscode.diff", emptyBadge, badgeUri, "Badge (test)");
+    await vscode.commands.executeCommand("downsideUp.showFileOverview");
+    const reviewed = await waitFor(async () => api.shownChange()?.fileName === "Badge.tsx" ? api.shownChange() : undefined, "the reviewed file's diff in the preview");
+    assert.equal(reviewed.explained, true, "A diff opened from review shows the explanation the batch saved.");
+    assert.equal(reviewed.status, "current");
+    assert.match(reviewed.facts, /added/);
     api.stopReview();
   } finally {
     await replaceInCartItem(">Delete<", ">Remove<").catch(() => undefined);
     await rm(badgePath, { force: true });
+    await rm(nextBadgePath, { force: true });
   }
-  console.log("Downside Up integration tests: review mode explained the changed functions.");
+  console.log("Downside Up integration tests: review mode explained the changed files.");
 
   const pythonDocument = await vscode.workspace.openTextDocument(vscode.Uri.file(resolve(pythonRoot, "main.py")));
   const pythonCursor = pythonDocument.positionAt(pythonDocument.getText().indexOf("def checkout") + 6);

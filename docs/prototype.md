@@ -307,33 +307,79 @@ shown file's repository (by explaining a function or mapping the project),
 prefetching that was waiting starts. Prefetching uses the provider's
 usage limits or billing for every function it explains.
 
-Review mode explains the functions changed on the checked-out code ahead of
-the reader. **Review Changes…** offers bases found with Git: the merge base of
-`HEAD` with the remote's default branch, `main`, `master`, `origin/main`, or
+### Change view and review mode
+
+Explaining a change is a request for one file's before and after, in the
+preview. When the editor being viewed is a native VS Code diff of local Git
+changes (working tree against the index, staged changes against `HEAD`, or a
+base commit against the working tree), the preview, if open, switches to a
+**change view** for that exact pair of documents. Opening a diff alone never
+opens a closed preview, and clicking between the two sides or focusing the
+preview keeps the same comparison; a normal file or folder preview returns
+when another editor is shown. **Open Preview to the Side** and the editor
+title button work from either side of a diff, and in a diff they only look up
+a saved explanation, even with text selected.
+
+Showing a diff, switching views, scrolling, editing, and a cache miss never
+call a provider. **Explain changes** is the request: it reads both versions
+again (unsaved editor text stands in for the working file), checks the
+sharing exclusions for each side's own path (including a renamed file's old
+path), the repository restriction, request size, and per-repository and
+per-model consent (it asks like any explanation), sends the two versions of
+that one file, and saves the result. Each side is limited to 256 KiB of text;
+binary, oversized, excluded, unreadable, identical, and not-yet-existing
+comparisons are reported instead of explained, and an added or deleted file
+compares against nothing. If either version changes while the request runs,
+the result is discarded.
+
+The model returns a summary, a list of changes with before and after
+behavior, when it differs, and its effect on flow, line spans that are
+checked against the real line counts of each side (an invalid span drops the
+link, never the explanation), text outside functions, possible consequences,
+and limits. It uses the Functions model and needs no function discovery, so it
+works for any text file. Everything renders as text; evidence links go
+through host-validated ids and reveal the lines in the visible original or
+modified side of the diff without moving the comparison. This is a
+description of what changed, not an automated correctness or security
+review.
+
+Comparison records are saved in the repository cache beside explanations,
+under a key made from both sides' identities (`working`, `index`, or a
+resolved commit) and paths and the provider, model, and prompt version.
+Changed content of either side leaves the record visible as outdated until the
+reader explains again; a different pair, such as staged versus unstaged, is a
+separate record. Only local `git:` and `file:` diffs are supported; other
+schemes say they are not supported yet. Changes to the index or working tree
+made outside the editor are noticed when the window regains focus or the diff
+is shown again, not watched live.
+
+Review mode prepares these comparisons ahead of the reader.
+**Review Changes…** offers bases found with Git: the merge base of `HEAD`
+with the remote's default branch, `main`, `master`, `origin/main`, or
 `origin/master`, those branches' tips, `HEAD` (uncommitted changes only), and
-any of the last 50 commits. It compares the base with the working tree
-(`git diff --unified=0 -M <base>` restricted to the repository root, plus
-untracked files that are not ignored, counted whole); commits that are not
-checked out are not explained, since everything else works on the working
-tree. A function counts as changed when a changed line falls inside it
-(including its attached comments), or lines were removed from inside it;
-nested functions and the functions around them all count. Functions come
-from the same local description as the preview, so this works for every
-language the preview describes. At most 200 changed files are considered, and
-excluded files are skipped and counted. Nothing is sent until the user
-confirms the number of functions; running the command is an explicit
-request, so if code sharing is not yet approved for the repository and model,
-the first function is explained as an ordinary request, which asks. The rest
-are explained like prefetching: with the free request slots (never the last
-one), showing explanations inline for the shown file, never prompting, skipping functions with a
-current explanation or an explicit request in progress, and in the file being
-read nearest the reader first, otherwise in path and line order. A failed
-function is retried once after five seconds; after three failures review
-mode stops with a notice. It also stops when the preview closes, on **Cancel**,
-or when consent is missing; **Clear Repository Cache** ends it. A status bar
-item shows progress and opens a list of the changed functions with their
-state, to jump to one, stop, continue, or close review mode. It works
-regardless of the `downsideUp.prefetch.*` settings.
+any of the last 50 commits. It compares the base, resolved to a commit, with
+the working tree (`git diff --name-status -M` restricted to the repository
+root, plus untracked files that are not ignored). Additions, deletions,
+renames, and changes outside functions each count as one file comparison;
+commits that are not checked out are not explained. At most 200 changed files
+are considered; excluded files are skipped and counted, as are binary,
+oversized, identical, and unreadable ones. Nothing is sent until the user
+confirms the number of requests (files with a current saved comparison are
+not counted); running the command is an explicit request, so if code sharing
+is not yet approved for the repository and model, the first file is explained
+as an ordinary request, which asks. The rest are explained like prefetching:
+with the free request slots (never the last one), never prompting, skipping
+files with a current explanation, and the file being read (or its diff) first,
+otherwise in path order. Each item keeps the versions that were confirmed; if
+either changed before its turn, or while it was explaining, it is marked
+changed since, not explained, and needs an explicit **Explain changes**. A
+failed file is retried once after five seconds; after three failures review
+mode stops with a notice. It also stops when the preview closes, on
+**Cancel**, or when consent is missing; **Clear Repository Cache** ends it. A
+status bar item shows progress and opens a list of the changed files with
+their state; choosing one opens its native diff (with an empty document for
+the missing side of an added or deleted file), which shows the same saved
+comparison. It works regardless of the `downsideUp.prefetch.*` settings.
 
 Hovering a call to a function inside another function shows the
 purpose from that function's current saved explanation, found with the same
@@ -1193,6 +1239,14 @@ webview's content-security policy.
 
 ## Limitations and verification status
 
+- The change view explains only local `git:` and `file:` diffs, one file at a
+  time, with no cross-file story and no before/after flowchart; it does not
+  check the model's claims about behavior, so its consequences are things to
+  verify. Changes to the index or working tree made outside the editor are
+  noticed only when the window regains focus or the diff is shown again. Git
+  URI forms are read as the built-in Git extension produces them; the
+  extension-host tests use `file:` diffs and the empty stand-in document, not
+  the Git extension's own diffs.
 - GitHub Copilot's server-side content exclusion is not visible to the
   extension and is not applied to its requests; only `.gitignore`,
   `.copilotignore`, VS Code exclusions, the built-in path rules, and the

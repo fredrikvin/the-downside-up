@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.39.0
+
+- Explain what a change does. With the preview open, a native VS Code diff of
+  local Git changes shows a change view: an explicit **Explain changes** sends
+  both versions of that one file and saves a before/after explanation, with
+  links to the lines on either side. Opening or switching to a diff only looks
+  up a saved explanation. Added, deleted, and renamed files and changes outside
+  functions are covered; binary, oversized, excluded, and identical files are
+  reported instead.
+- **Review Changes…** now prepares changed files rather than changed functions:
+  it confirms the number of file comparisons, keeps each as confirmed (marking
+  it as changed since when either version changes), and opens the native diff
+  that shows the same saved explanation. **Show Changed Functions** is now
+  **Show Changed Files**.
+
 ## 0.38.0
 
 - Show SQL schema objects and queries in the default concise preview.

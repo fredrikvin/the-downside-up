@@ -151,6 +151,16 @@ selecting a function's name and opening the preview explains it. With a plain
 cursor it only opens the preview. The repository context used for explanations is shown at the
 end of the preview.
 
+**Changes.** With the preview open, showing a native VS Code diff of local Git
+changes switches it to a change view of that pair; **Explain changes** sends
+both versions of that file to the Functions model (asking for sharing approval
+like any explanation) and saves the result in the repository cache. Opening
+a diff, or **Open Preview to the Side** from either side of one, only looks up a
+saved explanation. **Review Changes…** confirms a count of file comparisons,
+explains them in the background like prefetching, and opens each in its native
+diff. Binary, oversized, excluded, and identical files are skipped. See
+`docs/prototype.md` for the scope and limits.
+
 **Preview header.** A shared sparkle icon groups two compact model buttons,
 each opening its picker directly: **Project overview** first for project priming,
 repository context reviews, architecture maps, folder summaries, and main flows;

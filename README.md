@@ -3,7 +3,7 @@
 **Understand unfamiliar code beside the source.** Downside Up turns functions
 into plain-language explanations, pseudocode, and flowcharts in a synchronized
 VS Code preview. Explore the project's architecture or prepare explanations
-for changed functions before reviewing a branch.
+for changed files before reviewing a branch.
 
 The extension appears as **Downside Up** in Extensions, Settings, and commands.
 Requires VS Code 1.90 or newer.
@@ -37,8 +37,13 @@ and billing.
 - **Explore the project.** Run **Downside Up: Preview Project**, preview a
   folder from the Explorer, or navigate the breadcrumbs. Project maps show
   parts and connections; folder pages offer summaries and main flows.
+- **Understand a change.** With the preview open, show a Git diff in VS Code
+  and click **Explain changes** to see, in plain language, what a file did
+  before and after, with links to the lines on either side. Opening a diff never
+  sends anything; the request sends both versions of that one file.
 - **Prepare a review.** Run **Downside Up: Review Changes…**, select a
-  comparison, and confirm the changed functions to explain.
+  comparison, and confirm the number of changed files to explain; each opens in
+  VS Code's native diff.
 - **Choose models by role.** **Functions** handles explanations and file
   summaries. **Project overview** handles repository context, architecture
   maps, folder summaries, and flows.
