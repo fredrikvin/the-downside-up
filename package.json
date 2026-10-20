@@ -3,7 +3,7 @@
   "displayName": "Downside Up",
   "description": "The Downside Up: understand unfamiliar code in plain language. Explain functions beside the source, map the project's architecture and main flows, and review changed functions, with grounded, cached AI explanations.",
   "icon": "images/icon.png",
-  "version": "0.36.0",
+  "version": "0.37.0",
   "publisher": "FredrikVinkvist",
   "license": "MIT",
   "engines": {
