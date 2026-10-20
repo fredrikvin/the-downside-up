@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.37.0
+
+- Add bundled SQL discovery for functions, procedures, triggers, views, and
+  materialized views, with local outlines for tables, columns, types, and indexes.
+  The bounded lexer recognizes common PostgreSQL dollar bodies, MySQL
+  delimiters, T-SQL batches, and SQLite trigger blocks without a language server.
+- Resolve SQL object dependencies across eligible repository files for
+  explanation context and freshness, and provide name-based routine caller
+  lookup. Honor exclusions, unsaved buffers, item/byte/time limits, and the
+  existing explicit-generation and consent rules.
+- Normalize SQL whitespace, ordinary comments, and unquoted casing while
+  preserving literals. Dynamic SQL, standalone queries, embedded SQL, complete
+  dialect semantics, and actual migration ordering are outside this support.
+  Overloads remain name-based candidates and ambiguity is disclosed.
+
 ## 0.36.0
 
 - Add bundled Python function discovery and local file outlines without Pylance:

@@ -45,7 +45,8 @@ behavior.
 - Rust, Go, Python, JavaScript, and TypeScript function discovery use bundled
   Tree-sitter WASM (JavaScript and TypeScript resolve what a function uses
   with VS Code's built-in TypeScript go-to-definition); other languages
-  use VS Code document-symbol providers and go-to-definition where available.
+  use VS Code document-symbol providers and go-to-definition where available,
+  except SQL, which uses a bundled bounded lexer and static object resolution.
   Do not assume `rust-analyzer`, `gopls`, Pylance, or another language server is
   installed.
 - Keep language-specific behavior inside `src/languages/<language>/`, exposed

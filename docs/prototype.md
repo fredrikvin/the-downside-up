@@ -22,7 +22,8 @@ import, module, function/method, type, constant/static, local variable
 binding, and standalone comment in plain language, in source order and
 without regrouping, with attached doc comments and attributes. These
 descriptions are deterministic and local (Tree-sitter for
-Rust, Go, Python, JavaScript, and TypeScript; VS Code document symbols plus line-based import and comment
+Rust, Go, Python, JavaScript, and TypeScript; a bundled lexer for SQL;
+VS Code document symbols plus line-based import and comment
 detection for other languages) and are labelled as not AI-generated. Go
 descriptions also explain Go-specific meaning, such as exported names,
 pointer and value receivers, multiple and named results, `iota` groups,
@@ -176,6 +177,14 @@ Python targets are module-level functions only; decorated targets, star
 imports, re-exports, and conditional or reassigned bindings are not inferred.
 Calls inside nested functions belong to those functions, not their enclosing
 function; defaults and decorators are not counted as calls made by the body.
+SQL also supplies a routine-call fallback using statically named calls
+(`CALL`, `EXEC`, `EXECUTE FUNCTION`, `PERFORM`, and `name(...)`), not table
+reads as callers. Names are resolved against eligible CREATE definitions,
+not a database catalog. Overloads are name-based candidates, so a caller can
+appear for multiple overloads; ambiguous unqualified schema matches are omitted.
+Dynamic SQL is not inspected.
+The local SQL caller picker states that overloads are candidates and repeated
+definitions use lexical file order rather than migration execution order.
 Fallback limits: 2,000 filesystem entries, 100 loaded files, 2 MiB of text,
 256 KiB per file, 500 functions, eight seconds checked between operations, and
 100 results. It is cancellable, reads unsaved buffers, labels results
@@ -345,6 +354,14 @@ by their enclosing classes/functions (`Catalog.find`, `outer.inner`).
 Property setters/deleters have distinct identities. Lambdas are not separate
 explainable functions. Python's local outline uses module/class/function
 docstrings, attached comments, imports, classes and bases, values, and signatures.
+SQL uses its own bundled bounded lexer, not Tree-sitter or a database
+connection. Explainable units in `.sql` files are `CREATE FUNCTION`,
+`PROCEDURE`, `TRIGGER`, and `VIEW` (including materialized views); tables,
+columns, types, and indexes are local outline entries only. It recognizes
+common PostgreSQL dollar-quoted bodies, MySQL custom delimiters, T-SQL GO
+batches, and SQLite trigger blocks, including quoted object names and
+BEGIN/END blocks. Routine overload identities include their syntactic
+argument types. Standalone queries and embedded SQL are not explainable units.
 JavaScript and TypeScript, including JSX and React, also use
 bundled Tree-sitter grammars (TypeScript for `.ts`, `.mts`, and `.cts`, since
 generic arrow functions such as `<T>(x: T) => x` read as JSX in TSX; TSX for
@@ -388,7 +405,8 @@ collaboration, and marketplace publishing are out of scope.
 Before the first explanation, the extension gathers bounded local evidence:
 project manifests, README and architecture-style documents, selected source
 files, and a small symbol outline. Rust, Go, Python, JavaScript, and TypeScript symbols use Tree-sitter; other
-symbols use VS Code providers where available. Function context adds related types,
+symbols use VS Code providers where available, except SQL, which uses its lexer.
+Function context adds related types,
 imports, directly related helpers, and references where tooling can resolve
 them. For JavaScript and TypeScript, it adds the file's import and
 re-export statements and, under the same budgets as Rust and Go below, the
@@ -445,6 +463,18 @@ definitions, and ambiguous module roots are handled conservatively; imports
 are resolved only against eligible paths and loaded through the shared
 unsaved-buffer-aware reader. Each lookup inspects at most 80 names and 80
 attribute references, reads at most 40 modules, and honors the shared deadline.
+SQL adds preceding `SET search_path`/`USE` context and syntactically referenced
+tables, views, type casts, and named routine calls. It loads only eligible
+repository `.sql` files through the shared unsaved-buffer-aware reader: at most
+100 files, 2 MiB total, 256 KiB per file, and 160 distinct references, honoring
+the shared deadline and depth-1/depth-2 budgets. CTE names are excluded as local
+bindings. Explicit schema names, a basic search path, and the enclosing schema
+help disambiguate names; unresolved or ambiguous schemas are not guessed.
+Repeated definitions with the same name and syntactic signature use the last
+lexical file/statement, with a stated limitation: this is not migration
+execution order. Overloads are matched by name rather than argument types,
+and all matching overloads are disclosed as candidates. SQL source is never
+executed, and no database connection, SQL language server, or extra WASM is needed.
 Snippets sent to the model are labelled with their file path and what
 they contain, and the model is asked to refer to code by file, function, and
 type names in plain prose rather than by identifiers. The "related code" links
@@ -1174,6 +1204,15 @@ webview's content-security policy.
   and package/script roots; ambiguous matches are omitted. Dependencies inside
   nested functions are attributed to those functions, not the enclosing body.
   There is no dedicated notebook or `.pyi` stub support.
+- SQL is a bounded lexer, not a full dialect parser or database catalog.
+  Dynamic SQL, non-SQL routine bodies, runtime schema changes, synonyms,
+  migration execution order, and complete dialect semantics are not resolved.
+  SQL/PL/pgSQL dollar routine bodies are inspected; strings containing SQL are
+  not. Unquoted names are case-folded, while quoted names preserve case.
+  Ordinary comments/whitespace are ignored by fingerprints, but literal
+  contents, executable comments, hints, and operator boundaries are preserved.
+  Overload calls are matched by name, so callers and context can include extra
+  candidates. SQL has no import-diagram edges.
 - The project map is the overview model's reading of bounded evidence
   (READMEs, manifests, API contracts, deployment facts, folder markers, and
   some source files), not an analysis of calls: levels can be wrong and
@@ -1187,7 +1226,7 @@ webview's content-security policy.
   imports without `paths`, and languages other than Rust, Go, Python, JavaScript, and
   TypeScript are not drawn. A child folder counts as one box, however large.
 - Callers are tracked only when VS Code tooling reports them. In languages
-  other than Rust, Go, Python, JavaScript, and TypeScript, only called functions are tracked (not the types,
+  other than Rust, Go, Python, SQL, JavaScript, and TypeScript, only called functions are tracked (not the types,
   constants, or variables a function uses), and only when the installed
   language extension provides go-to-definition. Call sites are found
   textually (a name followed by `(`), so calls through references (passing a
@@ -1233,7 +1272,7 @@ webview's content-security policy.
   accessibility inspection has not been completed.
 - Local descriptions are syntactic: they restate declarations, signatures,
   imports, and comments, not behavior. Languages other than Rust, Go,
-  Python, JavaScript, and TypeScript depend
+  Python, SQL, JavaScript, and TypeScript depend
   on the installed symbol provider's detail; import detection covers JavaScript/
   TypeScript, Python, Go, Java/Kotlin/Scala/Groovy, C#, C/C++, PHP, Ruby, and
   Swift.

@@ -19,9 +19,11 @@ Host. Open a source file there and run **Downside Up: Open Preview to the
 Side**. Mock mode is the default and makes no external requests.
 
 The fixtures are in `fixtures/rust-app`, `fixtures/go-app`, `fixtures/js-app`,
-`fixtures/react-app`, `fixtures/python-app`, and `fixtures/services-app`
+`fixtures/react-app`, `fixtures/python-app`, `fixtures/sql-app`, and `fixtures/services-app`
 (a multi-service project for the project map). Python analysis tests use the
 bundled grammar; they need neither Python nor Pylance installed.
+SQL tests use the bundled lexer and need neither a database nor a SQL language
+server. There is no additional SQL WASM asset or runtime dependency.
 
 ## Architecture and conventions
 

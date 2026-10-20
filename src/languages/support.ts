@@ -34,6 +34,8 @@ export interface LanguageSupport {
   findDependencies(request: DependencyRequest): Promise<DependencyResult>;
   /** Conservative direct calls for local caller lookup; never inferred receiver methods. */
   findDirectCalls?(request: DependencyRequest): Promise<DependencyResult>;
+  /** Fixed limitations shown with this language's local caller picker. */
+  readonly directCallNote?: string;
   /** Manifest basenames needed to resolve direct calls in a bounded local scan. */
   readonly directCallManifests?: readonly string[];
   /**

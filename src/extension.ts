@@ -2830,6 +2830,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
           let result = await incomingCallers(shown.document.uri, position);
           if (preview !== shown || shown.document.version !== version) return;
           let staticLookup = false;
+          let staticNote: string | undefined;
           let lookupCancelled = false;
           if (!result.available) {
             const support = bundledLanguageFor({ languageId: shown.document.languageId, path: shown.document.uri.path });
@@ -2838,6 +2839,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
               const target = await support.findFunction(shown.document, position);
               if (target) {
                 staticLookup = true;
+                staticNote = support.directCallNote;
                 result = {
                   available: true,
                   callers: await vscode.window.withProgress({
@@ -2874,14 +2876,16 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
           if (preview !== shown || shown.document.version !== version) return;
           if (!choices.length) {
             await vscode.window.showInformationMessage(staticLookup
-              ? "No statically resolved direct callers found within the scan limits. Methods, traits/interfaces, macros, callbacks, and files outside the scan may be missing."
+              ? `No statically resolved direct callers found within the scan limits. ${staticNote ?? "Methods, traits/interfaces, macros, callbacks, and files outside the scan may be missing."}`
               : "No callers found in eligible files of this repository. Dynamic calls and callbacks may be missing.");
             return;
           }
           const picked = await vscode.window.showQuickPick(choices, {
             title: `${staticLookup ? "Statically found callers" : "Callers"} of ${entry.name}`,
             placeHolder: staticLookup
-              ? "Bounded direct-call scan; methods, dynamic calls, and macros omitted. Go Back returns."
+              ? staticNote
+                ? `Bounded direct-call scan. ${staticNote} Go Back returns.`
+                : "Bounded direct-call scan; methods, dynamic calls, and macros omitted. Go Back returns."
               : "Open a caller. Use VS Code's Go Back to return. Up to 100 callers; dynamic calls may be missing.",
             matchOnDescription: true
           });

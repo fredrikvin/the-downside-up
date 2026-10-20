@@ -51,6 +51,8 @@ Caller lookup prefers a language extension's incoming Call Hierarchy. Without
 it, Go, Rust, and Python use a bounded local scan of direct free-function calls, labelled
 **Statically found callers**. That fallback omits uncertain receiver methods,
 interface/trait dispatch, macros, and closures; results are not exhaustive.
+SQL also provides a local fallback for routine calls, matched by name rather
+than argument types; overloaded routines can have extra candidate callers.
 Results are limited to eligible files in the current repository. Lookup itself
 makes no AI requests. Navigation
 shows cached explanations; with prefetch enabled and sharing already approved,
@@ -64,6 +66,14 @@ dispatch, inheritance, star imports, and re-exports are not resolved.
 JavaScript/TypeScript dependency lookup uses VS Code's
 built-in TypeScript tooling. Other languages depend on installed extensions
 providing document symbols and go-to-definition; support varies.
+
+SQL has bundled lexer-based support for `CREATE FUNCTION`, `PROCEDURE`,
+`TRIGGER`, and `VIEW` (including materialized views), with table/column outlines
+and bounded cross-file dependency lookup. Common PostgreSQL, MySQL, T-SQL,
+and SQLite forms work without a database or language server. This is not a
+full dialect parser: dynamic SQL, embedded SQL, and standalone queries are
+not supported as explainable units. Repeated definitions use lexical file
+order, not actual migration execution order.
 
 ## Initialize, refresh, and clear
 

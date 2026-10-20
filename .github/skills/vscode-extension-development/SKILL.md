@@ -46,7 +46,9 @@ contract and project-specific constraints.
 - Rust, Go, Python, JavaScript, and TypeScript discovery use bundled Tree-sitter WASM
   (JavaScript and TypeScript resolve uses with the built-in TypeScript
   go-to-definition); other languages use VS
-  Code document-symbol providers and go-to-definition where available. Do not
+  Code document-symbol providers and go-to-definition where available. SQL uses
+  a bundled bounded lexer and static object resolution, without a database.
+  Do not
   assume rust-analyzer, gopls, Pylance, or another language server is installed.
 - Add or change language behavior in `src/languages/<language>/` behind its
   `LanguageSupport` (`src/languages/support.ts`) and registry entry; a new

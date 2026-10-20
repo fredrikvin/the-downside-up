@@ -29,6 +29,10 @@ and ambiguous declarations. It is incomplete: at most 2,000 filesystem entries,
 seconds between operations, and 100 results. Native-provider errors are reported,
 not silently replaced by fallback results. No results means none found within
 the supported analysis and limits, not proof of no callers.
+SQL has the same bounded fallback for calls to routines (`CALL`, `EXEC`,
+`EXECUTE FUNCTION`, `PERFORM`, and named calls). It matches names, not argument
+types, so overloaded routines can show extra candidate callers. It does not
+infer dynamic SQL or a live database's schema.
 The scan respects exclusions and unsaved buffers, is cancellable, and checks a
 selected fallback caller's text again before navigation.
 Lookup makes no AI requests. After navigation, current cached explanations
@@ -92,7 +96,21 @@ using existing sharing consent. Opening the picker does not preload its results.
   properties, and nested functions (not lambdas). It follows same-file helpers,
   imports of repository modules, and same-class `self`/`cls` methods without
   Pylance; dynamic dispatch, inheritance, star imports, and re-exports are not
-  resolved. JavaScript and TypeScript (including JSX and React) are
+  resolved. SQL uses a bundled lexer to find `CREATE FUNCTION`, `PROCEDURE`,
+  `TRIGGER`, and `VIEW` (including materialized views), plus table/column, type,
+  and index outlines. Common PostgreSQL dollar bodies, MySQL `DELIMITER`,
+  T-SQL `GO`, and SQLite trigger blocks need no database or language server.
+  Related table/view definitions and routine calls are resolved from eligible
+  `.sql` files, with basic schema qualification and `SET search_path`/`USE`
+  context. Ambiguous schema names are omitted; overloads are candidates matched
+  by name. Duplicate definitions use the last lexical file/statement, with a
+  limitation, not actual migration execution order. Lookups inspect at most
+  100 files, 2 MiB (256 KiB per file), and 160 references within the shared
+  deadline and dependency budgets. Dynamic SQL, non-SQL routine bodies,
+  embedded SQL, and standalone statements as explainable units are not
+  supported. This is not a complete dialect parser or database catalog.
+  SQL contributes no import-diagram edges.
+  JavaScript and TypeScript (including JSX and React) are
   described and their functions found with bundled parsers too: arrow
   functions, components (also inside `memo` or `forwardRef`), hooks, and
   class and object methods are all functions you can explain, and the
@@ -489,6 +507,12 @@ file summaries. Indentation, spacing, and blank lines do not outdate them;
 literal contents, comments, and syntax-sensitive newlines remain meaningful.
 In Python, changing indentation that changes the parsed structure outdates
 the explanation; reindenting without changing structure does not.
+SQL uses lexical fingerprints: ordinary comments, whitespace, and unquoted
+casing are ignored; quoted identifiers, string contents, and operator
+boundaries are preserved. SQL/PL/pgSQL dollar-quoted routine bodies are
+normalized as SQL, while other dollar literals and non-SQL bodies remain
+literal. Executable comments and optimizer hints remain meaningful. A change
+to a referenced table or view definition also outdates an explanation.
 Other languages conservatively ignore line-ending differences, trailing spaces,
 and blank lines while preserving indentation and in-line spacing; potential
 multiline literals or continuations fall back to exact text.

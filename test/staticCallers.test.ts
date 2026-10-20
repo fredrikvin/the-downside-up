@@ -5,6 +5,7 @@ import { staticCallers } from "../src/context/callers";
 import { goSupport } from "../src/languages/go";
 import { rustSupport } from "../src/languages/rust";
 import { pythonSupport } from "../src/languages/python";
+import { sqlSupport } from "../src/languages/sql";
 
 const scan = vi.hoisted(() => ({ files: [] as string[] }));
 vi.mock("../src/context/inventory", () => ({
@@ -21,7 +22,8 @@ describe("bounded local caller scan", () => {
   it.each([
     { support: goSupport, manifest: "go.mod", path: "main.go", text: "package main\nfunc target() {}\nfunc caller() { target() }\n" },
     { support: rustSupport, manifest: "Cargo.toml", path: "src/main.rs", text: "fn target() {}\nfn caller() { target(); }\n" },
-    { support: pythonSupport, manifest: "pyproject.toml", path: "app.py", text: "def target():\n    pass\n\ndef caller():\n    target()\n" }
+    { support: pythonSupport, manifest: "pyproject.toml", path: "app.py", text: "def target():\n    pass\n\ndef caller():\n    target()\n" },
+    { support: sqlSupport, manifest: "", path: "app.sql", text: "CREATE FUNCTION target() RETURNS int LANGUAGE sql AS $$SELECT 1;$$;\nCREATE VIEW caller AS SELECT target();\n" }
   ])("reverses $support.name direct calls without a language server", async ({ support, manifest, path, text }) => {
     const root = resolve("fixtures");
     scan.files = [manifest, path];

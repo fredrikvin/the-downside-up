@@ -16,6 +16,7 @@ import { staticCallers } from "../../src/context/callers";
 import { goSupport } from "../../src/languages/go";
 import { rustSupport } from "../../src/languages/rust";
 import { pythonSupport } from "../../src/languages/python";
+import { sqlSupport } from "../../src/languages/sql";
 
 async function waitFor<T>(
   operation: () => Promise<T | undefined>,
@@ -140,6 +141,7 @@ export async function run(): Promise<void> {
   const reactRoot = resolve(__dirname, "../../fixtures/react-app");
   const servicesRoot = resolve(__dirname, "../../fixtures/services-app");
   const pythonRoot = resolve(__dirname, "../../fixtures/python-app");
+  const sqlRoot = resolve(__dirname, "../../fixtures/sql-app");
   // VS Code rejects a second folder change in this session, so all folders are added at once.
   assert.ok(vscode.workspace.updateWorkspaceFolders(
     1,
@@ -148,8 +150,9 @@ export async function run(): Promise<void> {
     { uri: vscode.Uri.file(goRoot), name: "go-app" },
     { uri: vscode.Uri.file(reactRoot), name: "react-app" },
     { uri: vscode.Uri.file(servicesRoot), name: "services-app" },
-    { uri: vscode.Uri.file(pythonRoot), name: "python-app" }
-  ), "The JavaScript, Go, React, services, and Python fixture folders are added.");
+    { uri: vscode.Uri.file(pythonRoot), name: "python-app" },
+    { uri: vscode.Uri.file(sqlRoot), name: "sql-app" }
+  ), "The JavaScript, Go, React, services, Python, and SQL fixture folders are added.");
   const jsFile = resolve(jsRoot, "src/checkout.js");
   const jsDocument = await vscode.workspace.openTextDocument(vscode.Uri.file(jsFile));
   const jsEditor = await vscode.window.showTextDocument(jsDocument, vscode.ViewColumn.One);
@@ -196,12 +199,13 @@ export async function run(): Promise<void> {
   }, "TypeScript incoming call hierarchy");
   assert.ok(nativeCallers.callers.some((caller) => caller.name === "checkout"), "Native incoming calls locate persist's caller.");
   assert.equal(api.allExplanations().length, callersBefore, "Looking up callers does not request explanations.");
-  for (const { root, path, support } of [
-    { root: rustRoot, path: "src/main.rs", support: rustSupport },
-    { root: goRoot, path: "main.go", support: goSupport },
-    { root: pythonRoot, path: "main.py", support: pythonSupport }
+  for (const { root, path, support, callerName } of [
+    { root: rustRoot, path: "src/main.rs", support: rustSupport, callerName: "main" },
+    { root: goRoot, path: "main.go", support: goSupport, callerName: "main" },
+    { root: pythonRoot, path: "main.py", support: pythonSupport, callerName: "main" },
+    { root: sqlRoot, path: "routines.sql", support: sqlSupport, callerName: "public.checkout_first()" }
   ]) {
-    await support.initialize!(extension.extensionPath);
+    await support.initialize?.(extension.extensionPath);
     const document = await vscode.workspace.openTextDocument(vscode.Uri.file(resolve(root, path)));
     const fn = (await support.listFunctions!(document.getText(), path)).find((item) => item.name === "checkout");
     assert.ok(fn);
@@ -213,7 +217,7 @@ export async function run(): Promise<void> {
       if (await sharingExclusion(root, absolute)) return undefined;
       return (await vscode.workspace.openTextDocument(vscode.Uri.file(absolute))).getText();
     }, () => false);
-    assert.ok(callers.some((caller) => caller.name === "main"), `${support.name} fallback finds checkout's main caller without a language server.`);
+    assert.ok(callers.some((caller) => caller.name === callerName), `${support.name} fallback finds checkout's caller without a language server.`);
   }
   assert.equal(api.allExplanations().length, callersBefore, "Static caller lookup does not request explanations.");
   const hoverText = async (document: vscode.TextDocument, needle: string, offset: number): Promise<string> => {
@@ -430,6 +434,29 @@ export async function run(): Promise<void> {
     "the Python repository's import structure");
   assert.ok(pythonFolder.edges.includes("main.py > library"), "Python import diagrams use bundled resolution.");
   console.log("Downside Up integration tests: Python discovery, callers, explanation, and structure completed.");
+
+  const sqlDocument = await vscode.workspace.openTextDocument(vscode.Uri.file(resolve(sqlRoot, "routines.sql")));
+  const sqlCursor = sqlDocument.positionAt(sqlDocument.getText().indexOf("FUNCTION public.checkout") + 18);
+  const sqlTarget = await sqlSupport.findFunction(sqlDocument, sqlCursor);
+  assert.equal(sqlTarget?.analysis, "sql-lexer", "SQL discovery needs neither a database nor a language server.");
+  assert.equal(sqlTarget?.qualifiedName, "public.checkout(integer)");
+  const sqlSchema = await vscode.workspace.openTextDocument(vscode.Uri.file(resolve(sqlRoot, "schema.sql")));
+  const sqlOutline = await buildFileOverview(sqlSchema, "schema.sql");
+  assert.ok(sqlOutline.entries.some((entry) => entry.kindLabel === "Column" && entry.name === "title"));
+  assert.ok(sqlOutline.entries.some((entry) => entry.kindLabel === "View" && entry.explainable));
+  const sqlContext = await gatherFunctionContext(sqlTarget!, sqlDocument, await gatherInventory(sqlRoot));
+  assert.ok(sqlContext.inputs.some((input) => input.path === "routines.sql" && input.description.includes("reserve")));
+  const sqlEditor = await vscode.window.showTextDocument(sqlDocument, vscode.ViewColumn.One);
+  const sqlBefore = api.allExplanations().length;
+  sqlEditor.selection = new vscode.Selection(sqlCursor, sqlCursor);
+  await vscode.commands.executeCommand("downsideUp.showFileOverview");
+  assert.equal(api.allExplanations().length, sqlBefore, "Opening SQL with only a cursor never generates.");
+  sqlEditor.selection = new vscode.Selection(sqlCursor, sqlCursor.translate(0, 1));
+  await vscode.commands.executeCommand("downsideUp.showFileOverview");
+  await waitFor(async () => api.previewExplanations().some((view) =>
+    view.functionName === "public.checkout(integer)" && view.status === "current") ? true : undefined,
+  "the SQL explanation from a selection");
+  console.log("Downside Up integration tests: SQL discovery, callers, context, outlines, and explicit explanation completed.");
 
   const goDocument = await vscode.workspace.openTextDocument(vscode.Uri.file(resolve(goRoot, "main.go")));
   await waitFor(
