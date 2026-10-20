@@ -1,4 +1,4 @@
-import { basename, relative, sep } from "node:path";
+import { basename, extname, relative, sep } from "node:path";
 import * as vscode from "vscode";
 import { inputsMatch, explanationCacheKey } from "./cache/freshness";
 import type { RepositoryCacheStore } from "./cache/store";
@@ -6,7 +6,11 @@ import { cachedUsage, type CachedUsage } from "./cache/usage";
 import { cacheKey, fingerprint } from "./core/fingerprint";
 import type {
   ExplanationFormat,
+  ComparisonRecord,
+  ComparisonSideRecord,
+  ComparisonSpan,
   ExplanationRecord,
+  FileComparison,
   FileSummaryRecord,
   FolderSummary,
   FolderSummaryRecord,
@@ -26,6 +30,7 @@ import type {
   RepositoryPriming,
   Usage
 } from "./core/types";
+import { comparisonProblem, describeIdentity, type ComparisonSnapshot, type SideSnapshot } from "./context/comparison";
 import { gatherInventory, sharingExclusion, type RepositoryInventory } from "./context/inventory";
 import { checkedProjectMap, outlineText } from "./context/projectMap";
 import {
@@ -34,9 +39,11 @@ import {
 } from "./context/related";
 import { addLocalSymbolOutline } from "./context/symbolIndex";
 import { currentPolicy } from "./context/policy";
-import { languageFor, sourceFingerprint } from "./languages/registry";
+import { bundledLanguageIdForPath, languageFor, sourceFingerprint } from "./languages/registry";
 import { normalizeStepLines } from "./presentation/stepLines";
 import {
+  COMPARISON_PROMPT_VERSION,
+  comparisonPrompt,
   EXPLANATION_PROMPT_VERSION,
   explanationPrompt,
   fileSummaryPrompt,
@@ -50,6 +57,7 @@ import {
   reviewPrompt
 } from "./generation/prompts";
 import type {
+  ComparisonPromptInput,
   ExplanationPromptInput,
   FileSummaryPromptInput,
   FlowCatalogEntry,
@@ -153,6 +161,30 @@ const MAX_FILE_SUMMARY_SOURCE_BYTES = 24 * 1024;
 
 function fileSummaryKey(path: string, descriptor: ProviderDescriptor): string {
   return cacheKey([path, descriptor.kind, descriptor.modelId, EXPLANATION_PROMPT_VERSION]);
+}
+
+function comparisonKey(snapshot: ComparisonSnapshot, descriptor: ProviderDescriptor): string {
+  const { original, modified } = snapshot;
+  return cacheKey(["comparison", original.identity, original.path, modified.identity, modified.path, descriptor.kind, descriptor.modelId, COMPARISON_PROMPT_VERSION]);
+}
+
+const sideRecord = (side: SideSnapshot): ComparisonSideRecord => ({ path: side.path, identity: side.identity, fingerprint: side.fingerprint, lines: side.lines });
+
+/** A saved comparison, current or not. */
+export interface SavedComparison {
+  readonly comparison: FileComparison;
+  /** False when either side's text changed since the comparison was made. */
+  readonly current: boolean;
+  readonly savedAt: number;
+  readonly model: string;
+  readonly usage?: Usage;
+  readonly original: ComparisonSideRecord;
+  readonly modified: ComparisonSideRecord;
+}
+
+/** Keeps a span only when it lies inside a present side's lines, so links never point at lines that are not there. */
+function checkedSpan(span: ComparisonSpan, side: SideSnapshot): ComparisonSpan {
+  return side.state === "present" && span.start >= 1 && span.end >= span.start && span.end <= side.lines ? span : { start: 0, end: 0 };
 }
 
 function folderSummaryKey(path: string, descriptor: ProviderDescriptor): string {
@@ -1182,6 +1214,87 @@ export class ExplanationService {
     return { summary: record.summary, usage: generated.usage };
   }
 
+  /** Cache-only lookup of a saved comparison for exactly these two sides; never generates. */
+  async findComparison(snapshot: ComparisonSnapshot): Promise<SavedComparison | undefined> {
+    const record = (await this.options.store.read(snapshot.root)).comparisons?.[comparisonKey(snapshot, this.options.describeProvider())];
+    return record ? savedComparison(record, snapshot) : undefined;
+  }
+
+  /**
+   * Explains what the change between two exact versions of one file does,
+   * on explicit request only, with one bounded request holding both sides.
+   * `reread` reads the sides again after the model answers; a result is
+   * rejected, not saved, when either side changed meanwhile.
+   */
+  async explainComparison(
+    snapshot: ComparisonSnapshot,
+    reread: () => Promise<ComparisonSnapshot>,
+    signal?: AbortSignal
+  ): Promise<SavedComparison & { usage?: Usage; cached: boolean }> {
+    const { root } = snapshot;
+    const startingFence = this.fence(root);
+    const descriptor = this.options.describeProvider();
+    const problem = comparisonProblem(snapshot);
+    if (problem) throw new Error(problem);
+    const existing = await this.findComparison(snapshot);
+    if (existing?.current) return { ...existing, cached: true };
+    const restricted = await (await currentPolicy()).repositoryRestriction(root);
+    if (restricted) throw new Error(`Nothing was sent because ${restricted}.`);
+    const path = snapshot.modified.state === "present" ? snapshot.modified.path : snapshot.original.path;
+    const side = (version: SideSnapshot): ComparisonPromptInput["original"] => ({
+      path: version.path,
+      label: describeIdentity(version.identity),
+      present: version.state === "present",
+      source: version.text
+    });
+    const repositoryPurpose = (await this.options.store.read(root)).overview?.value.purpose;
+    const input: ComparisonPromptInput = {
+      repositoryName: basename(root),
+      languageId: bundledLanguageIdForPath(path) ?? (extname(path).slice(1) || "text"),
+      original: side(snapshot.original),
+      modified: side(snapshot.modified),
+      ...(repositoryPurpose ? { repositoryPurpose } : {})
+    };
+    const [system, user] = comparisonPrompt(input);
+    const requestBytes = Buffer.byteLength(system + user, "utf8");
+    if (requestBytes > this.maxRequestBytes()) throw tooLarge("change", requestBytes, this.maxRequestBytes());
+    assertNotCancelled(signal);
+    if (descriptor.kind !== "mock" && !(await this.options.authorizeExternalData(root, descriptor, requestBytes, signal))) {
+      throw new DOMException("External code sharing was not authorized.", "AbortError");
+    }
+    const generated = await (await this.options.createProvider(descriptor)).explainComparison(input, signal);
+    assertNotCancelled(signal);
+    const latest = await reread();
+    if (this.fence(root) !== startingFence ||
+        latest.original.fingerprint !== snapshot.original.fingerprint || latest.original.identity !== snapshot.original.identity ||
+        latest.modified.fingerprint !== snapshot.modified.fingerprint || latest.modified.identity !== snapshot.modified.identity) {
+      throw new Error("The files changed while the change was being explained, so the result was discarded.");
+    }
+    const comparison: FileComparison = {
+      ...generated.value,
+      changes: generated.value.changes.map((change) => ({
+        ...change,
+        original: checkedSpan(change.original, snapshot.original),
+        modified: checkedSpan(change.modified, snapshot.modified)
+      }))
+    };
+    const record: ComparisonRecord = {
+      original: sideRecord(snapshot.original),
+      modified: sideRecord(snapshot.modified),
+      comparison,
+      usage: generated.usage,
+      provider: descriptor.kind,
+      model: descriptor.modelId,
+      promptVersion: COMPARISON_PROMPT_VERSION,
+      savedAt: Date.now()
+    };
+    await this.options.store.update(root, (current) => this.fence(root) !== startingFence ? current : {
+      ...current,
+      comparisons: { ...current.comparisons, [comparisonKey(snapshot, descriptor)]: record }
+    });
+    return { ...savedComparison(record, snapshot), usage: generated.usage, cached: false };
+  }
+
   async clearCache(root: string): Promise<void> {
     this.generationFences.set(root, this.fence(root) + 1);
     await this.options.store.clear(root);
@@ -1190,4 +1303,16 @@ export class ExplanationService {
   readCache(root: string) {
     return this.options.store.read(root);
   }
+}
+
+function savedComparison(record: ComparisonRecord, snapshot: ComparisonSnapshot): SavedComparison {
+  return {
+    comparison: record.comparison,
+    current: record.original.fingerprint === snapshot.original.fingerprint && record.modified.fingerprint === snapshot.modified.fingerprint,
+    savedAt: record.savedAt,
+    model: record.model,
+    ...(record.usage ? { usage: record.usage } : {}),
+    original: record.original,
+    modified: record.modified
+  };
 }

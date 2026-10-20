@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { panelHtml, type ExplanationView, type PanelState, type Crumb } from "../src/presentation/panel";
+import { panelHtml, type ExplanationView, type PanelState, type Crumb, type ChangeView } from "../src/presentation/panel";
 import type { Flowchart } from "../src/core/types";
 
 class TestElement {
@@ -34,7 +34,7 @@ function webviewHelpers() {
     if (!elements.has(id)) elements.set(id, new TestElement("button"));
     return elements.get(id)!;
   };
-  const helpers = new Function("acquireVsCodeApi", "document", "window", script + "\nreturn { layoutFlow, downwardPath, renderEntry, renderAiBody, missingFormat, renderHeader, renderCrumbs, renderActivity, renderPageActions };")(
+  const helpers = new Function("acquireVsCodeApi", "document", "window", script + "\nreturn { layoutFlow, downwardPath, renderEntry, renderAiBody, missingFormat, renderHeader, renderCrumbs, renderActivity, renderPageActions, renderChange };")(
     () => ({ getState: () => ({}), postMessage: (message: unknown) => messages.push(message) }),
     {
       getElementById: element,
@@ -53,6 +53,7 @@ function webviewHelpers() {
     renderCrumbs(crumbs: readonly Crumb[]): void;
     renderActivity(state: Pick<PanelState, "busy" | "notice" | "folder" | "stats">): void;
     renderPageActions(state: Partial<PanelState>): void;
+    renderChange(change: ChangeView): TestElement[];
   };
   messages.length = 0;
   return { ...helpers, element, messages };
@@ -375,5 +376,48 @@ describe("preview webview document", () => {
     expect(format.filter((node) => node.className.startsWith("skeleton"))).toHaveLength(4);
     expect(format.some((node) => node.attributes.get("aria-busy") === "true")).toBe(true);
     expect(format.some((node) => node.attributes.get("aria-hidden") === "true")).toBe(true);
+  });
+});
+
+describe("change view", () => {
+  const base: ChangeView = {
+    key: "k", fileName: "a.txt", facts: "", originalLabel: "Last commit", modifiedLabel: "Working copy",
+    status: "ready", canExplain: true
+  };
+  const texts = (nodes: TestElement[]) => nodes.flatMap((node) => node.elements()).flatMap((node) => [node.textContent, ...node.children.filter((child) => typeof child === "string")]);
+  const event = { preventDefault: () => undefined, stopPropagation: () => undefined };
+
+  it("asks before explaining and posts only an explicit request", () => {
+    const { renderChange, messages } = webviewHelpers();
+    const nodes = renderChange(base).flatMap((node) => node.elements());
+    expect(texts(renderChange(base))).toContain("This change has not been explained yet.");
+    nodes.find((node) => node.textContent === "Explain changes")?.listeners.get("click")?.();
+    expect(messages).toContainEqual({ type: "explainChanges" });
+  });
+
+  it("shows a saved result as text with host-owned links", () => {
+    const { renderChange, messages } = webviewHelpers();
+    const view: ChangeView = {
+      ...base,
+      status: "outdated",
+      result: {
+        summary: "<b>Retries</b> now.",
+        changes: [{ title: "Retry", before: "No retry", after: "Retries twice", when: "On failure", flow: "", links: [{ referenceId: "ref-1", caption: "Modified lines 3–5" }] }],
+        outside: "", possibleEffects: ["More load"], limitations: [], model: "m"
+      }
+    };
+    const nodes = renderChange(view).flatMap((node) => node.elements());
+    expect(texts(renderChange(view)).join(" ")).toContain("Outdated");
+    expect(nodes.some((node) => node.tagName === "script" || node.tagName === "b")).toBe(false);
+    nodes.find((node) => node.textContent === "Modified lines 3–5")?.listeners.get("click")?.(event);
+    expect(messages).toContainEqual({ type: "navigate", referenceId: "ref-1" });
+  });
+
+  it("shows loading and unavailable states without an explain button", () => {
+    const { renderChange } = webviewHelpers();
+    expect(texts(renderChange({ ...base, status: "loading", canExplain: false }))).toContain("Cancel");
+    const unavailable = renderChange({ ...base, status: "unavailable", canExplain: false, message: "Binary file" });
+    expect(texts(unavailable)).toContain("Binary file");
+    expect(texts(unavailable)).not.toContain("Explain changes");
   });
 });

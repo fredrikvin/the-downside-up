@@ -1,5 +1,6 @@
 import type {
   ExplanationFormat,
+  FileComparisonDraft,
   FileSummary,
   Flowchart,
   FolderSummary,
@@ -131,6 +132,24 @@ export function formatSchemaFor(format: ExplanationFormat): Record<string, unkno
 }
 
 export const fileSummarySchema = objectSchema({ summary: string }, ["summary"]);
+
+const spanSchema = objectSchema({ startLine: integer, endLine: integer }, ["startLine", "endLine"]);
+export const comparisonSchema = objectSchema(
+  {
+    summary: string,
+    changes: {
+      type: "array",
+      items: objectSchema(
+        { title: string, before: string, after: string, when: string, flow: string, original: spanSchema, modified: spanSchema },
+        ["title", "before", "after", "when", "flow", "original", "modified"]
+      )
+    },
+    outside: string,
+    possibleEffects: stringArray,
+    limitations: stringArray
+  },
+  ["summary", "changes", "outside", "possibleEffects", "limitations"]
+);
 
 const flowNodeSchema = objectSchema(
   {
@@ -542,4 +561,40 @@ export function parseFolderSummary(value: unknown): FolderSummary {
 
 export function parseFileSummary(value: unknown): FileSummary {
   return { summary: readText(record(value), "summary", 400).trim() };
+}
+
+function readSpan(value: unknown): { start: number; end: number } {
+  const source = record(value);
+  const start = source.startLine;
+  const end = source.endLine;
+  if (!Number.isInteger(start) || !Number.isInteger(end) || (start as number) < 1 || (end as number) < (start as number)) return { start: 0, end: 0 };
+  return { start: start as number, end: end as number };
+}
+
+/** A change explanation for one file; changes with no title or no behavior text are dropped rather than failing it. */
+export function parseComparison(value: unknown): FileComparisonDraft {
+  const source = record(value);
+  const changes = Array.isArray(source.changes) ? source.changes.slice(0, 60) : [];
+  const text = (item: Record<string, unknown>, key: string, max: number) =>
+    typeof item[key] === "string" && (item[key] as string).length <= max ? (item[key] as string).trim() : "";
+  return {
+    summary: readText(source, "summary", 800).trim(),
+    changes: changes.flatMap((change) => {
+      if (typeof change !== "object" || change === null) return [];
+      const item = change as Record<string, unknown>;
+      const parsed = {
+        title: text(item, "title", 200),
+        before: text(item, "before", 1_200),
+        after: text(item, "after", 1_200),
+        when: text(item, "when", 600),
+        flow: text(item, "flow", 800),
+        original: readSpan(item.original),
+        modified: readSpan(item.modified)
+      };
+      return parsed.title && (parsed.before || parsed.after) ? [parsed] : [];
+    }),
+    outside: optionalText(source, "outside", 1_200),
+    possibleEffects: readStrings(source.possibleEffects, "possible effects", 10).map((entry) => entry.trim()).filter(Boolean),
+    limitations: readStrings(source.limitations, "limitations", 10).map((entry) => entry.trim()).filter(Boolean)
+  };
 }

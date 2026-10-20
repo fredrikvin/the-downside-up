@@ -145,6 +145,46 @@ export interface FolderView {
   readonly tree?: { readonly name: string; readonly done: number; readonly total: number; readonly running: readonly string[] };
 }
 
+/** A link from a change to lines in one side of the diff; `referenceId` is host-owned and checked against that side's snapshot. */
+export interface ChangeLinkView {
+  readonly referenceId: string;
+  readonly caption: string;
+}
+
+/** What a diff's saved explanation says; all text, rendered as text. */
+export interface ChangeResultView {
+  readonly summary: string;
+  readonly changes: ReadonlyArray<{
+    readonly title: string;
+    readonly before: string;
+    readonly after: string;
+    readonly when: string;
+    readonly flow: string;
+    readonly links: readonly ChangeLinkView[];
+  }>;
+  readonly outside: string;
+  readonly possibleEffects: readonly string[];
+  readonly limitations: readonly string[];
+  readonly model: string;
+  readonly usage?: string;
+}
+
+/** A native diff shown in place of a file: its two versions and, when saved or requested, what the change does. */
+export interface ChangeView {
+  /** Identifies the pair, so the panel keeps its place only while the same pair is shown. */
+  readonly key: string;
+  readonly fileName: string;
+  readonly facts: string;
+  readonly originalLabel: string;
+  readonly modifiedLabel: string;
+  /** `ready`: nothing saved yet; `unavailable`: the pair cannot be explained, and `message` says why. */
+  readonly status: "ready" | "loading" | "current" | "outdated" | "failed" | "unavailable";
+  readonly detail?: string;
+  readonly message?: string;
+  readonly canExplain: boolean;
+  readonly result?: ChangeResultView;
+}
+
 export interface PanelState {
   readonly provider: string;
   readonly models: { readonly explanation: string; readonly overview?: string };
@@ -162,6 +202,8 @@ export interface PanelState {
   readonly document?: FileOverview;
   /** Shown instead of a file when a folder is previewed. */
   readonly folder?: FolderView;
+  /** Shown instead of a file or folder when the active editor is a native diff. */
+  readonly change?: ChangeView;
   readonly breadcrumbs?: readonly Crumb[];
   readonly explanations: readonly ExplanationView[];
   readonly overview?: RepositoryOverview;
@@ -186,6 +228,7 @@ export type PanelAction =
   | { readonly type: "regenerate"; readonly entryId: string }
   | { readonly type: "cancelEntry"; readonly entryId: string }
   | { readonly type: "cancel" }
+  | { readonly type: "explainChanges" }
   | { readonly type: "summarizeFolder" }
   | { readonly type: "summarizeTree" }
   | { readonly type: "describeFlows" }
@@ -275,6 +318,12 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
     .stats button { font-size: 11px; padding: 2px 6px; min-height: 24px; }
     @container (max-width: 600px) { .toolbar .spacer { display: none; } }
     @container (max-width: 420px) { .toolbar .btn-label { display: none; } .toolbar .tool-button { width: 28px; padding: 6px; } .model-options { flex-direction: column; } }
+    .change-item { margin: 0 0 18px; padding-left: 12px; border-left: 2px solid var(--separator); }
+    .change-item h3 { margin: 0 0 6px; }
+    .change-sides { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 4px 16px; margin: 6px 0; }
+    .change-sides h5, .change-item h5 { margin: 6px 0 2px; font-size: .8em; text-transform: uppercase; letter-spacing: .04em; color: var(--vscode-descriptionForeground); }
+    .change-sides p, .change-item p { margin: 0 0 4px; }
+    .change-links { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: .85em; margin-bottom: 4px; }
     .notice { margin: 8px 0 0; font-size: .9em; white-space: pre-line; }
     .notice.error, .error { color: var(--vscode-errorForeground); }
     .entry { position: relative; margin: 0; padding: 0 0 2px 12px; border-left: 2px solid transparent; }
@@ -1716,6 +1765,72 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
      * plain folders their files and import structure; support folders only a
      * short description and their contents.
      */
+    function explainChangesButton(change, label) {
+      const button = el("button", "explain", label);
+      button.type = "button";
+      button.disabled = Boolean(state && state.busy);
+      button.title = "Sends both versions of this file to the selected Functions model; uses provider quota or billing and asks for sharing approval if needed";
+      button.addEventListener("click", () => post({ type: "explainChanges" }));
+      return button;
+    }
+
+    function renderChange(change) {
+      const parts = [el("p", "muted small", change.originalLabel + " → " + change.modifiedLabel)];
+      if (change.status === "loading") {
+        parts.push(explanationSkeleton(change.detail || "Explaining the changes…", () => post({ type: "cancel" })));
+        return parts;
+      }
+      if (change.message) parts.push(inline(el("p", change.status === "failed" ? "error" : "muted", ""), change.message));
+      const result = change.result;
+      if (!result) {
+        if (change.canExplain) {
+          if (change.status === "ready") parts.push(el("p", "muted", "This change has not been explained yet."));
+          parts.push(explainChangesButton(change, change.status === "failed" ? "Try again" : "Explain changes"));
+        }
+        return parts;
+      }
+      if (change.status === "outdated") {
+        const note = el("p", "muted small", "Outdated: one of the versions changed since this was explained. ");
+        if (change.canExplain) note.append(explainChangesButton(change, "Explain again"));
+        parts.push(note);
+      }
+      const summary = el("p", "summary");
+      inline(summary, result.summary);
+      summary.title = "AI-generated explanation of this change";
+      parts.push(summary);
+      if (result.changes.length) parts.push(el("h2", "folder-heading", "What changed"));
+      for (const item of result.changes) {
+        const section = el("section", "change-item");
+        section.append(inline(el("h3"), item.title));
+        if (item.links.length) {
+          const links = el("div", "change-links");
+          for (const link of item.links) links.append(action(link.caption, () => post({ type: "navigate", referenceId: link.referenceId })));
+          section.append(links);
+        }
+        const sides = el("div", "change-sides");
+        for (const [heading, text] of [["Before", item.before], ["After", item.after]]) {
+          if (!text) continue;
+          const column = el("div");
+          column.append(el("h5", "", heading), inline(el("p"), text));
+          sides.append(column);
+        }
+        if (sides.children.length) section.append(sides);
+        if (item.when) section.append(el("h5", "", "When it differs"), inline(el("p"), item.when));
+        if (item.flow) section.append(el("h5", "", "Effect on flow"), inline(el("p"), item.flow));
+        parts.push(section);
+      }
+      if (result.outside) parts.push(el("h2", "folder-heading", "Outside functions"), inline(el("p"), result.outside));
+      if (result.possibleEffects.length) {
+        parts.push(el("h2", "folder-heading", "Possible consequences"), el("p", "muted small", "Not shown by this code; things worth checking."));
+        const list = el("ul");
+        for (const effect of result.possibleEffects) list.append(inline(el("li"), effect));
+        parts.push(list);
+      }
+      if (result.limitations.length) parts.push(el("p", "muted small", "Limits: " + result.limitations.join(" ")));
+      parts.push(el("p", "muted small", ["Explained with " + result.model, result.usage].filter(Boolean).join(" · ")));
+      return parts;
+    }
+
     function renderFolder(folder) {
       const level = folder.level;
       // The project and groups lead with their summary and map; requests for more come last.
@@ -1781,8 +1896,9 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
       state = next;
       renderActivity(next);
       const loading = next.loading;
-      const file = loading ? undefined : next.document;
-      const folder = file || loading ? undefined : next.folder;
+      const change = loading ? undefined : next.change;
+      const file = loading || change ? undefined : next.document;
+      const folder = file || loading || change ? undefined : next.folder;
       renderCrumbs(next.breadcrumbs);
       renderHeader(next);
       renderPageActions(next);
@@ -1800,8 +1916,8 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
         approve.addEventListener("click", () => post({ type: "approveSharing" }));
         consent.append(approve, el("p", "small muted", "Approval is saved for this repository and model. Background requests use your provider's usage limits or billing. You can also press Explain beside a function to approve its first request."));
       }
-      byId("title").textContent = loading ? loading.name : file ? file.fileName : folder ? folder.name : "Downside Up";
-      byId("facts").textContent = file
+      byId("title").textContent = loading ? loading.name : change ? change.fileName : file ? file.fileName : folder ? folder.name : "Downside Up";
+      byId("facts").textContent = change ? change.facts : file
         ? [file.path, file.languageId, file.lineCount + " lines"].join(" · ")
         : folder ? [folder.path || "repository root", plural(folder.fileCount, "file")].join(" · ") : loading ? "Opening…" : "";
       const summary = byId("summary");
@@ -1815,9 +1931,9 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
       purpose.hidden = !localPurpose;
       purpose.textContent = localPurpose;
       const views = new Map((next.explanations || []).map((view) => [view.entryId, view]));
-      byId("entries").replaceChildren(...(file ? file.entries.map((entry) => renderEntry(entry, views)) : folder ? renderFolder(folder) : loading ? [renderSkeleton(true)] : []));
+      byId("entries").replaceChildren(...(change ? renderChange(change) : file ? file.entries.map((entry) => renderEntry(entry, views)) : folder ? renderFolder(folder) : loading ? [renderSkeleton(true)] : []));
       const empty = byId("empty");
-      empty.hidden = Boolean(loading || (file && file.entries.length) || (folder && folder.children.length));
+      empty.hidden = Boolean(loading || change || (file && file.entries.length) || (folder && folder.children.length));
       empty.textContent = file ? "Nothing to describe in this file." : folder ? "Nothing to describe in this folder." : "Open a source file to see its description here.";
       byId("limitations").textContent = file ? file.limitations.join("\\n") : folder ? folder.limitations.join("\\n") : "";
       renderOverview(next.overview);
@@ -1830,10 +1946,10 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
         const target = document.querySelector("#" + CSS.escape(focusedEntry.id) + " " + selector);
         if (target) target.focus({ preventScroll: true });
       }
-      const fileKey = file ? file.path : folder ? "folder:" + folder.path : loading ? "loading:" + loading.name : "";
+      const fileKey = change ? "change:" + change.key : file ? file.path : folder ? "folder:" + folder.path : loading ? "loading:" + loading.name : "";
       if (fileKey !== renderedFile) {
         renderedFile = fileKey;
-        if (folder || loading) window.scrollTo(0, 0);
+        if (folder || loading || change) window.scrollTo(0, 0);
         else scrollToLine(sourceLine);
       } else {
         // Re-rendering the same file keeps the reader's place.
@@ -2009,7 +2125,7 @@ export class ExplanationPanel {
         const type = fields.type;
         if (type === "ready") {
           this.replay();
-        } else if (type === "cancel" || type === "refreshContext" || type === "clearCache" || type === "chooseModel" || type === "chooseOverviewModel" || type === "regenerateOutdated" || type === "summarizeFolder" || type === "summarizeTree" || type === "describeFlows" || type === "approveSharing") {
+        } else if (type === "cancel" || type === "refreshContext" || type === "clearCache" || type === "chooseModel" || type === "chooseOverviewModel" || type === "regenerateOutdated" || type === "summarizeFolder" || type === "summarizeTree" || type === "describeFlows" || type === "approveSharing" || type === "explainChanges") {
           onAction({ type });
         } else if (type === "expand" || type === "regenerate" || type === "cancelEntry" || type === "showCallers") {
           const entryId = stringField("entryId");

@@ -34,6 +34,7 @@ export function cachedUsage(cache: RepositoryCache): CachedUsage {
     add("Functions", record.provider, record.model ?? "Unknown model", record.usage);
     for (const usage of Object.values(record.formatUsage ?? {})) add("Functions", record.provider, record.model ?? "Unknown model", usage);
   }
+  for (const record of Object.values(cache.comparisons ?? {})) add("Functions", record.provider, record.model, record.usage);
   for (const record of Object.values(cache.fileSummaries ?? {})) add("Functions", record.provider, record.model, record.usage);
   for (const record of [...Object.values(cache.folderSummaries ?? {}), ...Object.values(cache.projectFlows ?? {})]) {
     add("Overview", record.provider, record.model, record.usage);

@@ -340,6 +340,8 @@ export interface RepositoryCache {
   readonly folderSummaries?: Record<string, FolderSummaryRecord>;
   /** AI project flows keyed by folder path, provider, model, and prompt version. */
   readonly projectFlows?: Record<string, ProjectFlowsRecord>;
+  /** AI explanations of what a diff changes, keyed by both sides' identities and paths, provider, model, and prompt version. */
+  readonly comparisons?: Record<string, ComparisonRecord>;
   /**
    * The project map, made in the same request as the overview but saved
    * apart from it, so map changes never outdate saved explanations.
@@ -353,6 +355,65 @@ export interface FileSummaryRecord {
   readonly summary: string;
   /** Fingerprint of the file text (whitespace-insensitive) the summary was made from. */
   readonly fingerprint: string;
+  readonly provider: ProviderKind;
+  readonly model: string;
+  readonly promptVersion: string;
+  readonly savedAt: number;
+}
+
+/** A one-based inclusive line span in one side of a comparison; both ends zero when the change has no lines there. */
+export interface ComparisonSpan {
+  readonly start: number;
+  readonly end: number;
+}
+
+/** One behavior change found in a comparison, before the host has checked its line spans. */
+export interface ComparisonChangeDraft {
+  readonly title: string;
+  /** How the code behaved before; empty for added code. */
+  readonly before: string;
+  /** How the code behaves after; empty for removed code. */
+  readonly after: string;
+  /** The conditions under which the behavior differs. */
+  readonly when: string;
+  /** Effects on flow, such as an added decision, a removed path, an earlier exit, reordering, or different failure handling. */
+  readonly flow: string;
+  readonly original: ComparisonSpan;
+  readonly modified: ComparisonSpan;
+}
+
+/** A model's explanation of one file's change, before the host has checked its line spans. */
+export interface FileComparisonDraft {
+  readonly summary: string;
+  readonly changes: readonly ComparisonChangeDraft[];
+  /** Changes outside functions, such as imports, constants, configuration, and comments. */
+  readonly outside: string;
+  /** Consequences that might follow but are not shown by the code; kept apart from observed behavior. */
+  readonly possibleEffects: readonly string[];
+  readonly limitations: readonly string[];
+}
+
+/** A comparison explanation whose spans were checked against the snapshots it was made from. */
+export interface FileComparison extends Omit<FileComparisonDraft, "changes"> {
+  readonly changes: readonly ComparisonChangeDraft[];
+}
+
+/** What a comparison recorded about one side: its identity, path, and the text fingerprint it was explained from. */
+export interface ComparisonSideRecord {
+  /** Repository-relative path at that side, which differs between the sides for a rename. */
+  readonly path: string;
+  /** What the side is: `working`, `index`, `revision:<hash>`, or `absent`. */
+  readonly identity: string;
+  /** Fingerprint of the side's text (whitespace-insensitive); empty when the side has no file. */
+  readonly fingerprint: string;
+  readonly lines: number;
+}
+
+export interface ComparisonRecord {
+  readonly original: ComparisonSideRecord;
+  readonly modified: ComparisonSideRecord;
+  readonly comparison: FileComparison;
+  readonly usage?: Usage;
   readonly provider: ProviderKind;
   readonly model: string;
   readonly promptVersion: string;

@@ -1,6 +1,7 @@
 import { estimateTokens } from "../core/fingerprint";
 import type {
   ExplanationFormat,
+  FileComparisonDraft,
   FileSummary,
   FolderSummary,
   FunctionExplanation,
@@ -13,6 +14,7 @@ import type {
 } from "../core/types";
 import type {
   ExplanationPromptInput,
+  ComparisonPromptInput,
   FileSummaryPromptInput,
   FolderSummaryPromptInput,
   ProjectFlowsPromptInput,
@@ -188,6 +190,19 @@ export class MockProvider implements GenerationProvider {
     signal?: AbortSignal
   ): Promise<GenerationResult<FileSummary>> {
     return this.respond(input.source, { summary: `Mock summary of ${input.path}; the file has not been interpreted.` }, signal);
+  }
+
+  explainComparison(
+    input: ComparisonPromptInput,
+    signal?: AbortSignal
+  ): Promise<GenerationResult<FileComparisonDraft>> {
+    return this.respond(input.original.source + "\0" + input.modified.source, {
+      summary: `Mock comparison of ${input.modified.path}; the change has not been interpreted.`,
+      changes: [],
+      outside: "",
+      possibleEffects: [],
+      limitations: ["Deterministic mock placeholder; not a real explanation of the change."]
+    }, signal);
   }
 
   summarizeFolder(

@@ -2,6 +2,7 @@ import { readFile, stat } from "node:fs/promises";
 import { basename, isAbsolute, relative, resolve, sep } from "node:path";
 import * as vscode from "vscode";
 import { hasConsent, withConsent } from "./cache/consent";
+import { ChangeSession } from "./changeSession";
 import { FileRepositoryCacheStore } from "./cache/store";
 import {
   ExplanationService,
@@ -341,6 +342,29 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     return base;
   };
 
+  /** Reveals lines of one side of the shown diff, clamped to that document. */
+  const revealChangeLines = async (uri: vscode.Uri, startLine: number, endLine: number): Promise<void> => {
+    const editor = vscode.window.visibleTextEditors.find((candidate) => sameUri(candidate.document.uri, uri));
+    const document = editor?.document ?? await vscode.workspace.openTextDocument(uri);
+    const last = Math.max(0, document.lineCount - 1);
+    const first = Math.min(Math.max(startLine - 1, 0), last);
+    const final = Math.min(Math.max(endLine - 1, first), last);
+    const range = new vscode.Range(first, 0, final, document.lineAt(final).text.length);
+    if (editor) {
+      // The diff stays open; showing the document again would open it as a separate tab.
+      editor.selection = new vscode.Selection(range.start, range.end);
+      editor.revealRange(range, vscode.TextEditorRevealType.InCenterIfOutsideViewport);
+    } else {
+      await vscode.window.showTextDocument(document, { selection: range, preserveFocus: false });
+    }
+  };
+
+  const change = new ChangeSession({
+    get service() { return service; },
+    reveal: revealChangeLines,
+    changed: () => render()
+  });
+
   const service = new ExplanationService({
     store: cacheStore,
     describeProvider,
@@ -408,7 +432,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
         : "Your API usage is billed separately. Review OpenAI's data controls; store:false does not guarantee zero provider-side retention.";
       const accept = descriptor.kind === "vscode-lm" ? "Send code to language model" : "Send code to OpenAI";
       const action = await vscode.window.showWarningMessage(
-        `Downside Up will send selected functions, relevant snippets, repository documentation, and (for one-sentence file summaries) the text of files whose functions you explain, from:\n\n${root}\n\n${destination}${estimate}\n\n${terms} This consent is saved for this repository and model. Clear the repository cache to revoke it.`,
+        `Downside Up will send selected functions, relevant snippets, repository documentation, and (for one-sentence file summaries) the text of files whose functions you explain, and both versions of a file whose change you explain, from:\n\n${root}\n\n${destination}${estimate}\n\n${terms} This consent is saved for this repository and model. Clear the repository cache to revoke it.`,
         { modal: true },
         accept
       );
@@ -733,11 +757,11 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     const epoch = ++headerEpoch;
     try {
       const [stats, saved, overview] = await Promise.all([service.cacheStats(root), service.savedProjectMap(root), service.savedOverview(root)]);
-      if (epoch !== headerEpoch || (preview?.root ?? folderPreview?.root) !== root || !panel) return;
+      if (epoch !== headerEpoch || (change.active ? change.root : preview?.root ?? folderPreview?.root) !== root || !panel) return;
       headerData = { root, stats, initialized: Boolean(overview), ...(saved ? { map: saved.map } : {}) };
       headerError = undefined;
     } catch (error) {
-      if (epoch !== headerEpoch || (preview?.root ?? folderPreview?.root) !== root || !panel) return;
+      if (epoch !== headerEpoch || (change.active ? change.root : preview?.root ?? folderPreview?.root) !== root || !panel) return;
       headerData = undefined;
       headerError = { root, text: `Could not read local cache statistics: ${errorMessage(error)}` };
     }
@@ -770,9 +794,9 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
   };
 
   const statsForPanel = (): PanelState["stats"] => {
-    const root = preview?.root ?? folderPreview?.root;
+    const root = change.active ? change.root : preview?.root ?? folderPreview?.root;
     if (!headerData || headerData.root !== root) return undefined;
-    const outdated = outdatedHere();
+    const outdated = change.active ? { states: [], files: [], summary: false, flows: false } : outdatedHere();
     return {
       ...headerData.stats,
       outdatedHere: outdated.states.length + outdated.files.length + Number(outdated.summary) + Number(outdated.flows),
@@ -831,14 +855,15 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       handlers.set(id, open);
       return id;
     };
-    const shownRoot = preview?.root ?? folderPreview?.root;
-    const breadcrumbs = shownRoot === undefined
+    const changeView = change.view(target);
+    const shownRoot = changeView ? change.root : preview?.root ?? folderPreview?.root;
+    const breadcrumbs = shownRoot === undefined || changeView
       ? undefined
       : crumbsFor(shownRoot, preview ? filePath(shownRoot, preview.document.uri) : folderPreview!.path, Boolean(preview), target);
-    const folder = folderPreview && !preview ? folderView(folderPreview, target) : undefined;
+    const folder = folderPreview && !preview && !changeView ? folderView(folderPreview, target) : undefined;
     const shownContext = shownRoot !== undefined && repositoryContext?.root === shownRoot ? repositoryContext : undefined;
     panel.setReferenceHandlers(handlers);
-    const summary = preview && fileSummary?.uri === preview.document.uri.toString() ? fileSummary : undefined;
+    const summary = preview && !changeView && fileSummary?.uri === preview.document.uri.toString() ? fileSummary : undefined;
     const approval = pendingPrefetchConsent();
     const stats = statsForPanel();
     panel.update({
@@ -849,10 +874,11 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       },
       ...(stats ? { stats } : {}),
       ...(headerError?.root === shownRoot ? { statsError: headerError?.text } : {}),
-      ...(preview ? { document: { ...preview.overview, entries: shownEntries() } } : {}),
+      ...(preview && !changeView ? { document: { ...preview.overview, entries: shownEntries() } } : {}),
       ...(folder ? { folder } : {}),
+      ...(changeView ? { change: changeView } : {}),
       ...(breadcrumbs ? { breadcrumbs } : {}),
-      explanations,
+      explanations: changeView ? [] : explanations,
       ...(summary ? { summary: { text: summary.text, current: summary.current } } : {}),
       showDetails: vscode.workspace.getConfiguration("downsideUp").get<boolean>("explanations.showDetails", false) === true,
       formats: formatSettings(),
@@ -865,8 +891,8 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
         }
       } : {}),
       ...(openingFolder ? { loading: { name: openingFolder.name } } : {}),
-      busy: Boolean(repositoryJob || folderJobs.size || regeneration || [...functions.values()].some((state) => state.controller)),
-      hasRepository: Boolean(preview || folderPreview),
+      busy: Boolean(repositoryJob || folderJobs.size || regeneration || change.busy || [...functions.values()].some((state) => state.controller)),
+      hasRepository: Boolean(preview || folderPreview || changeView),
       needsInitialization: headerData?.root === shownRoot && headerData?.initialized === false
     });
     syncStepHighlight();
@@ -1062,6 +1088,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
   const showFolder = async (root: string, path: string): Promise<void> => {
     regeneration?.abort();
     ensurePanel();
+    change.clear();
     const epoch = ++folderEpoch;
     previewEpoch++;
     // Listing a large repository takes a while; until then, the page shows a placeholder instead of looking unchanged.
@@ -1736,6 +1763,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     const overview = await buildFileOverview(document, filePath(root, document.uri));
     const exclusion = await sharingExclusion(root, document.uri.fsPath).catch(() => undefined);
     if (epoch !== previewEpoch || !panel) return;
+    change.clear();
     const fileChanged = !preview || !sameUri(preview.document.uri, document.uri);
     // Opening a file leaves the folder preview, or the folder being opened.
     folderPreview = undefined;
@@ -1778,6 +1806,52 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
   const resolveRoot = async (document: vscode.TextDocument): Promise<string | undefined> => {
     const folder = vscode.workspace.getWorkspaceFolder(document.uri);
     return folder ? findRepositoryRoot(folder.uri.fsPath) : undefined;
+  };
+
+  /** The native diff an editor belongs to, taken from the tab that shows it. */
+  const diffForEditor = (editor: vscode.TextEditor | undefined): { original: vscode.Uri; modified: vscode.Uri } | undefined => {
+    if (!editor) return undefined;
+    for (const group of vscode.window.tabGroups.all) {
+      if (editor.viewColumn !== undefined && group.viewColumn !== editor.viewColumn) continue;
+      const input = group.activeTab?.input;
+      if (input instanceof vscode.TabInputTextDiff &&
+        (sameUri(input.modified, editor.document.uri) || sameUri(input.original, editor.document.uri))) {
+        return { original: input.original, modified: input.modified };
+      }
+    }
+    return undefined;
+  };
+
+  /** Shows a native diff in the preview. Only a saved explanation is looked up; the reader asks for a new one. */
+  const showChange = async (diff: { original: vscode.Uri; modified: vscode.Uri }, force: boolean): Promise<void> => {
+    if (!panel) return;
+    regeneration?.abort();
+    stopPrefetch();
+    clearReveal();
+    selectionLookupEpoch++;
+    savedLookupEpoch++;
+    folderEpoch++;
+    previewEpoch++;
+    openingFolder = undefined;
+    preview = undefined;
+    folderPreview = undefined;
+    panel.setFileReferenceHandlers(new Map());
+    await change.show(diff.original, diff.modified, force);
+    if (!panel || !change.active) return;
+    const root = change.root;
+    panel.panel.title = `Downside Up: Changes in ${change.fileName ?? "this file"}`;
+    if (root && headerData?.root !== root) void loadHeaderData(root);
+  };
+
+  /** Sends an editor showing a native diff to the change view; false when it is not one. */
+  const routeToChange = (editor: vscode.TextEditor | undefined, force: boolean): boolean => {
+    const diff = diffForEditor(editor);
+    if (!diff) return false;
+    void showChange(diff, force).catch((error: unknown) => {
+      notice = { tone: "error", text: `Could not read the change: ${errorMessage(error)}` };
+      render();
+    });
+    return true;
   };
 
   const previewDocument = async (document: vscode.TextDocument): Promise<void> => {
@@ -2916,6 +2990,9 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       case "cancel":
         cancelExplanations();
         return;
+      case "explainChanges":
+        await change.explain();
+        return;
       case "summarizeFolder":
         await summarizeShownFolder();
         return;
@@ -2979,6 +3056,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
         regeneration?.abort();
         stopPrefetch();
         stopReview();
+        change.clear();
         for (const state of [...functions.values()]) forget(state);
         savedLookupEpoch++;
         savedLookupDone.clear();
@@ -2993,7 +3071,9 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       },
       (visible) => {
         // A folder shown or being opened stays; otherwise catch up with the editor.
-        if (visible && lastTextEditor && !folderPreview && !openingFolder) void previewDocument(lastTextEditor.document);
+        if (visible && lastTextEditor && !folderPreview && !openingFolder && !routeToChange(lastTextEditor, false)) {
+          void previewDocument(lastTextEditor.document);
+        }
       }
     );
     panel = created;
@@ -3228,6 +3308,15 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
    */
   const openPreviewCommand = async (resource?: vscode.Uri): Promise<void> => {
     let document: vscode.TextDocument | undefined;
+    // From either side of a native diff, the preview shows the change; opening it only looks up a saved explanation.
+    const diff = diffForEditor(vscode.window.activeTextEditor ?? lastTextEditor);
+    if (diff && (!(resource instanceof vscode.Uri) || sameUri(resource, diff.modified) || sameUri(resource, diff.original))) {
+      const existing = panel;
+      ensurePanel();
+      if (existing) existing.panel.reveal(undefined, true);
+      await showChange(diff, true);
+      return;
+    }
     if (resource instanceof vscode.Uri && resource.scheme === "file" && (await stat(resource.fsPath).catch(() => undefined))?.isDirectory()) {
       await openFolderPreview(resource);
       return;
@@ -3260,6 +3349,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
 
   const cancelExplanations = (): void => {
     regeneration?.abort();
+    change.cancel();
     for (const job of folderJobs.values()) job.abort();
     stopPrefetch();
     stopReview();
@@ -3286,8 +3376,15 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
 
 
 
+  let changeTimer: ReturnType<typeof setTimeout> | undefined;
+  const refreshChangeSoon = (): void => {
+    if (changeTimer) clearTimeout(changeTimer);
+    changeTimer = setTimeout(() => void change.refresh().catch(() => undefined), 400);
+  };
+
   const onDocumentChange = vscode.workspace.onDidChangeTextDocument((event) => {
     if (event.contentChanges.length === 0 || event.document.uri.scheme !== "file") return;
+    if (change.active) refreshChangeSoon();
     if (regenerationRoot && isWithin(regenerationRoot, event.document.uri.fsPath)) regeneration?.abort();
     if (revealed?.uri === event.document.uri.toString()) clearReveal();
     const current = preview;
@@ -3323,7 +3420,18 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     selectionLookupEpoch++;
     if (selectionTimer) clearTimeout(selectionTimer);
     if (outlineTimer) clearTimeout(outlineTimer);
-    if (panel?.panel.visible) void previewDocument(editor.document);
+    if (panel?.panel.visible && !routeToChange(editor, true)) void previewDocument(editor.document);
+  });
+
+  const onTabsChange = vscode.window.tabGroups.onDidChangeTabs(() => {
+    const editor = vscode.window.activeTextEditor ?? lastTextEditor;
+    const diff = panel?.panel.visible ? diffForEditor(editor) : undefined;
+    if (diff && !change.shows(diff.original, diff.modified)) routeToChange(editor, false);
+  });
+
+  // Staging and other Git changes happen outside the editor, so look again when the window regains focus.
+  const onWindowState = vscode.window.onDidChangeWindowState((state) => {
+    if (state.focused && change.active) refreshChangeSoon();
   });
 
   const onVisibleRangesChange = vscode.window.onDidChangeTextEditorVisibleRanges((event) => {
@@ -3368,6 +3476,9 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
   });
 
   const onConfigChange = vscode.workspace.onDidChangeConfiguration((event) => {
+    if (change.active && ["downsideUp.provider", "downsideUp.languageModel", "downsideUp.openai", "downsideUp.exclusion"].some((key) => event.affectsConfiguration(key))) {
+      void change.refresh().catch(() => undefined);
+    }
     if (["downsideUp.provider", "downsideUp.languageModel", "downsideUp.openai", "downsideUp.projectMap"].some((key) => event.affectsConfiguration(key))) {
       regeneration?.abort();
       const root = preview?.root ?? folderPreview?.root;
@@ -3446,6 +3557,8 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     }),
     onDocumentChange,
     onActiveEditorChange,
+    onTabsChange,
+    onWindowState,
     onVisibleRangesChange,
     onTextSelectionChange,
     onConfigChange,
@@ -3455,6 +3568,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       if (selectionTimer) clearTimeout(selectionTimer);
       if (outlineTimer) clearTimeout(outlineTimer);
       if (recheckTimer) clearTimeout(recheckTimer);
+      if (changeTimer) clearTimeout(changeTimer);
       panel?.panel.dispose();
       for (const disposables of rootWatchers.values()) for (const disposable of disposables) disposable.dispose();
       rootWatchers.clear();

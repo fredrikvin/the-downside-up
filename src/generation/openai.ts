@@ -1,4 +1,5 @@
 import type {
+  FileComparisonDraft,
   FileSummary,
   FolderSummary,
   FunctionExplanation,
@@ -10,12 +11,14 @@ import { estimateTokens } from "../core/fingerprint";
 import {
   explanationSchemaFor,
   formatSchemaFor,
+  comparisonSchema,
   fileSummarySchema,
   folderSummarySchema,
   projectFlowsSchema,
   primingSchema,
   partFlowsSchema,
   parseExplanation,
+  parseComparison,
   parseFileSummary,
   parseFolderSummary,
   parseProjectFlows,
@@ -23,9 +26,10 @@ import {
   parsePriming,
   parsePartFlows
 } from "./schema";
-import { explanationPrompt, fileSummaryPrompt, folderSummaryPrompt, formatPrompt, partFlowsPrompt, projectFlowsPrompt, overviewPrompt, reviewPrompt } from "./prompts";
+import { comparisonPrompt, explanationPrompt, fileSummaryPrompt, folderSummaryPrompt, formatPrompt, partFlowsPrompt, projectFlowsPrompt, overviewPrompt, reviewPrompt } from "./prompts";
 import type {
   ExplanationPromptInput,
+  ComparisonPromptInput,
   FileSummaryPromptInput,
   FolderSummaryPromptInput,
   ProjectFlowsPromptInput,
@@ -85,6 +89,14 @@ export class OpenAIProvider implements GenerationProvider {
   ): Promise<GenerationResult<FileSummary>> {
     const [system, user] = fileSummaryPrompt(input);
     return this.request(system, user, "file_summary", fileSummarySchema, parseFileSummary, signal);
+  }
+
+  async explainComparison(
+    input: ComparisonPromptInput,
+    signal?: AbortSignal
+  ): Promise<GenerationResult<FileComparisonDraft>> {
+    const [system, user] = comparisonPrompt(input);
+    return this.request(system, user, "file_comparison", comparisonSchema, parseComparison, signal);
   }
 
   async summarizeFolder(

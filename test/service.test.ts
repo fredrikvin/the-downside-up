@@ -784,6 +784,89 @@ describe("ExplanationService", () => {
     expect(provider.requests).toBe(2);
   });
 
+  describe("comparisons", () => {
+    const side = (identity: string, text: string, path = "src/checkout.txt") => ({
+      path, identity, state: "present" as const, detail: "", text,
+      fingerprint: `fp:${text}`, lines: text.split("\n").length
+    });
+    const snapshot = (original = "a\nb", modified = "a\nc") => ({ root, original: side("revision:" + "1".repeat(40), original), modified: side("working", modified) });
+
+    it("explains a pair once, reuses it, and marks it outdated when either side changes, without generating", async () => {
+      const provider = new MockProvider();
+      const explain = vi.spyOn(provider, "explainComparison");
+      const store = new MemoryRepositoryCacheStore();
+      const service = createService(store, provider);
+      expect(await service.findComparison(snapshot())).toBeUndefined();
+      expect(provider.requests).toBe(0);
+
+      const first = await service.explainComparison(snapshot(), async () => snapshot());
+      expect(first).toMatchObject({ cached: false, current: true });
+      expect(explain.mock.calls[0]![0]).toMatchObject({
+        original: { path: "src/checkout.txt", present: true, source: "a\nb" },
+        modified: { label: "the working tree, including unsaved edits", source: "a\nc" }
+      });
+      expect(Object.values((await store.read(root)).comparisons!)[0]).toMatchObject({ provider: "mock", usage: expect.anything() });
+
+      expect(await service.explainComparison(snapshot(), async () => snapshot())).toMatchObject({ cached: true, current: true });
+      expect(provider.requests).toBe(1);
+
+      expect((await service.findComparison(snapshot("a\nb", "a\nd")))?.current).toBe(false);
+      expect((await service.findComparison(snapshot("a\nx", "a\nc")))?.current).toBe(false);
+      expect(provider.requests).toBe(1);
+      // Another original identity or path is a different comparison, not an outdated one.
+      expect(await service.findComparison({ ...snapshot(), original: side("index", "a\nb") })).toBeUndefined();
+      expect(await service.findComparison({ ...snapshot(), original: side("revision:" + "1".repeat(40), "a\nb", "src/old.txt") })).toBeUndefined();
+    });
+
+    it("keeps only line spans that fall inside a present side", async () => {
+      const provider = new MockProvider();
+      vi.spyOn(provider, "explainComparison").mockResolvedValue({
+        value: {
+          summary: "s", outside: "", possibleEffects: [], limitations: [],
+          changes: [{ title: "t", before: "b", after: "a", when: "always", flow: "", original: { start: 1, end: 9 }, modified: { start: 2, end: 2 } }]
+        },
+        usage: { inputTokens: 1, outputTokens: 1, estimated: true },
+        provider: "mock"
+      });
+      const service = createService(new MemoryRepositoryCacheStore(), provider);
+      const result = await service.explainComparison(snapshot(), async () => snapshot());
+      expect(result.comparison.changes[0]).toMatchObject({ original: { start: 0, end: 0 }, modified: { start: 2, end: 2 } });
+    });
+
+    it("rejects a result when either side changed while it was generated, and saves nothing", async () => {
+      const store = new MemoryRepositoryCacheStore();
+      const service = createService(store, new MockProvider());
+      await expect(service.explainComparison(snapshot(), async () => snapshot("a\nb", "a\nedited"))).rejects.toThrow("changed while");
+      expect((await store.read(root)).comparisons).toBeUndefined();
+      const slow = new MockProvider();
+      slow.delayMs = 20;
+      const fenced = createService(store, slow);
+      const pending = fenced.explainComparison(snapshot(), async () => snapshot());
+      await fenced.clearCache(root);
+      await expect(pending).rejects.toThrow("changed while");
+      expect((await store.read(root)).comparisons).toBeUndefined();
+    });
+
+    it("sends nothing for unusable sides, an oversized pair, or declined consent", async () => {
+      const provider = new MockProvider();
+      const service = createService(new MemoryRepositoryCacheStore(), provider);
+      const excluded = { ...snapshot(), original: { ...side("index", ""), state: "excluded" as const, detail: "it is a secret", fingerprint: "" } };
+      await expect(service.explainComparison(excluded, async () => excluded)).rejects.toThrow("was not sent because it is a secret");
+      await expect(service.explainComparison(snapshot("same", "same"), async () => snapshot("same", "same"))).rejects.toThrow("identical");
+      const small = new ExplanationService({
+        store: new MemoryRepositoryCacheStore(), describeProvider: () => ({ kind: "mock", modelId: "m" }),
+        createProvider: async () => provider, authorizeExternalData: async () => true, maxRequestBytes: () => 1_000
+      });
+      await expect(small.explainComparison(snapshot(), async () => snapshot())).rejects.toThrow("Max Request Size");
+      const declined = new ExplanationService({
+        store: new MemoryRepositoryCacheStore(), describeProvider: () => ({ kind: "openai", modelId: "m" }),
+        createProvider: async () => provider, authorizeExternalData: async () => false
+      });
+      await expect(declined.explainComparison(snapshot(), async () => snapshot())).rejects.toThrow("not authorized");
+      expect(provider.requests).toBe(0);
+    });
+  });
+
   it("refuses to explain a function in an excluded file before any provider request", async () => {
     const provider = new MockProvider();
     const service = createService(new MemoryRepositoryCacheStore(), provider);

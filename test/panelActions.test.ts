@@ -31,11 +31,12 @@ describe("header action validation", () => {
       { type: "showCallers", entryId: "entry-1", uri: "/untrusted" },
       { type: "showCallers", entryId: 4 },
       { type: "chooseModels" },
+      { type: "explainChanges", path: "/untrusted" },
       { type: "unknown" },
       { type: ["regenerateOutdated"] },
       null
     ]) harness.receive(message);
-    expect(actions).toEqual([{ type: "chooseModel" }, { type: "chooseOverviewModel" }, { type: "regenerateOutdated" }, { type: "clearCache" }, { type: "showCallers", entryId: "entry-1" }]);
+    expect(actions).toEqual([{ type: "chooseModel" }, { type: "chooseOverviewModel" }, { type: "regenerateOutdated" }, { type: "clearCache" }, { type: "showCallers", entryId: "entry-1" }, { type: "explainChanges" }]);
     panel.dispose();
   });
 });

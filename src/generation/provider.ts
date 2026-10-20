@@ -1,5 +1,6 @@
 import type {
   ExplanationFormat,
+  FileComparisonDraft,
   FileSummary,
   FolderSummary,
   FunctionExplanation,
@@ -59,6 +60,24 @@ export interface FileSummaryPromptInput {
   readonly languageId: string;
   readonly source: string;
   readonly truncated: boolean;
+  readonly repositoryPurpose?: string;
+}
+
+/** One side of a comparison: where it came from and its text, or no text when the file is absent on that side. */
+export interface ComparisonSidePromptInput {
+  readonly path: string;
+  /** Plain words for what the side is, such as "the committed version" or "the working tree". */
+  readonly label: string;
+  readonly present: boolean;
+  readonly source: string;
+}
+
+/** The exact original and modified text of one file in a diff. */
+export interface ComparisonPromptInput {
+  readonly repositoryName: string;
+  readonly languageId: string;
+  readonly original: ComparisonSidePromptInput;
+  readonly modified: ComparisonSidePromptInput;
   readonly repositoryPurpose?: string;
 }
 
@@ -158,6 +177,11 @@ export interface GenerationProvider {
     input: FileSummaryPromptInput,
     signal?: AbortSignal
   ): Promise<GenerationResult<FileSummary>>;
+  /** Explains what the change between two versions of one file does to behavior and flow. */
+  explainComparison(
+    input: ComparisonPromptInput,
+    signal?: AbortSignal
+  ): Promise<GenerationResult<FileComparisonDraft>>;
   summarizeFolder(
     input: FolderSummaryPromptInput,
     signal?: AbortSignal

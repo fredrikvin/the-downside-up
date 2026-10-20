@@ -1,6 +1,7 @@
 import { numberLines } from "../presentation/stepLines";
 import type { ExplanationFormat } from "../core/types";
 import type {
+  ComparisonPromptInput,
   ExplanationPromptInput,
   FileSummaryPromptInput,
   FolderSummaryPromptInput,
@@ -15,6 +16,8 @@ import type {
 export const PROMPT_VERSION = "downside-up-3";
 /** Version of the function explanation and file summary prompts; changing it outdates saved explanations. */
 export const EXPLANATION_PROMPT_VERSION = "downside-up-plain-9";
+/** Version of the change explanation prompt; changing it outdates saved comparisons. */
+export const COMPARISON_PROMPT_VERSION = "downside-up-changes-1";
 /** Version of the folder summary and flow prompts; changing it outdates saved folder summaries and flows. */
 export const FOLDER_PROMPT_VERSION = "downside-up-folders-1";
 
@@ -128,6 +131,31 @@ export function fileSummaryPrompt(input: FileSummaryPromptInput): [string, strin
       repositoryPurpose: input.repositoryPurpose,
       source: input.source,
       ...(input.truncated ? { note: "The source was truncated to fit the request budget." } : {})
+    })
+  ];
+}
+
+export function comparisonPrompt(input: ComparisonPromptInput): [string, string] {
+  const side = (side: ComparisonPromptInput["original"]) => ({
+    path: side.path,
+    version: side.label,
+    ...(side.present ? { numberedSource: numberLines(side.source) } : { note: "The file does not exist on this side." })
+  });
+  return [
+    `${plainSystem} Explain what the change between two versions of one file does to behavior, for someone reviewing it. The original and modified sources are numbered separately and are exactly what a diff shows; compare only them. Fill the fields as follows.
+summary: one to three plain sentences on what the change does to the file's behavior, not on how the text differs.
+changes: one entry for each behavior change, most important first, at most 20. Skip pure formatting, renaming without behavior change, and comment-only edits (mention those in outside). Each has a short plain title naming the function or part; before: how the original behaved in a sentence or two, empty when the code is new; after: how the modified version behaves, empty when the code was removed; when: the conditions under which behavior differs, such as which inputs or states, or "always"; flow: effects on control flow when there are any, such as an added decision, a removed path, an earlier exit, reordered steps, or different failure handling, otherwise an empty string; original and modified: the startLine and endLine of the relevant code in each numbered source, or 0 and 0 when it has no lines on that side.
+outside: changes outside functions, such as imports, constants, types, configuration, and comments, in a sentence or two; empty when none.
+possibleEffects: consequences that might follow elsewhere but are not shown by this code, each phrased as possible, never as observed; empty when none.
+limitations: anything you could not see or are unsure about.
+Describe what the code does, never why its author changed it, and do not report bugs or claim the change is correct. Use line numbers only from the numbered sources.`,
+    JSON.stringify({
+      task: "Explain the behavior change between the original and modified versions of one file.",
+      repository: input.repositoryName,
+      language: input.languageId,
+      repositoryPurpose: input.repositoryPurpose,
+      original: side(input.original),
+      modified: side(input.modified)
     })
   ];
 }
