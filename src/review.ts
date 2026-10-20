@@ -1,0 +1,228 @@
+import {
+  comparisonProblem,
+  snapshotSignature,
+  type ChangedFile,
+  type ComparisonRef,
+  type ComparisonSnapshot
+} from "./context/comparison";
+import { nextReviewFile } from "./presentation/prefetch";
+import type { RequestPriority } from "./presentation/requestScheduler";
+
+/** A changed file that review mode explains ahead of the reader, as the two versions that were confirmed. */
+export interface ReviewItem {
+  /** Path of the file in the working tree, or of the deleted file. */
+  readonly path: string;
+  readonly file: ChangedFile;
+  readonly ref: ComparisonRef;
+  /** The versions as confirmed; reading something else later marks the item outdated. */
+  readonly confirmed: string;
+  status: "pending" | "explaining" | "done" | "failed" | "skipped" | "outdated";
+}
+
+export interface ReviewHost {
+  /** The shared request scheduler. */
+  readonly scheduler: {
+    readonly prefetchCapacity: number;
+    schedule<T>(priority: RequestPriority, task: () => Promise<T>): Promise<T>;
+  };
+  /** Reads a confirmed pair of versions again. */
+  read(ref: ComparisonRef): Promise<ComparisonSnapshot>;
+  /** Whether a current comparison is saved for exactly this snapshot; never generates. */
+  isCurrent(snapshot: ComparisonSnapshot): Promise<boolean>;
+  /** Explains and saves one comparison; `reread` is its final freshness check. */
+  explain(snapshot: ComparisonSnapshot, reread: () => Promise<ComparisonSnapshot>, signal: AbortSignal): Promise<unknown>;
+  /**
+   * Whether background requests may send code now, decided without a prompt:
+   * the workspace is trusted and the model that explains comparisons is approved.
+   */
+  sharingAllowed(root: string): Promise<boolean>;
+  /** The repository-relative path being read in this repository, which goes first. */
+  readingPath(root: string): string | undefined;
+  /** Marks a background request, so consent is never asked for it. */
+  background(signal: AbortSignal): void;
+  /** Item states changed. */
+  changed(): void;
+  /** Review stopped on its own; tells the reader why. */
+  stoppedWith(notice: { readonly tone: "info" | "error"; readonly text: string }): void;
+  /** Pause before a failed file is tried once more; 5 seconds by default. */
+  readonly retryDelayMs?: number;
+}
+
+export const MAX_REVIEW_FAILURES = 3;
+
+const stopped = (): DOMException => new DOMException("Review stopped.", "AbortError");
+
+/**
+ * Review mode: explains a confirmed set of changed files in the background,
+ * with the request slots explicit requests leave free, the file being read
+ * first. Each file's reading and cache check happen inside its request slot,
+ * so files not yet started stay pending and follow the reader. Reader
+ * movement only reorders the set; it never adds to it.
+ */
+export class Review {
+  stopped = false;
+  /** The latest failure, for the notice shown when review stops. */
+  lastError: string | undefined;
+  /** Incremented on every stop and start, so an old loop and its queued work end. */
+  private generation = 0;
+  private woken = false;
+  private wake: (() => void) | undefined;
+  private readonly controllers = new Map<ReviewItem, AbortController>();
+  private readonly retried = new Set<ReviewItem>();
+  /** Failed files waiting to be tried again, which keep the loop alive. */
+  private readonly retrying = new Set<ReviewItem>();
+
+  constructor(
+    private readonly host: ReviewHost,
+    readonly root: string,
+    /** Such as "since main (merge base 1a2b3c4)". */
+    readonly base: string,
+    readonly items: ReviewItem[]
+  ) {}
+
+  /** Starts, or continues after a stop, explaining the pending files in the background. */
+  start(): void {
+    this.stopped = false;
+    const generation = ++this.generation;
+    void this.run(generation).catch(() => this.stop());
+  }
+
+  /**
+   * Stops starting files. A request already sent finishes and is saved; one
+   * still waiting for a slot is not sent, and its file returns to pending
+   * once its turn comes, so continuing never explains a file twice.
+   */
+  stop(): void {
+    this.stopped = true;
+    this.generation++;
+    this.wakeUp();
+    this.host.changed();
+  }
+
+  /** Stops and aborts every request this review has queued or sent; nothing more is saved. */
+  cancel(): void {
+    this.stop();
+    for (const controller of this.controllers.values()) controller.abort();
+  }
+
+  /** Looks for the next file again, such as after the reader moved or a slot freed. */
+  wakeUp(): void {
+    if (this.wake) this.wake();
+    else this.woken = true;
+  }
+
+  /** Explains one file as an ordinary request, which may ask for code-sharing approval. */
+  explainNow(item: ReviewItem): Promise<void> {
+    const generation = this.generation;
+    return this.explain(item, "explicit", () => !this.stopped && this.generation === generation);
+  }
+
+  private waitForWake(): Promise<void> {
+    if (this.woken) {
+      this.woken = false;
+      return Promise.resolve();
+    }
+    return new Promise((resolve) => {
+      this.wake = () => {
+        this.wake = undefined;
+        resolve();
+      };
+    });
+  }
+
+  /**
+   * Explains one file. The request slot is taken at once (before any read),
+   * so the loop sees the slot as used; the confirmed versions are read again
+   * inside it, and a changed file is marked outdated instead of explained.
+   */
+  private async explain(item: ReviewItem, priority: RequestPriority, shouldStart: () => boolean): Promise<void> {
+    const controller = new AbortController();
+    if (priority === "prefetch") this.host.background(controller.signal);
+    this.controllers.set(item, controller);
+    item.status = "explaining";
+    try {
+      item.status = await this.host.scheduler.schedule(priority, async (): Promise<ReviewItem["status"]> => {
+        if (controller.signal.aborted || !shouldStart()) throw stopped();
+        const snapshot = await this.host.read(item.ref);
+        if (snapshotSignature(snapshot) !== item.confirmed) return "outdated";
+        if (comparisonProblem(snapshot)) return "skipped";
+        if (await this.host.isCurrent(snapshot)) return "done";
+        if (controller.signal.aborted || !shouldStart()) throw stopped();
+        await this.host.explain(snapshot, () => this.host.read(item.ref), controller.signal);
+        return "done";
+      });
+    } catch (error) {
+      if (controller.signal.aborted || (error instanceof DOMException && error.name === "AbortError")) {
+        // Not started, cancelled, or sharing was not approved: nothing was saved.
+        item.status = "pending";
+      } else {
+        const message = error instanceof Error ? error.message : String(error);
+        if (/changed while/.test(message)) {
+          item.status = "outdated";
+        } else {
+          item.status = "failed";
+          this.lastError = message;
+        }
+      }
+    } finally {
+      this.controllers.delete(item);
+    }
+  }
+
+  private async run(generation: number): Promise<void> {
+    const active = () => !this.stopped && this.generation === generation;
+    const pending = () => this.items.filter((item) => item.status === "pending");
+    while (active()) {
+      if (this.host.scheduler.prefetchCapacity === 0 || pending().length === 0) {
+        if (pending().length === 0 && !this.items.some((item) => item.status === "explaining") && this.retrying.size === 0) {
+          this.host.changed();
+          return;
+        }
+        await this.waitForWake();
+        continue;
+      }
+      if (!(await this.host.sharingAllowed(this.root))) {
+        if (!active()) return;
+        this.host.stoppedWith({
+          tone: "info",
+          text: "Explaining changed files stopped: code sharing is not approved for this repository and model, or the workspace is not trusted."
+        });
+        this.stop();
+        return;
+      }
+      // Chosen after the check, without awaiting, so the slot and the reader's position are current.
+      if (!active() || this.host.scheduler.prefetchCapacity === 0) continue;
+      const item = nextReviewFile(pending(), this.host.readingPath(this.root));
+      if (!item) continue;
+      const work = this.explain(item, "prefetch", active);
+      this.host.changed();
+      void work
+        .then(() => this.afterAttempt(item, active))
+        .finally(() => {
+          this.host.changed();
+          this.wakeUp();
+        });
+    }
+  }
+
+  /** A failed file is tried once more after a pause; several failures stop review with a notice. */
+  private async afterAttempt(item: ReviewItem, active: () => boolean): Promise<void> {
+    if (item.status !== "failed" || !active()) return;
+    if (!this.retried.has(item)) {
+      // Back off briefly, for example after a rate limit, then try this file once more.
+      this.retried.add(item);
+      this.retrying.add(item);
+      try {
+        await new Promise((resolve) => setTimeout(resolve, this.host.retryDelayMs ?? 5_000));
+      } finally {
+        this.retrying.delete(item);
+      }
+      if (item.status === "failed") item.status = "pending";
+      return;
+    }
+    if (this.items.filter((candidate) => candidate.status === "failed").length >= MAX_REVIEW_FAILURES) {
+      this.host.stoppedWith({ tone: "error", text: `Explaining changed files stopped after several errors: ${this.lastError ?? "generation failed"}` });
+      this.stop();
+    }
+  }
+}

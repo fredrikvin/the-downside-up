@@ -78,6 +78,12 @@ export class ChangeSession {
     return this.shown?.key === keyOf(original, modified);
   }
 
+  /** Whether a document is one side of the shown diff, such as a Git document that changes when HEAD or the index does. */
+  involves(uri: vscode.Uri): boolean {
+    const shown = this.shown;
+    return Boolean(shown && (shown.originalUri.toString() === uri.toString() || shown.modifiedUri.toString() === uri.toString()));
+  }
+
   clear(): void {
     this.epoch++;
     this.shown?.controller?.abort();
@@ -132,6 +138,7 @@ export class ChangeSession {
     }
     const resolved = await resolveNativeDiff(root, toDiffUri(shown.originalUri), toDiffUri(shown.modifiedUri));
     if ("unsupported" in resolved) {
+      shown.ref = undefined;
       shown.problem = resolved.unsupported;
       return;
     }
@@ -142,25 +149,38 @@ export class ChangeSession {
     if (!shown.problem) shown.saved = await this.host.service.findComparison(snapshot);
   }
 
+  /**
+   * What the shown documents are now. A Git document such as `HEAD` or the
+   * index names a version that moves, so it is resolved again for every read
+   * rather than reusing the commit it named when the diff was shown.
+   */
+  private async currentPair(shown: Shown, root: string): Promise<ComparisonSnapshot> {
+    const resolved = await resolveNativeDiff(root, toDiffUri(shown.originalUri), toDiffUri(shown.modifiedUri));
+    if ("unsupported" in resolved) throw new Error(resolved.unsupported);
+    return readComparison(resolved.ref, snapshotOptions());
+  }
+
   /** Explains the shown pair; the reader asked for it. */
   async explain(): Promise<void> {
     const shown = this.shown;
-    if (!shown?.ref || shown.controller) return;
-    const ref = shown.ref;
+    const root = shown?.root;
+    if (!shown?.ref || !root || shown.controller) return;
     const controller = new AbortController();
     shown.controller = controller;
     shown.error = undefined;
     shown.detail = "Reading both versions…";
     this.host.changed();
     try {
-      const snapshot = await readComparison(ref, snapshotOptions());
+      const snapshot = await this.currentPair(shown, root);
+      if (controller.signal.aborted) return;
       shown.snapshot = snapshot;
       shown.problem = comparisonProblem(snapshot);
       if (shown.problem) return;
       shown.detail = "Explaining the changes…";
       this.host.changed();
+      // The final check reads the documents shown by then, so a moved HEAD or index discards the result.
       const result = await this.host.schedule(() =>
-        this.host.service.explainComparison(snapshot, () => readComparison(ref, snapshotOptions()), controller.signal));
+        this.host.service.explainComparison(snapshot, () => this.currentPair(shown, root), controller.signal));
       if (this.shown === shown) shown.saved = result;
     } catch (error) {
       if (controller.signal.aborted) {
@@ -198,6 +218,8 @@ export class ChangeSession {
     const saved = shown.problem ? undefined : shown.saved;
     const links = (change: SavedComparison["comparison"]["changes"][number]) => {
       const out: Array<{ referenceId: string; caption: string }> = [];
+      // Lines were checked against the exact text explained; once either side changed they may name other code.
+      if (!saved?.current) return out;
       for (const [name, span, uri] of [["Original", change.original, shown.originalUri], ["Modified", change.modified, shown.modifiedUri]] as const) {
         if (span.start < 1) continue;
         const caption = `${name} ${span.start === span.end ? "line" : "lines"} ${span.start === span.end ? span.start : `${span.start}–${span.end}`}`;
@@ -230,7 +252,8 @@ export class ChangeSession {
           possibleEffects: saved.comparison.possibleEffects,
           limitations: saved.comparison.limitations,
           model: saved.model,
-          ...(saved.usage ? { usage: formatUsage(saved.usage) } : {})
+          ...(saved.usage ? { usage: formatUsage(saved.usage) } : {}),
+          ...(saved.current ? {} : { outdated: true })
         }
       } : {})
     };

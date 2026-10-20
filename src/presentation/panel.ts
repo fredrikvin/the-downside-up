@@ -167,6 +167,8 @@ export interface ChangeResultView {
   readonly limitations: readonly string[];
   readonly model: string;
   readonly usage?: string;
+  /** Set when either version changed since it was explained; its line links are then left out. */
+  readonly outdated?: boolean;
 }
 
 /** A native diff shown in place of a file: its two versions and, when saved or requested, what the change does. */
@@ -1790,9 +1792,14 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
         return parts;
       }
       if (change.status === "outdated") {
-        const note = el("p", "muted small", "Outdated: one of the versions changed since this was explained. ");
+        const note = el("p", "muted small", "Outdated: one of the versions changed since this was explained, so its line links are hidden. ");
         if (change.canExplain) note.append(explainChangesButton(change, "Explain again"));
         parts.push(note);
+      } else if (change.status === "failed") {
+        // The earlier result stays visible below, and the failed attempt can be tried again.
+        const note = el("p", "muted small", result.outdated ? "The explanation below is outdated: one of the versions changed since, so its line links are hidden. " : "");
+        if (change.canExplain) note.append(explainChangesButton(change, "Try again"));
+        if (change.canExplain || result.outdated) parts.push(note);
       }
       const summary = el("p", "summary");
       inline(summary, result.summary);

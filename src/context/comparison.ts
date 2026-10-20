@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { readFile, stat } from "node:fs/promises";
 import { isAbsolute, join, relative, sep } from "node:path";
-import { sourceFingerprint } from "../languages/registry";
+import { fingerprint } from "../core/fingerprint";
 
 /** The most text read from one side of a comparison. */
 export const MAX_SIDE_BYTES = 256 * 1024;
@@ -41,7 +41,11 @@ export interface SideSnapshot {
   readonly detail: string;
   /** Empty unless the side is present. */
   readonly text: string;
-  /** Fingerprint of `text`; empty unless the side is present. */
+  /**
+   * Exact fingerprint of `text`, empty unless the side is present. Unlike a
+   * function's fingerprint it changes with formatting too, since evidence
+   * links name absolute lines of this text.
+   */
   readonly fingerprint: string;
   readonly lines: number;
 }
@@ -193,10 +197,10 @@ async function locate(root: string, source: SideSource, path: string): Promise<L
 
 const hasBinaryMarker = (bytes: Buffer): boolean => bytes.subarray(0, 8_000).includes(0);
 
-async function fingerprinted(path: string, identity: string, text: string): Promise<SideSnapshot> {
+function fingerprinted(path: string, identity: string, text: string): SideSnapshot {
   return {
     path, identity, state: "present", detail: "", text,
-    fingerprint: await sourceFingerprint(text, { path }),
+    fingerprint: fingerprint(text),
     lines: text === "" ? 0 : text.split(/\r?\n/).length
   };
 }
@@ -212,20 +216,20 @@ async function readSide(root: string, side: SideRef, options: SnapshotOptions): 
     if (side.source.kind === "working") {
       const buffered = options.buffers?.get(absolute);
       if (buffered !== undefined) {
-        return Buffer.byteLength(buffered, "utf8") > maxBytes ? empty("oversized", "it is too large") : await fingerprinted(side.path, identity, buffered);
+        return Buffer.byteLength(buffered, "utf8") > maxBytes ? empty("oversized", "it is too large") : fingerprinted(side.path, identity, buffered);
       }
       const info = await stat(absolute).catch((error: NodeJS.ErrnoException) => error.code === "ENOENT" || error.code === "ENOTDIR" ? undefined : Promise.reject(error));
       if (!info) return empty("absent");
       if (!info.isFile()) return empty("unreadable", "it is not an ordinary file");
       if (info.size > maxBytes) return empty("oversized", "it is too large");
       const bytes = await readFile(absolute);
-      return hasBinaryMarker(bytes) ? empty("binary", "it is a binary file") : await fingerprinted(side.path, identity, bytes.toString("utf8"));
+      return hasBinaryMarker(bytes) ? empty("binary", "it is a binary file") : fingerprinted(side.path, identity, bytes.toString("utf8"));
     }
     const located = await locate(root, side.source, side.path);
     if ("state" in located) return empty(located.state, located.detail);
     if (!Number.isFinite(located.blob.size) || located.blob.size > maxBytes) return empty("oversized", "it is too large");
     const bytes = (await git(root, ["cat-file", "blob", located.blob.hash], maxBytes + 1)).stdout;
-    return hasBinaryMarker(bytes) ? empty("binary", "it is a binary file") : await fingerprinted(side.path, identity, bytes.toString("utf8"));
+    return hasBinaryMarker(bytes) ? empty("binary", "it is a binary file") : fingerprinted(side.path, identity, bytes.toString("utf8"));
   } catch {
     return empty("unreadable", "it could not be read");
   }
@@ -259,7 +263,9 @@ export function comparisonProblem(snapshot: ComparisonSnapshot): string | undefi
     }
   }
   if (snapshot.original.state === "absent" && snapshot.modified.state === "absent") return "Neither version of this file exists.";
-  if (snapshot.original.state === "present" && snapshot.modified.state === "present" && snapshot.original.text === snapshot.modified.text) {
+  // A file moved without edits is still a change: its path differs.
+  if (snapshot.original.state === "present" && snapshot.modified.state === "present" &&
+      snapshot.original.text === snapshot.modified.text && snapshot.original.path === snapshot.modified.path) {
     return "The two versions are identical.";
   }
   return undefined;

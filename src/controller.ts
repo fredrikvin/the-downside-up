@@ -1265,6 +1265,7 @@ export class ExplanationService {
     const generated = await (await this.options.createProvider(descriptor)).explainComparison(input, signal);
     assertNotCancelled(signal);
     const latest = await reread();
+    assertNotCancelled(signal);
     if (this.fence(root) !== startingFence ||
         latest.original.fingerprint !== snapshot.original.fingerprint || latest.original.identity !== snapshot.original.identity ||
         latest.modified.fingerprint !== snapshot.modified.fingerprint || latest.modified.identity !== snapshot.modified.identity) {
@@ -1288,10 +1289,17 @@ export class ExplanationService {
       promptVersion: COMPARISON_PROMPT_VERSION,
       savedAt: Date.now()
     };
-    await this.options.store.update(root, (current) => this.fence(root) !== startingFence ? current : {
-      ...current,
-      comparisons: { ...current.comparisons, [comparisonKey(snapshot, descriptor)]: record }
+    let saved = false;
+    // The write may wait behind others; a cancel or cache clear meanwhile still discards the result.
+    await this.options.store.update(root, (current) => {
+      if (this.fence(root) !== startingFence || signal?.aborted) return current;
+      saved = true;
+      return { ...current, comparisons: { ...current.comparisons, [comparisonKey(snapshot, descriptor)]: record } };
     });
+    if (!saved) {
+      assertNotCancelled(signal);
+      throw new Error("The files changed while the change was being explained, so the result was discarded.");
+    }
     return { ...savedComparison(record, snapshot), usage: generated.usage, cached: false };
   }
 

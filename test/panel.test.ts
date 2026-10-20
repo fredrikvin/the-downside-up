@@ -413,6 +413,19 @@ describe("change view", () => {
     expect(messages).toContainEqual({ type: "navigate", referenceId: "ref-1" });
   });
 
+  it("offers to try again when an attempt failed while an earlier result is still shown", () => {
+    const { renderChange, messages } = webviewHelpers();
+    const result = { summary: "Earlier result.", changes: [], outside: "", possibleEffects: [], limitations: [], model: "m" };
+    const view: ChangeView = { ...base, status: "failed", message: "Rate limited", result };
+    const nodes = renderChange(view).flatMap((node) => node.elements());
+    expect(texts(renderChange(view))).toEqual(expect.arrayContaining(["Rate limited", "Earlier result."]));
+    nodes.find((node) => node.textContent === "Try again")?.listeners.get("click")?.(event);
+    expect(messages).toContainEqual({ type: "explainChanges" });
+    const outdated = texts(renderChange({ ...view, result: { ...result, outdated: true } })).join(" ");
+    expect(outdated).toContain("line links are hidden");
+    expect(texts(renderChange({ ...view, canExplain: false }))).not.toContain("Try again");
+  });
+
   it("shows loading and unavailable states without an explain button", () => {
     const { renderChange } = webviewHelpers();
     expect(texts(renderChange({ ...base, status: "loading", canExplain: false }))).toContain("Cancel");

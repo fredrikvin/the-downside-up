@@ -322,15 +322,21 @@ a saved explanation, even with text selected.
 
 Showing a diff, switching views, scrolling, editing, and a cache miss never
 call a provider. **Explain changes** is the request: it reads both versions
-again (unsaved editor text stands in for the working file), checks the
+again (unsaved editor text stands in for the working file), resolving `HEAD`
+and the index to what they are at that moment rather than reusing the commit
+they named when the diff was shown, checks the
 sharing exclusions for each side's own path (including a renamed file's old
 path), the repository restriction, request size, and per-repository and
 per-model consent (it asks like any explanation), sends the two versions of
 that one file, and saves the result. Each side is limited to 256 KiB of text;
 binary, oversized, excluded, unreadable, identical, and not-yet-existing
 comparisons are reported instead of explained, and an added or deleted file
-compares against nothing. If either version changes while the request runs,
-the result is discarded.
+compares against nothing. A renamed file is explained even when its text is
+unchanged; the model is told the file moved. If either version changes while
+the request runs (including `HEAD` or the index moving), or the request is
+cancelled or the repository cache cleared before the result is saved, the
+result is discarded. A failed attempt keeps any earlier result visible and
+offers to try again.
 
 The model returns a summary, a list of changes with before and after
 behavior, when it differs, and its effect on flow, line spans that are
@@ -346,12 +352,15 @@ review.
 Comparison records are saved in the repository cache beside explanations,
 under a key made from both sides' identities (`working`, `index`, or a
 resolved commit) and paths and the provider, model, and prompt version.
-Changed content of either side leaves the record visible as outdated until the
-reader explains again; a different pair, such as staged versus unstaged, is a
-separate record. Only local `git:` and `file:` diffs are supported; other
+Any change to the exact text of either side, including formatting or blank
+lines (evidence links name absolute lines), leaves the record visible as
+outdated, without its line links, until the reader explains again; a
+different pair, such as staged versus unstaged, is a separate record. Only local `git:` and `file:` diffs are supported; other
 schemes say they are not supported yet. Changes to the index or working tree
-made outside the editor are noticed when the window regains focus or the diff
-is shown again, not watched live.
+made outside the editor are noticed when the window regains focus, the diff
+is shown again, or VS Code updates the diff's open Git document, not watched
+live. **Clear Repository Cache** and **Refresh Repository Context** act on the
+shown diff's repository, also when the preview or a non-file side has focus.
 
 Review mode prepares these comparisons ahead of the reader.
 **Review Changes…** offers bases found with Git: the merge base of `HEAD`
@@ -366,16 +375,22 @@ are considered; excluded files are skipped and counted, as are binary,
 oversized, identical, and unreadable ones. Nothing is sent until the user
 confirms the number of requests (files with a current saved comparison are
 not counted); running the command is an explicit request, so if code sharing
-is not yet approved for the repository and model, the first file is explained
-as an ordinary request, which asks. The rest are explained like prefetching:
-with the free request slots (never the last one), never prompting, skipping
-files with a current explanation, and the file being read (or its diff) first,
-otherwise in path order. Each item keeps the versions that were confirmed; if
+is not yet approved for the repository and the Functions model (the only model
+comparisons use; a separate Overview model needs no approval for review), the
+first file is explained as an ordinary request, which asks. The rest are
+explained like prefetching: with the free request slots (never the last one),
+never prompting, skipping files with a current explanation, and the file being
+read (or its diff) first, otherwise in path order. A file is read and checked
+for a saved comparison only once it holds a request slot, so files not yet
+started keep following the reader. Each item keeps the versions that were confirmed; if
 either changed before its turn, or while it was explaining, it is marked
 changed since, not explained, and needs an explicit **Explain changes**. A
 failed file is retried once after five seconds; after three failures review
-mode stops with a notice. It also stops when the preview closes, on
-**Cancel**, or when consent is missing; **Clear Repository Cache** ends it. A
+mode stops with a notice. It also stops when consent is missing. Stopping
+from the list lets requests already sent finish and be saved, and continuing
+does not send them again; closing the preview, **Cancel**, and **Clear
+Repository Cache** end it and abort its requests, queued or sent, so none of
+them is saved. A
 status bar item shows progress and opens a list of the changed files with
 their state; choosing one opens its native diff (with an empty document for
 the missing side of an added or deleted file), which shows the same saved
@@ -1156,7 +1171,9 @@ main flows described only on request with steps linked to the files and
 functions found, and shown again when the folder is previewed again, a
 folder tree run summarizing the subfolders and then the project again,
 review mode queueing only an edited component and a new
-untracked file's component and explaining both, including the one in a file
+untracked file's component and explaining both, **Cancel** aborting review
+requests in flight so none is saved, repository commands acting on the shown
+diff's repository while its non-file side has focus, including the one in a file
 that is not shown, JavaScript calls resolved through the built-in TypeScript
 go-to-definition (standard-library calls not followed) and their hovers, a
 React component's concise preview (component and nested handler) with no
@@ -1243,10 +1260,12 @@ webview's content-security policy.
   time, with no cross-file story and no before/after flowchart; it does not
   check the model's claims about behavior, so its consequences are things to
   verify. Changes to the index or working tree made outside the editor are
-  noticed only when the window regains focus or the diff is shown again. Git
-  URI forms are read as the built-in Git extension produces them; the
-  extension-host tests use `file:` diffs and the empty stand-in document, not
-  the Git extension's own diffs.
+  noticed only when the window regains focus, the diff is shown again, or VS
+  Code updates the diff's open Git document. Git URI forms are read as the
+  built-in Git extension produces them; unit tests read such URIs against a
+  real temporary repository (including `HEAD` moving before and during a
+  request), but the extension-host tests use `file:` diffs and the empty
+  stand-in document, not the Git extension's own diffs.
 - GitHub Copilot's server-side content exclusion is not visible to the
   extension and is not applied to its requests; only `.gitignore`,
   `.copilotignore`, VS Code exclusions, the built-in path rules, and the

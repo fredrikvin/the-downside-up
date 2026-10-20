@@ -17,7 +17,7 @@ export const PROMPT_VERSION = "downside-up-3";
 /** Version of the function explanation and file summary prompts; changing it outdates saved explanations. */
 export const EXPLANATION_PROMPT_VERSION = "downside-up-plain-9";
 /** Version of the change explanation prompt; changing it outdates saved comparisons. */
-export const COMPARISON_PROMPT_VERSION = "downside-up-changes-1";
+export const COMPARISON_PROMPT_VERSION = "downside-up-changes-2";
 /** Version of the folder summary and flow prompts; changing it outdates saved folder summaries and flows. */
 export const FOLDER_PROMPT_VERSION = "downside-up-folders-1";
 
@@ -142,7 +142,7 @@ export function comparisonPrompt(input: ComparisonPromptInput): [string, string]
     ...(side.present ? { numberedSource: numberLines(side.source) } : { note: "The file does not exist on this side." })
   });
   return [
-    `${plainSystem} Explain what the change between two versions of one file does to behavior, for someone reviewing it. The original and modified sources are numbered separately and are exactly what a diff shows; compare only them. Fill the fields as follows.
+    `${plainSystem} Explain what the change between two versions of one file does to behavior, for someone reviewing it. The original and modified sources are numbered separately and are exactly what a diff shows; compare only them. When their paths differ the file was moved or renamed; say so in the summary, and when the sources are identical, say that only the path changed and leave changes empty. Fill the fields as follows.
 summary: one to three plain sentences on what the change does to the file's behavior, not on how the text differs.
 changes: one entry for each behavior change, most important first, at most 20. Skip pure formatting, renaming without behavior change, and comment-only edits (mention those in outside). Each has a short plain title naming the function or part; before: how the original behaved in a sentence or two, empty when the code is new; after: how the modified version behaves, empty when the code was removed; when: the conditions under which behavior differs, such as which inputs or states, or "always"; flow: effects on control flow when there are any, such as an added decision, a removed path, an earlier exit, reordered steps, or different failure handling, otherwise an empty string; original and modified: the startLine and endLine of the relevant code in each numbered source, or 0 and 0 when it has no lines on that side.
 outside: changes outside functions, such as imports, constants, types, configuration, and comments, in a sentence or two; empty when none.

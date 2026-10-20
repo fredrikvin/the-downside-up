@@ -9,6 +9,7 @@ import {
   comparisonProblem,
   readComparison,
   resolveNativeDiff,
+  snapshotSignature,
   type ComparisonRef
 } from "../src/context/comparison";
 
@@ -80,14 +81,41 @@ describe("native diff identity", () => {
     expect((await readComparison(deleted)).modified.state).toBe("absent");
   });
 
-  it("keeps different paths for a rename", async () => {
+  it("keeps different paths for a rename and allows explaining a pure move", async () => {
     git("mv", "old.txt", "new.txt");
     const ref = await refOf(gitUri("old.txt", "HEAD"), gitUri("new.txt", ""));
     const snapshot = await readComparison(ref);
     expect(snapshot.original.path).toBe("old.txt");
     expect(snapshot.modified.path).toBe("new.txt");
     expect(snapshot.original.text).toBe(snapshot.modified.text);
-    expect(comparisonProblem(snapshot)).toBe("The two versions are identical.");
+    expect(comparisonProblem(snapshot)).toBeUndefined();
+    const same = await readComparison(await refOf(gitUri("a.txt", "HEAD"), fileUri("a.txt")));
+    expect(comparisonProblem(same)).toBe("The two versions are identical.");
+  });
+
+  it("allows a rename with edits", async () => {
+    git("mv", "old.txt", "new.txt");
+    await writeFile(join(root, "new.txt"), "export function legacy() {\n  return 2;\n}\n");
+    const snapshot = await readComparison(await refOf(gitUri("old.txt", "HEAD"), fileUri("new.txt")));
+    expect(snapshot.original.path).toBe("old.txt");
+    expect(snapshot.modified.text).toContain("return 2");
+    expect(comparisonProblem(snapshot)).toBeUndefined();
+  });
+});
+
+describe("exact freshness", () => {
+  it("counts formatting and blank-line edits as changes", async () => {
+    const ref = await refOf(gitUri("a.txt", "HEAD"), fileUri("a.txt"));
+    await writeFile(join(root, "a.txt"), "export const a = 2;\n");
+    const first = await readComparison(ref);
+    await writeFile(join(root, "a.txt"), "export  const a = 2;\n");
+    const spaced = await readComparison(ref);
+    await writeFile(join(root, "a.txt"), "export const a = 2;\n\n");
+    const blank = await readComparison(ref);
+    expect(new Set([first.modified.fingerprint, spaced.modified.fingerprint, blank.modified.fingerprint]).size).toBe(3);
+    expect(new Set([snapshotSignature(first), snapshotSignature(spaced), snapshotSignature(blank)]).size).toBe(3);
+    await writeFile(join(root, "a.txt"), "export const a = 2;\n");
+    expect(snapshotSignature(await readComparison(ref))).toBe(snapshotSignature(first));
   });
 });
 

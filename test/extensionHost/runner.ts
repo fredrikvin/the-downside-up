@@ -402,8 +402,33 @@ export async function run(): Promise<void> {
     assert.equal(api.allExplanations().length, requestsBefore);
     await api.explainChange();
     assert.equal(api.shownChange()?.status, "current", "Explain changes is the explicit request for one diff.");
+    const repositoryRoot = await findRepositoryRoot(reactRoot);
+    assert.equal(await api.commandRoot(), repositoryRoot, "Repository commands act on the shown diff's repository.");
+
+    // So they do while a side that is not a workspace file (here the empty stand-in of an added file) has focus.
+    await vscode.commands.executeCommand("vscode.diff", badgeUri.with({ scheme: "downside-up-empty", query: "HEAD" }), badgeUri, "Added Badge (test)");
+    await vscode.commands.executeCommand("downsideUp.showFileOverview");
+    await waitFor(async () => api.shownChange()?.fileName === "Badge.tsx" ? true : undefined, "an added file's diff in the preview");
+    await vscode.commands.executeCommand("workbench.action.compareEditor.focusSecondarySide");
+    assert.notEqual(vscode.window.activeTextEditor?.document.uri.scheme, "file");
+    assert.equal(await api.commandRoot(), repositoryRoot, "Repository commands act on the shown diff's repository from its other side.");
+
     await vscode.window.showTextDocument(cartViewDocument, vscode.ViewColumn.One);
     await waitFor(async () => api.shownChange() === undefined ? true : undefined, "an ordinary file to replace the diff in the preview");
+
+    // Cancel aborts review requests already sent, so none of them is saved.
+    api.mockDelay(1_500);
+    try {
+      assert.equal(await api.reviewChanges("HEAD"), 3);
+      await waitFor(async () => api.reviewItems().some((item) => item.status === "explaining") ? true : undefined, "review requests in flight");
+      api.cancel();
+      await new Promise((resolveWait) => setTimeout(resolveWait, 2_000));
+      assert.deepEqual(api.reviewItems().map((item) => item.status), ["pending", "pending", "pending"], "Cancelled review requests are not saved.");
+    } finally {
+      api.mockDelay(0);
+      api.stopReview();
+    }
+
     assert.equal(await api.reviewChanges("HEAD"), 3, "The changed file and the two new files are queued.");
     assert.deepEqual(
       api.reviewItems().map((item) => `${item.path} ${item.change}`).sort(),

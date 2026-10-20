@@ -1,6 +1,6 @@
 # Native diff change view: implementation plan
 
-Status: implemented in 0.39.0 (individual native diffs and batch review). Graphical flow comparison and cross-file change stories remain future work.
+Status: implemented in 0.39.0 (individual native diffs and batch review), with the fixes from `docs/diff-view-fixes-handover.md` applied afterwards (batch review now lives in `src/review.ts`). Graphical flow comparison and cross-file change stories remain future work.
 Recorded: 2026-10-20.
 
 This is a handoff for implementation after switching models. Read

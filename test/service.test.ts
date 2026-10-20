@@ -847,6 +847,26 @@ describe("ExplanationService", () => {
       expect((await store.read(root)).comparisons).toBeUndefined();
     });
 
+    it("saves nothing when cancelled while rereading or while the write waits", async () => {
+      const store = new MemoryRepositoryCacheStore();
+      const service = createService(store, new MockProvider());
+      const whileReading = new AbortController();
+      await expect(service.explainComparison(snapshot(), async () => {
+        whileReading.abort();
+        return snapshot();
+      }, whileReading.signal)).rejects.toMatchObject({ name: "AbortError" });
+      expect((await store.read(root)).comparisons).toBeUndefined();
+
+      const whileWriting = new AbortController();
+      const update = store.update.bind(store);
+      vi.spyOn(store, "update").mockImplementation(async (key, updater) => {
+        whileWriting.abort();
+        return update(key, updater);
+      });
+      await expect(service.explainComparison(snapshot(), async () => snapshot(), whileWriting.signal)).rejects.toMatchObject({ name: "AbortError" });
+      expect((await store.read(root)).comparisons).toBeUndefined();
+    });
+
     it("sends nothing for unusable sides, an oversized pair, or declined consent", async () => {
       const provider = new MockProvider();
       const service = createService(new MemoryRepositoryCacheStore(), provider);
