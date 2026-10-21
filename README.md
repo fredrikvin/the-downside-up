@@ -138,7 +138,8 @@ In the repository and extension package:
 
 - `docs/configuration.md`: detailed usage, OpenAI setup, settings, prefetch,
   review mode, request limits, and enterprise exclusions.
-- `docs/development.md`: contributor setup, tests, packaging, and releases.
+- `docs/development.md`: contributor setup, Copilot development agents, tests,
+  packaging, and releases.
 - `docs/prototype.md`: architecture, privacy contract, and known limitations.
 - `CHANGELOG.md`: release notes.
 

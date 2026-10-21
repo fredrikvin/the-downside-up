@@ -43,6 +43,36 @@ For a Tree-sitter grammar, also add its name to `esbuild.config.mjs`.
 Other languages use `src/languages/editor/` and VS Code document symbols
 and go-to-definition. Do not assume a language server is installed.
 
+## Copilot development agents
+
+Repository-local profiles live in `.github/agents/`. These are development
+assistants, not the extension's Functions or Project overview models. They do
+not change runtime model settings, sharing consent, or global CLI preferences.
+
+| Agent | Model | Role |
+|---|---|---|
+| `dsu-architect` | GPT-6 Astra | Read-only architecture and implementation plans |
+| `dsu-reviewer` | Claude Opus 5.5 | Read-only correctness and regression review |
+| `dsu-core` | GPT-6.1 Sol | Services, providers, schemas, cache, and request lifecycle |
+| `dsu-preview` | GPT-6 Luna | Webviews, paired visuals, accessibility, and navigation |
+| `dsu-languages` | GPT-6.1 Sol | LanguageSupport, bundled analysis, and fingerprints |
+| `dsu-tests` | Claude Sonnet 5.5 | Regression tests and extension-host diagnosis |
+
+In Copilot CLI, select a profile with `/agent`, name it in a task, or start
+`copilot --agent=dsu-core`. Models are pinned in each profile.
+Reasoning effort and context tier remain inherited: this CLI does not allow
+per-subagent preferences in repository settings. `/subagents` can adjust those
+preferences at the user level, but this setup does not change them.
+Model availability still depends on the signed-in account and organization policy.
+
+Use agents for substantial bounded work, not every lookup or small edit.
+Give each implementation agent an explicit objective and file ownership;
+parallelize only independent work. Do not run a fleet by default. The profiles
+do not delegate further, and architecture/review roles do not edit. Shell access
+for those two roles is limited by their instructions to read-only inspection,
+not by an OS sandbox; normal CLI permission controls still apply.
+Review the implementation with a different model family when warranted.
+
 ## Verification
 
 | Command | Purpose |

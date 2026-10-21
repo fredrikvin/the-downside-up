@@ -1146,6 +1146,12 @@ generated explanation is correct.
 
 ## Local development and verification
 
+Repository-local Copilot development agents in `.github/agents/` separate
+architecture, correctness review, core implementation, preview UI, language
+support, and testing. Their model assignments and usage are documented in
+`docs/development.md`. They do not alter the extension's runtime model selection
+or consent, are excluded from the VSIX, and do not start an automatic fleet.
+
 Requirements: Node.js 18+, npm, Git, Cargo for the Rust fixture, Go for the Go
 fixture, and VS Code 1.90+.
 

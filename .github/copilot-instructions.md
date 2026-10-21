@@ -66,3 +66,18 @@ behavior.
   `README.md`), after the commits with the changes it ships.
 - Update `README.md` and `docs/prototype.md` when setup, privacy, cache
   behavior, supported tooling, or limitations change.
+
+## Development agents
+
+Repository-local agents and their model assignments are documented in
+`docs/development.md` and defined in `.github/agents/`.
+Use `dsu-architect` for substantial design work, `dsu-reviewer` for focused
+correctness review, and `dsu-core`, `dsu-preview`, `dsu-languages`, or `dsu-tests`
+for implementation in their respective scopes. These configure development
+assistants, not the extension's runtime models.
+
+Prefer direct work for small tasks. When delegation is justified, give each
+agent a bounded objective, file ownership, and validation targets. Parallelize
+only independent work, keep shared-file edits with one owner, and avoid nested
+delegation or automatic fleets. Honor the configured model assignments unless
+the user requests a different model.
