@@ -2596,7 +2596,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
   };
 
   const dismissReview = (): void => {
-    stopReview();
+    cancelReview();
     reviewSession = undefined;
     updateReviewStatus();
   };
@@ -2680,7 +2680,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       );
       if (answer !== accept) return 0;
     }
-    stopReview();
+    cancelReview();
     const session = new Review(reviewHost, root, baseLabel, items);
     reviewSession = session;
     updateReviewStatus();

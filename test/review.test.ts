@@ -50,7 +50,8 @@ class Fixture {
     const host: ReviewHost = {
       scheduler: {
         get prefetchCapacity() { return scheduler.prefetchCapacity; },
-        schedule: (priority, task) => scheduler.schedule(priority, task)
+        schedule: (priority, task) => scheduler.schedule(priority, task),
+        onCapacityChange: (listener) => scheduler.onCapacityChange(listener)
       },
       read: async (ref) => {
         this.reads.push(ref.modified.path);
@@ -173,6 +174,46 @@ describe("review mode", () => {
     expect(fixture.saved).toEqual([]);
     expect(fixture.statuses()).toEqual(["a.ts pending", "b.ts pending"]);
     expect(fixture.scheduler.running).toBe(0);
+  });
+
+  it("aborts sent work when a stopped review is retired", async () => {
+    const fixture = new Fixture(1);
+    fixture.outcome = (_path, signal) => new Promise((resolve) => signal.addEventListener("abort", () => resolve()));
+    const review = fixture.start("a.ts");
+    await until(() => fixture.explained.length === 1, "the request to be sent");
+    review.stop();
+    expect(fixture.signals[0]!.aborted).toBe(false);
+
+    review.cancel();
+    await until(() => fixture.signals[0]!.aborted, "the retired request to be aborted");
+    await until(() => fixture.scheduler.running === 0, "the retired request to settle");
+    expect(fixture.saved).toEqual([]);
+    expect(review.items[0]!.status).toBe("pending");
+  });
+
+  it("keeps review items pending and follows the reader while explicit requests occupy every slot", async () => {
+    const fixture = new Fixture(2);
+    const first = deferred();
+    const second = deferred();
+    const explicit = [
+      fixture.scheduler.schedule("explicit", () => first.promise),
+      fixture.scheduler.schedule("explicit", () => second.promise)
+    ];
+    await settle();
+    expect(fixture.scheduler.prefetchCapacity).toBe(0);
+
+    const review = fixture.start("a.ts", "b.ts", "c.ts", "d.ts");
+    await settle();
+    expect(fixture.reads).toEqual([]);
+    expect(review.items.every((item) => item.status === "pending")).toBe(true);
+
+    fixture.reading = "d.ts";
+    first.resolve();
+    await until(() => fixture.reads.includes("d.ts"), "review to wake when an explicit slot frees");
+    expect(fixture.reads[0]).toBe("d.ts");
+    review.cancel();
+    second.resolve();
+    await Promise.all(explicit);
   });
 
   it("lets sent work finish on stop, and continuing does not explain an in-flight file twice", async () => {

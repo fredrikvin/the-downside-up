@@ -14,6 +14,7 @@ import {
 } from "./context/comparison";
 import { findRepositoryRoot, sharingExclusion } from "./context/inventory";
 import { formatUsage } from "./generation/provider";
+import type { ComparisonVisualScope } from "./core/types";
 import type { ChangeView } from "./presentation/panel";
 
 export interface ChangeSessionHost {
@@ -227,6 +228,15 @@ export class ChangeSession {
       }
       return out;
     };
+    const visualLinks = (scope: ComparisonVisualScope, name: "original" | "modified", uri: vscode.Uri): Record<string, string> => {
+      if (!saved?.current) return {};
+      return Object.fromEntries(scope.units
+        .filter((unit) => unit.side === name)
+        .map((unit) => [
+          unit.occurrence.id,
+          register(() => this.host.reveal(uri, unit.occurrence.startLine, unit.occurrence.endLine))
+        ]));
+    };
     const status: ChangeView["status"] = shown.controller ? "loading"
       : shown.problem ? "unavailable"
       : shown.error ? "failed"
@@ -246,7 +256,14 @@ export class ChangeSession {
         result: {
           summary: saved.comparison.summary,
           changes: saved.comparison.changes.map((change) => ({
-            title: change.title, before: change.before, after: change.after, when: change.when, flow: change.flow, links: links(change)
+            id: change.id,
+            title: change.title, before: change.before, after: change.after, when: change.when, flow: change.flow, links: links(change),
+            ...(change.visualScopeId ? { visualScopeId: change.visualScopeId } : {})
+          })),
+          visualScopes: (saved.comparison.visualScopes ?? []).map((scope) => ({
+            scope,
+            originalLinks: visualLinks(scope, "original", shown.originalUri),
+            modifiedLinks: visualLinks(scope, "modified", shown.modifiedUri)
           })),
           outside: saved.comparison.outside,
           possibleEffects: saved.comparison.possibleEffects,

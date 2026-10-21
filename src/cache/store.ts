@@ -29,11 +29,17 @@ function parseCache(raw: string): RepositoryCache {
 export interface RepositoryCacheStore {
   read(root: string): Promise<RepositoryCache>;
   write(root: string, value: RepositoryCache): Promise<void>;
+  /** Aborts before commit; a committed update resolves even if its signal is subsequently aborted. */
   update(
     root: string,
-    updater: (current: RepositoryCache) => RepositoryCache
+    updater: (current: RepositoryCache) => RepositoryCache,
+    signal?: AbortSignal
   ): Promise<RepositoryCache>;
   clear(root: string): Promise<void>;
+}
+
+function assertNotCancelled(signal?: AbortSignal): void {
+  if (signal?.aborted) throw new DOMException("Cache update cancelled.", "AbortError");
 }
 
 export class FileRepositoryCacheStore implements RepositoryCacheStore {
@@ -65,11 +71,14 @@ export class FileRepositoryCacheStore implements RepositoryCacheStore {
     return this.readFile(file);
   }
 
-  private async persist(file: string, value: RepositoryCache): Promise<void> {
+  protected async persist(file: string, value: RepositoryCache, signal?: AbortSignal): Promise<void> {
+    assertNotCancelled(signal);
     await mkdir(dirname(file), { recursive: true });
     const temporary = `${file}.${process.pid}.${Date.now()}.tmp`;
     try {
       await writeFile(temporary, JSON.stringify(value), { mode: 0o600 });
+      assertNotCancelled(signal);
+      // Rename cannot be cancelled: once issued, its outcome determines whether the update committed.
       await rename(temporary, file);
     } catch (error) {
       await rm(temporary, { force: true });
@@ -79,13 +88,16 @@ export class FileRepositoryCacheStore implements RepositoryCacheStore {
 
   async update(
     root: string,
-    updater: (current: RepositoryCache) => RepositoryCache
+    updater: (current: RepositoryCache) => RepositoryCache,
+    signal?: AbortSignal
   ): Promise<RepositoryCache> {
     const file = this.fileFor(root);
     const previous = this.writes.get(file) ?? Promise.resolve();
     const write = previous.then(async () => {
+      assertNotCancelled(signal);
       const next = updater(await this.readFile(file));
-      await this.persist(file, next);
+      assertNotCancelled(signal);
+      await this.persist(file, next, signal);
       return next;
     });
     this.writes.set(file, write);
@@ -125,11 +137,14 @@ export class MemoryRepositoryCacheStore implements RepositoryCacheStore {
 
   async update(
     root: string,
-    updater: (current: RepositoryCache) => RepositoryCache
+    updater: (current: RepositoryCache) => RepositoryCache,
+    signal?: AbortSignal
   ): Promise<RepositoryCache> {
     const previous = this.locks.get(root) ?? Promise.resolve();
     const operation = previous.then(() => {
+      assertNotCancelled(signal);
       const next = updater(structuredClone(this.values.get(root) ?? emptyRepositoryCache()));
+      assertNotCancelled(signal);
       this.values.set(root, structuredClone(next));
       return structuredClone(next);
     });

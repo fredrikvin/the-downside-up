@@ -369,6 +369,8 @@ export interface ComparisonSpan {
 
 /** One behavior change found in a comparison, before the host has checked its line spans. */
 export interface ComparisonChangeDraft {
+  /** Stable within this response; always assigned by the comparison response parser. */
+  readonly id?: string;
   readonly title: string;
   /** How the code behaved before; empty for added code. */
   readonly before: string;
@@ -380,12 +382,93 @@ export interface ComparisonChangeDraft {
   readonly flow: string;
   readonly original: ComparisonSpan;
   readonly modified: ComparisonSpan;
+  /** A comparison-local visual scope shared by related changes. */
+  readonly visualScopeId?: string;
+}
+
+/** One side-specific source occurrence of a semantic operation. */
+export interface ComparisonOccurrence extends LineLinked {
+  readonly id: string;
+}
+
+/** A semantic operation that may occur on either or both sides. */
+export interface ComparisonUnit {
+  readonly id: string;
+  readonly label: string;
+  readonly side: "original" | "modified";
+  readonly occurrence: ComparisonOccurrence;
+}
+
+/** Explicit one-to-one matching; labels alone do not imply correspondence. */
+export interface ComparisonUnitCorrespondence {
+  readonly originalUnitId: string;
+  readonly modifiedUnitId: string;
+  readonly meaning: string;
+  readonly difference: string;
+}
+
+export interface ComparisonFlowNode {
+  readonly id: string;
+  readonly kind: FlowNodeKind;
+  readonly label: string;
+  /** References an occurrence on this side, never a path or navigation id. */
+  readonly occurrenceId: string;
+}
+
+export interface ComparisonFlowEdge extends FlowEdge {
+  readonly id: string;
+}
+
+export interface ComparisonFlowchart {
+  readonly nodes: readonly ComparisonFlowNode[];
+  readonly edges: readonly ComparisonFlowEdge[];
+}
+
+export interface ComparisonEdgeCorrespondence {
+  readonly originalEdgeId: string;
+  readonly modifiedEdgeId: string;
+  readonly meaning: string;
+  readonly difference: string;
+}
+
+/** Ordered, source-linked prose for one side of a paired visual scope. */
+export interface ComparisonTextItem extends LineLinked {
+  readonly id: string;
+  readonly text: string;
+  readonly detail?: string;
+  readonly depth?: number;
+  readonly occurrenceId: string;
+}
+
+export interface ComparisonVisualSide {
+  readonly presence: "present" | "absent";
+  /** The included region on this exact side. */
+  readonly region: string;
+  readonly coverage: string;
+  readonly flowchartStatus: "available" | "not-applicable" | "unavailable";
+  readonly flowchartReason: string;
+  readonly steps: readonly ComparisonTextItem[];
+  readonly pseudocode: readonly ComparisonTextItem[];
+  readonly flowchart: ComparisonFlowchart;
+}
+
+/** All visual forms for a region are generated together from both exact snapshots. */
+export interface ComparisonVisualScope {
+  readonly id: string;
+  readonly title: string;
+  readonly original: ComparisonVisualSide;
+  readonly modified: ComparisonVisualSide;
+  readonly units: readonly ComparisonUnit[];
+  readonly unitCorrespondences: readonly ComparisonUnitCorrespondence[];
+  readonly edgeCorrespondences: readonly ComparisonEdgeCorrespondence[];
 }
 
 /** A model's explanation of one file's change, before the host has checked its line spans. */
 export interface FileComparisonDraft {
   readonly summary: string;
   readonly changes: readonly ComparisonChangeDraft[];
+  /** Invalid visual data is omitted while the textual comparison is retained. */
+  readonly visualScopes?: readonly ComparisonVisualScope[];
   /** Changes outside functions, such as imports, constants, configuration, and comments. */
   readonly outside: string;
   /** Consequences that might follow but are not shown by the code; kept apart from observed behavior. */

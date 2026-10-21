@@ -175,7 +175,7 @@
           },
           "downsideUp.explanations.formats": {
             "type": "object",
-            "markdownDescription": "Extra ways to show **What happens** in AI explanations, as tabs next to the numbered steps. Enabled views are generated together with new explanations, which makes each request somewhat larger; for saved explanations, open the tab and choose **Generate**.",
+            "markdownDescription": "Extra ways to show **What happens** in function explanations, as tabs next to the numbered steps. Enabled views are generated together with new explanations, which makes each request somewhat larger; for saved explanations, open the tab and choose **Generate**. Paired change comparisons include their Steps, Pseudocode, and Flowchart together in the explicit **Explain changes** request.",
             "properties": {
               "pseudocode": {
                 "type": "boolean",

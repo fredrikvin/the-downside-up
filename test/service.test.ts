@@ -1,15 +1,20 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rename, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { FileRepositoryCacheStore, MemoryRepositoryCacheStore } from "../src/cache/store";
-import type { FunctionTarget } from "../src/core/types";
+import type { FunctionTarget, RepositoryCache } from "../src/core/types";
 import { ExplanationService } from "../src/controller";
 import { MockProvider } from "../src/generation/mock";
 import { COMPONENT_GUIDANCE } from "../src/languages/javascript/guidance";
 import { initializeJavaScriptParsersAt } from "../src/languages/javascript/syntax";
 import { javascriptSupport } from "../src/languages/javascript";
 import { Range, Position, Uri, workspace } from "./vscode";
+
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  return { ...actual, rename: vi.fn(actual.rename) };
+});
 
 const harness = vi.hoisted(() => ({
   functionHash: "function-v1",
@@ -866,6 +871,72 @@ describe("ExplanationService", () => {
       await expect(service.explainComparison(snapshot(), async () => snapshot(), whileWriting.signal)).rejects.toMatchObject({ name: "AbortError" });
       expect((await store.read(root)).comparisons).toBeUndefined();
     });
+
+    it("does not commit or report success when cancelled during file-cache persistence", async () => {
+      let enterPersist!: () => void;
+      const persistenceEntered = new Promise<void>((resolveEntered) => { enterPersist = resolveEntered; });
+      let releasePersist!: () => void;
+      const persistenceGate = new Promise<void>((resolveGate) => { releasePersist = resolveGate; });
+      class GatedFileStore extends FileRepositoryCacheStore {
+        protected override async persist(file: string, value: RepositoryCache, signal?: AbortSignal): Promise<void> {
+          enterPersist();
+          await persistenceGate;
+          await super.persist(file, value, signal);
+        }
+      }
+      const storage = resolve(`.test-cache-cancellation-${process.pid}`);
+      await rm(storage, { recursive: true, force: true });
+      try {
+        const store = new GatedFileStore(storage);
+        const service = createService(store, new MockProvider());
+        const controller = new AbortController();
+        const result = service.explainComparison(snapshot(), async () => snapshot(), controller.signal);
+        await persistenceEntered;
+        controller.abort();
+        releasePersist();
+
+        await expect(result).rejects.toMatchObject({ name: "AbortError" });
+        expect((await store.read(root)).comparisons).toBeUndefined();
+      } finally {
+        releasePersist();
+        await rm(storage, { recursive: true, force: true });
+      }
+    });
+
+    it.each(["rename in flight", "post-persistence notification"] as const)(
+      "reports a committed comparison as successful when aborted during %s",
+      async (abortAt) => {
+        const storage = resolve(`.test-cache-commit-${process.pid}`);
+        const controller = new AbortController();
+        const changed = vi.fn(() => {
+          if (abortAt === "post-persistence notification") controller.abort();
+        });
+        await rm(storage, { recursive: true, force: true });
+        try {
+          if (abortAt === "rename in flight") {
+            const actual = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
+            vi.mocked(rename).mockImplementationOnce(async (from, to) => {
+              const committing = actual.rename(from, to);
+              controller.abort();
+              await committing;
+            });
+          }
+          const store = new FileRepositoryCacheStore(storage, changed);
+          const service = createService(store, new MockProvider());
+          const result = await service.explainComparison(snapshot(), async () => snapshot(), controller.signal);
+
+          expect(controller.signal.aborted).toBe(true);
+          expect(result).toMatchObject({ cached: false, current: true });
+          expect(changed).toHaveBeenCalledExactlyOnceWith(root);
+          const persisted = await createService(new FileRepositoryCacheStore(storage), new MockProvider()).findComparison(snapshot());
+          expect(persisted).toEqual(expect.objectContaining({
+            comparison: result.comparison, savedAt: result.savedAt, current: true
+          }));
+        } finally {
+          await rm(storage, { recursive: true, force: true });
+        }
+      }
+    );
 
     it("sends nothing for unusable sides, an oversized pair, or declined consent", async () => {
       const provider = new MockProvider();

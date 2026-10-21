@@ -9,6 +9,7 @@ export class RequestScheduler {
   private active = 0;
   private activePrefetches = 0;
   private readonly waiting: Record<RequestPriority, Array<() => void>> = { explicit: [], prefetch: [] };
+  private readonly capacityListeners = new Set<() => void>();
 
   constructor(private readonly limit: () => number) {}
 
@@ -18,7 +19,20 @@ export class RequestScheduler {
 
   /** Free slots that prefetching may use now. */
   get prefetchCapacity(): number {
-    return Math.max(0, this.prefetchLimit() - this.activePrefetches - this.waiting.prefetch.length);
+    return Math.max(0, Math.min(
+      this.prefetchLimit() - this.activePrefetches - this.waiting.prefetch.length,
+      this.currentLimit() - this.active - this.waiting.explicit.length
+    ));
+  }
+
+  /** Notifies background work when the number of runnable prefetch slots may have changed. */
+  onCapacityChange(listener: () => void): () => void {
+    this.capacityListeners.add(listener);
+    return () => this.capacityListeners.delete(listener);
+  }
+
+  private notifyCapacityChange(): void {
+    for (const listener of this.capacityListeners) listener();
   }
 
   schedule<T>(priority: RequestPriority, task: () => Promise<T>): Promise<T> {
@@ -58,6 +72,7 @@ export class RequestScheduler {
     ) {
       this.waiting.prefetch.shift()!();
     }
+    this.notifyCapacityChange();
   }
 
   private currentLimit(): number {

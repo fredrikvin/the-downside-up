@@ -1295,7 +1295,7 @@ export class ExplanationService {
       if (this.fence(root) !== startingFence || signal?.aborted) return current;
       saved = true;
       return { ...current, comparisons: { ...current.comparisons, [comparisonKey(snapshot, descriptor)]: record } };
-    });
+    }, signal);
     if (!saved) {
       assertNotCancelled(signal);
       throw new Error("The files changed while the change was being explained, so the result was discarded.");

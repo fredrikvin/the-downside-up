@@ -352,9 +352,22 @@ modified side of the diff without moving the comparison. This is a
 description of what changed, not an automated correctness or security
 review.
 
-Paired visual comparisons and a subsequent illustrative **Trace a case**
-feature are planned in [Visual behavior comparisons](diff-flow-plan.md);
-they are not implemented by the current textual change view.
+When a comparison includes a visual scope, its change card also offers
+**Steps**, **Pseudocode**, and **Flowchart** tabs for the original and modified
+versions together. Each side has its own ordered explanation and control-flow
+chart from the exact numbered source; the model supplies explicit operation
+and edge correspondences, so similar labels alone do not imply a match.
+Changed behavior stays paired, while added, removed, or uncertain operations
+remain unmatched. Scopes name the source region and coverage; an unavailable
+chart says why instead of inventing a path. Visual text is rendered as text,
+and clicking a linked step, pseudocode line, or chart node reveals only the
+host-validated lines on that side. Switching tabs is local and makes no
+request. If visual data is invalid or exceeds its bounds, the textual
+comparison remains and the limitation is shown.
+
+An illustrative **Trace a case** remains planned in
+[Visual behavior comparisons](diff-flow-plan.md); it will not execute code or
+prove that either version is correct.
 
 Comparison records are saved in the repository cache beside explanations,
 under a key made from both sides' identities (`working`, `index`, or a

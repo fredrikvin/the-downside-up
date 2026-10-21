@@ -1,6 +1,7 @@
 # Visual behavior comparisons: implementation plan
 
-Status: planned, not implemented. Baseline: 0.39.1.
+Status: Paired visual comparisons are implemented in the development tree;
+**Trace a case** remains planned. Baseline: 0.39.2.
 Recorded: 2026-10-20.
 
 This extends the textual native-diff change view, not ordinary function
@@ -186,18 +187,11 @@ source links must make zero provider requests. Only explicit generation
 actions and the already-confirmed review set may generate, under existing
 exclusion, workspace-trust, size-limit, and consent rules.
 
-Before adding more comparison requests, address the three outstanding
-lifecycle findings from the 0.39.1 review, with permanent regression tests:
-
-1. Keep dismissed/replaced reviews' sent requests reachable by Cancel and
-   preview disposal until they settle, or cancel them when retiring a review.
-2. Cover cancellation through the file-cache persistence commit point, not
-   only entry into its updater; do not save or report success after cancellation.
-3. Keep review items reorderable when explicit requests occupy every slot.
-   Account for actual runnable capacity and wake review when slots become free.
-
-These are prerequisites to shipping the visual feature, not fixes already
-included in this planning change.
+The review lifecycle prerequisites from the 0.39.1 review are addressed in
+the paired-visual implementation: retiring a review cancels its work, cache
+persistence honors cancellation through the commit point, and the scheduler
+keeps pending review items reorderable while explicit work occupies slots.
+Focused regression tests cover these cases.
 
 ## Implementation sequence
 

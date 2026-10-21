@@ -38,9 +38,11 @@ and billing.
   folder from the Explorer, or navigate the breadcrumbs. Project maps show
   parts and connections; folder pages offer summaries and main flows.
 - **Understand a change.** With the preview open, show a Git diff in VS Code
-  and click **Explain changes** to see, in plain language, what a file did
-  before and after, with links to the lines on either side. Opening a diff never
-  sends anything; the request sends both versions of that one file.
+  and click **Explain changes** to compare the behavior on both sides in
+  plain-language steps, pseudocode, and flowcharts, alongside the summary and
+  before/after explanation. Click a visual item to reveal its source lines.
+  Opening a diff never sends anything; the explicit request sends both
+  versions of that one file.
 - **Prepare a review.** Run **Downside Up: Review Changes…**, select a
   comparison, and confirm the number of changed files to explain; each opens in
   VS Code's native diff.

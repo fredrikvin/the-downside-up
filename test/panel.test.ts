@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { panelHtml, type ExplanationView, type PanelState, type Crumb, type ChangeView } from "../src/presentation/panel";
-import type { Flowchart } from "../src/core/types";
+import type { ComparisonVisualScope, Flowchart } from "../src/core/types";
 
 class TestElement {
   readonly children: Array<TestElement | string> = [];
@@ -11,14 +11,32 @@ class TestElement {
   title = "";
   hidden = false;
   disabled = false;
-  readonly listeners = new Map<string, (event?: { preventDefault(): void; stopPropagation(): void }) => void>();
+  focused = false;
+  readonly listeners = new Map<string, (event?: { key?: string; preventDefault(): void; stopPropagation(): void }) => void>();
   readonly dataset: Record<string, string> = {};
+  readonly style: Record<string, string> = {};
+  readonly classList = { add: (...names: string[]) => { this.className += " " + names.join(" "); } };
+  readonly clientWidth = 400;
+  readonly offsetWidth = 320;
+  readonly offsetHeight = 200;
+  readonly scrollWidth = 320;
+  readonly scrollHeight = 200;
+  readonly isConnected = true;
+  parentElement?: TestElement;
+  get ownerSVGElement(): TestElement | undefined { return this.parentElement?.tagName === "svg" ? this.parentElement : this.parentElement?.ownerSVGElement; }
   constructor(readonly tagName: string) {}
-  append(...children: Array<TestElement | string>): void { this.children.push(...children); }
-  prepend(...children: Array<TestElement | string>): void { this.children.unshift(...children); }
-  replaceChildren(...children: Array<TestElement | string>): void { this.children.splice(0, this.children.length, ...children); this.textContent = ""; }
+  append(...children: Array<TestElement | string>): void { for (const child of children) if (child instanceof TestElement) child.parentElement = this; this.children.push(...children); }
+  prepend(...children: Array<TestElement | string>): void { for (const child of children) if (child instanceof TestElement) child.parentElement = this; this.children.unshift(...children); }
+  replaceChildren(...children: Array<TestElement | string>): void { this.children.length = 0; this.append(...children); this.textContent = ""; }
   setAttribute(name: string, value: string): void { this.attributes.set(name, value); }
-  addEventListener(type: string, listener: (event?: { preventDefault(): void; stopPropagation(): void }) => void): void { this.listeners.set(type, listener); }
+  getAttribute(name: string): string | undefined { return this.attributes.get(name); }
+  querySelectorAll(): TestElement[] { return []; }
+  getBoundingClientRect() { const top = (Number(this.style.gridRow || 1) - 1) * 100; return { width: 320, height: 40, left: 0, right: 320, top, bottom: top + 40 }; }
+  getTotalLength(): number { return 100; }
+  getPointAtLength(length: number) { return { x: 160, y: length }; }
+  getBBox() { return { x: 100, y: 50, width: 80, height: 12 }; }
+  addEventListener(type: string, listener: (event?: { key?: string; preventDefault(): void; stopPropagation(): void }) => void): void { this.listeners.set(type, listener); }
+  focus(): void { this.focused = true; }
   elements(): TestElement[] {
     return [this, ...this.children.flatMap((child) => typeof child === "string" ? [] : child.elements())];
   }
@@ -30,11 +48,12 @@ function webviewHelpers() {
   const script = html.slice(start, html.indexOf("</script>", start));
   const elements = new Map<string, TestElement>();
   const messages: unknown[] = [];
+  const frames: Array<() => void> = [];
   const element = (id: string) => {
     if (!elements.has(id)) elements.set(id, new TestElement("button"));
     return elements.get(id)!;
   };
-  const helpers = new Function("acquireVsCodeApi", "document", "window", script + "\nreturn { layoutFlow, downwardPath, renderEntry, renderAiBody, missingFormat, renderHeader, renderCrumbs, renderActivity, renderPageActions, renderChange };")(
+  const helpers = new Function("acquireVsCodeApi", "document", "window", "requestAnimationFrame", script + "\nreturn { layoutFlow, downwardPath, renderEntry, renderAiBody, missingFormat, renderHeader, renderCrumbs, renderActivity, renderPageActions, renderChange, setFormats: (formats) => { state = { formats }; } };")(
     () => ({ getState: () => ({}), postMessage: (message: unknown) => messages.push(message) }),
     {
       getElementById: element,
@@ -42,7 +61,8 @@ function webviewHelpers() {
       createElementNS: (_ns: string, tag: string) => new TestElement(tag),
       createTextNode: (text: string) => text
     },
-    { addEventListener: () => undefined }
+    { addEventListener: () => undefined },
+    (callback: () => void) => { frames.push(callback); return frames.length; }
   ) as {
     layoutFlow(chart: Flowchart, limit?: number): { rows: Flowchart["nodes"][]; back: Set<Flowchart["edges"][number]> };
     downwardPath(points: Array<{ x: number; y: number }>): string;
@@ -54,9 +74,10 @@ function webviewHelpers() {
     renderActivity(state: Pick<PanelState, "busy" | "notice" | "folder" | "stats">): void;
     renderPageActions(state: Partial<PanelState>): void;
     renderChange(change: ChangeView): TestElement[];
+    setFormats(formats: PanelState["formats"]): void;
   };
   messages.length = 0;
-  return { ...helpers, element, messages };
+  return { ...helpers, element, messages, flushFrames: () => { while (frames.length) frames.shift()!(); } };
 }
 
 it("shows elapsed activity across updates and clears the timer when work stops", () => {
@@ -395,6 +416,191 @@ describe("change view", () => {
   };
   const texts = (nodes: TestElement[]) => nodes.flatMap((node) => node.elements()).flatMap((node) => [node.textContent, ...node.children.filter((child) => typeof child === "string")]);
   const event = { preventDefault: () => undefined, stopPropagation: () => undefined };
+  const visualScope = (): ComparisonVisualScope => {
+    const side = (prefix: string): ComparisonVisualScope["original"] => ({
+      presence: "present", region: prefix + " region", coverage: "Selected routine only",
+      flowchartStatus: "available", flowchartReason: "",
+      steps: [{ id: "step", text: prefix + " step <script>alert(1)</script>", detail: prefix + " detail", occurrenceId: "occurrence", startLine: 2, endLine: 3 }],
+      pseudocode: [{ id: "pseudo", text: prefix + " pseudocode", depth: 2, occurrenceId: "occurrence", startLine: 2, endLine: 3 }],
+      flowchart: {
+        nodes: [
+          { id: "start", kind: "start", label: prefix + " start", occurrenceId: "occurrence" },
+          { id: "end", kind: "end", label: prefix + " end", occurrenceId: "occurrence" }
+        ],
+        edges: [{ id: "edge", from: "start", to: "end", label: prefix + " branch" }]
+      }
+    });
+    return {
+      id: "scope", title: "Paired <b>routine</b>", original: side("Before"), modified: side("After"),
+      units: [
+        { id: "before-unit", label: "Old operation", side: "original", occurrence: { id: "occurrence", startLine: 2, endLine: 3 } },
+        { id: "after-unit", label: "New operation", side: "modified", occurrence: { id: "occurrence", startLine: 2, endLine: 3 } }
+      ],
+      unitCorrespondences: [{ originalUnitId: "before-unit", modifiedUnitId: "after-unit", meaning: "Checks input", difference: "Rejects empty values" }],
+      edgeCorrespondences: [{ originalEdgeId: "edge", modifiedEdgeId: "edge", meaning: "Next operation", difference: "Runs after validation" }]
+    };
+  };
+  const withVisual = (scope = visualScope()): ChangeView => ({
+    ...base, status: "current",
+    result: {
+      summary: "Changed routine", changes: [{ visualScopeId: scope.id, title: "Validation", before: "", after: "", when: "", flow: "", links: [] }],
+      outside: "", possibleEffects: [], limitations: [], model: "m",
+      visualScopes: [{ scope, originalLinks: { occurrence: "host-original" }, modifiedLinks: { occurrence: "host-modified" } }]
+    }
+  });
+
+  it("renders scoped paired steps, pseudocode, and flow connections using only host-owned side links", () => {
+    const { renderChange, messages, flushFrames } = webviewHelpers();
+    const cards = renderChange(withVisual());
+    const elements = () => cards.flatMap((card) => card.elements());
+    const click = (text: string) => elements().find((node) => node.textContent === text)?.listeners.get("click")?.(event);
+    const visibleTexts = () => texts(cards).join(" ");
+    expect(visibleTexts()).toContain("Before step <script>alert(1)</script>");
+    expect(visibleTexts()).toContain("After step <script>alert(1)</script>");
+    expect(visibleTexts()).toContain("Before detail");
+    expect(visibleTexts()).toContain("Coverage: Selected routine only");
+    expect(elements().some((node) => node.tagName === "script" || node.tagName === "b")).toBe(false);
+    expect(elements().find((node) => node.className === "comparison-visual")).toBeDefined();
+    expect(elements().find((node) => node.attributes.get("role") === "tablist")?.attributes.get("aria-label")).toBe("Paired <b>routine</b> comparison views");
+    expect(elements().find((node) => node.textContent === "Steps")?.attributes.get("aria-selected")).toBe("true");
+    expect(messages).toEqual([]);
+    click("Before step <script>alert(1)</script>");
+    click("After step <script>alert(1)</script>");
+    expect(messages.splice(0)).toEqual([{ type: "navigate", referenceId: "host-original" }, { type: "navigate", referenceId: "host-modified" }]);
+    click("Pseudocode");
+    expect(messages).toEqual([]);
+    expect(visibleTexts()).not.toContain("Before step");
+    expect(visibleTexts()).toContain("Before pseudocode");
+    expect(elements().find((node) => node.tagName === "li" && node.attributes.has("style"))?.attributes.get("style")).toBe("margin-left: 2em");
+    click("Before pseudocode");
+    click("After pseudocode");
+    expect(messages.splice(0)).toEqual([{ type: "navigate", referenceId: "host-original" }, { type: "navigate", referenceId: "host-modified" }]);
+    click("Flowchart");
+    flushFrames();
+    expect(messages).toEqual([]);
+    expect(elements().filter((node) => node.className === "flow-scroll")).toHaveLength(2);
+    expect(elements().filter((node) => node.tagName === "svg")).toHaveLength(2);
+    const edges = elements().filter((node) => node.tagName === "path" && node.attributes.get("class") === "flow-edge");
+    expect(edges).toHaveLength(2);
+    expect(edges.every((edge) => edge.attributes.get("d")?.startsWith("M") && edge.attributes.get("marker-end")?.startsWith("url(#arrow-comparison-visual-"))).toBe(true);
+    expect(new Set(edges.map((edge) => edge.attributes.get("marker-end"))).size).toBe(2);
+    expect(visibleTexts()).toContain("Last commit lines 2–3");
+    expect(visibleTexts()).toContain("Working copy lines 2–3");
+    expect(visibleTexts()).toContain("Before branch");
+    expect(visibleTexts()).toContain("After branch");
+    click("Before start");
+    click("After end");
+    expect(messages.splice(0)).toEqual([{ type: "navigate", referenceId: "host-original" }, { type: "navigate", referenceId: "host-modified" }]);
+    expect(visibleTexts()).toContain("not proof of equivalent behavior");
+    expect(visibleTexts()).toContain("Meaning: Checks input");
+    expect(visibleTexts()).toContain("Difference: Runs after validation");
+    click("Old operation");
+    click("New operation");
+    expect(messages).toEqual([{ type: "navigate", referenceId: "host-original" }, { type: "navigate", referenceId: "host-modified" }]);
+    const html = panelHtml("n");
+    expect(html).toContain('grid-template-columns: minmax(0, 1fr) minmax(0, 1fr)');
+    expect(html).toContain('@media (max-width: 600px) { .comparison-sides { grid-template-columns: minmax(0, 1fr); } }');
+  });
+
+  it("keeps comparison tabs local, keyboard accessible, and independent of other change cards", () => {
+    const { renderChange, messages } = webviewHelpers();
+    const view = withVisual();
+    const sharedScope = {
+      ...view,
+      result: {
+        ...view.result!,
+        changes: [...view.result!.changes, { ...view.result!.changes[0]!, title: "Related change" }]
+      }
+    };
+    expect(renderChange(sharedScope).flatMap((card) => card.elements()).filter((node) => node.className === "comparison-visual")).toHaveLength(1);
+
+    const second = { ...visualScope(), id: "second", title: "Second scope" };
+    const combined: ChangeView = {
+      ...view,
+      result: {
+        ...view.result!,
+        changes: [...view.result!.changes, { ...view.result!.changes[0]!, visualScopeId: second.id }],
+        visualScopes: [...view.result!.visualScopes!, { scope: second, originalLinks: {}, modifiedLinks: {} }]
+      }
+    };
+    const cards = renderChange(combined);
+    const visuals = cards.flatMap((card) => card.elements()).filter((node) => node.className === "comparison-visual");
+    const firstTab = visuals[0]!.elements().find((node) => node.textContent === "Steps")!;
+    firstTab.listeners.get("keydown")?.({ ...event, key: "ArrowRight" });
+    const firstElements = visuals[0]!.elements();
+    const pseudoTab = firstElements.find((node) => node.textContent === "Pseudocode")!;
+    expect(pseudoTab.focused).toBe(true);
+    expect(pseudoTab.attributes.get("aria-selected")).toBe("true");
+    const pane = firstElements.find((node) => node.attributes.get("role") === "tabpanel")!;
+    expect(pane.attributes.get("aria-labelledby")).toBe(pseudoTab.id);
+    expect(pseudoTab.attributes.get("aria-controls")).toBe(pane.id);
+    expect(visuals[1]!.elements().find((node) => node.textContent === "Steps")?.attributes.get("aria-selected")).toBe("true");
+    const rerendered = renderChange(combined).flatMap((card) => card.elements()).filter((node) => node.className === "comparison-visual");
+    expect(rerendered[0]!.elements().find((node) => node.textContent === "Pseudocode")?.attributes.get("aria-selected")).toBe("true");
+    expect(rerendered[1]!.elements().find((node) => node.textContent === "Steps")?.attributes.get("aria-selected")).toBe("true");
+    const otherPair = renderChange({ ...combined, key: "other-pair" }).flatMap((card) => card.elements());
+    expect(otherPair.filter((node) => node.textContent === "Steps").every((tab) => tab.attributes.get("aria-selected") === "true")).toBe(true);
+    expect(messages).toEqual([]);
+  });
+
+  it("shows missing sides and unavailable chart reasons without offering absent formats or requests", () => {
+    const { renderChange, messages } = webviewHelpers();
+    const scope = visualScope();
+    const empty = { ...scope.original, steps: [], pseudocode: [], flowchart: { nodes: [], edges: [] } };
+    const added: ComparisonVisualScope = {
+      ...scope,
+      original: { ...empty, presence: "absent", flowchartStatus: "not-applicable", flowchartReason: "No original routine" },
+      modified: { ...scope.modified, flowchartStatus: "unavailable", flowchartReason: "Routine exceeds chart limit" }
+    };
+    const cards = renderChange(withVisual(added));
+    expect(texts(cards)).toContain("Not present in this version.");
+    cards.flatMap((card) => card.elements()).find((node) => node.textContent === "Flowchart")?.listeners.get("click")?.(event);
+    expect(texts(cards)).toContain("Flowchart unavailable.");
+    expect(texts(cards)).toContain("Routine exceeds chart limit");
+    const noFormats = renderChange(withVisual({ ...scope, original: empty, modified: empty }));
+    const tabs = noFormats.flatMap((card) => card.elements()).filter((node) => node.attributes.get("role") === "tab");
+    expect(tabs.map((tab) => tab.textContent)).toEqual(["Steps"]);
+    expect(texts(noFormats)).toContain("No steps recorded for this region.");
+    expect(messages).toEqual([]);
+  });
+
+  it("retains unassigned scopes and omits all visual navigation when outdated or not host-linked", () => {
+    const { renderChange, messages, flushFrames } = webviewHelpers();
+    const view = withVisual();
+    const noChanges: ChangeView = { ...view, result: { ...view.result!, changes: [] } };
+    expect(texts(renderChange(noChanges))).toContain("Paired <b>routine</b>");
+    for (const stale of [
+      { ...view, status: "outdated" as const },
+      { ...view, status: "failed" as const, result: { ...view.result!, outdated: true } },
+      { ...view, result: { ...view.result!, visualScopes: [{ ...view.result!.visualScopes![0]!, originalLinks: {}, modifiedLinks: {} }] } }
+    ]) {
+      const cards = renderChange(stale);
+      const elements = () => cards.flatMap((card) => card.elements());
+      expect(elements().filter((node) => node.tagName === "a" && node.attributes.has("aria-label"))).toHaveLength(0);
+      elements().find((node) => node.textContent === "Pseudocode")?.listeners.get("click")?.(event);
+      expect(elements().filter((node) => node.tagName === "a" && node.attributes.has("aria-label"))).toHaveLength(0);
+      elements().find((node) => node.textContent === "Flowchart")?.listeners.get("click")?.(event);
+      flushFrames();
+      expect(elements().filter((node) => node.tagName === "a" && node.attributes.has("aria-label"))).toHaveLength(0);
+      expect(elements().filter((node) => node.className.startsWith("flow-node"))).toHaveLength(4);
+      expect(elements().filter((node) => node.dataset.flowLink === "1")).toHaveLength(0);
+    }
+    expect(messages).toEqual([]);
+  });
+
+  it("honors optional format settings without hiding Steps or generating formats", () => {
+    const { renderChange, setFormats, messages } = webviewHelpers();
+    setFormats({ pseudocode: false, flowchart: true, initial: "pseudocode" });
+    const cards = renderChange(withVisual());
+    const tabs = () => cards.flatMap((card) => card.elements()).filter((node) => node.attributes.get("role") === "tab");
+    expect(tabs().map((tab) => tab.textContent)).toEqual(["Steps", "Flowchart"]);
+    tabs().find((tab) => tab.textContent === "Flowchart")?.listeners.get("click")?.(event);
+    setFormats({ pseudocode: false, flowchart: false, initial: "flowchart" });
+    const updatedTabs = renderChange(withVisual()).flatMap((card) => card.elements()).filter((node) => node.attributes.get("role") === "tab");
+    expect(updatedTabs.map((tab) => tab.textContent)).toEqual(["Steps"]);
+    expect(updatedTabs[0]!.attributes.get("aria-selected")).toBe("true");
+    expect(messages).toEqual([]);
+  });
 
   it("asks before explaining and posts only an explicit request", () => {
     const { renderChange, messages } = webviewHelpers();

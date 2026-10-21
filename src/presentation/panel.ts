@@ -1,6 +1,6 @@
 import * as vscode from "vscode";
 import { randomBytes } from "node:crypto";
-import type { ExplanationFormat, Flowchart, FunctionExplanation, RepositoryOverview } from "../core/types";
+import type { ComparisonVisualScope, ExplanationFormat, Flowchart, FunctionExplanation, RepositoryOverview } from "../core/types";
 import type { SourceReference } from "../context/related";
 import type { FileOverview } from "../context/fileOverview";
 import type { CachedUsage } from "../cache/usage";
@@ -155,12 +155,19 @@ export interface ChangeLinkView {
 export interface ChangeResultView {
   readonly summary: string;
   readonly changes: ReadonlyArray<{
+    readonly visualScopeId?: string;
     readonly title: string;
     readonly before: string;
     readonly after: string;
     readonly when: string;
     readonly flow: string;
     readonly links: readonly ChangeLinkView[];
+  }>;
+  /** Exact paired visuals with host-validated, side-specific navigation ids keyed by occurrence id. */
+  readonly visualScopes?: ReadonlyArray<{
+    readonly scope: ComparisonVisualScope;
+    readonly originalLinks: Readonly<Record<string, string>>;
+    readonly modifiedLinks: Readonly<Record<string, string>>;
   }>;
   readonly outside: string;
   readonly possibleEffects: readonly string[];
@@ -326,6 +333,19 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
     .change-sides h5, .change-item h5 { margin: 6px 0 2px; font-size: .8em; text-transform: uppercase; letter-spacing: .04em; color: var(--vscode-descriptionForeground); }
     .change-sides p, .change-item p { margin: 0 0 4px; }
     .change-links { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: .85em; margin-bottom: 4px; }
+    .comparison-visual { margin-top: 12px; overflow-wrap: anywhere; }
+    .comparison-tabs { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+    .comparison-tabs button { font: inherit; color: inherit; background: transparent; border: 1px solid var(--separator); border-radius: 4px; padding: 4px 8px; cursor: pointer; }
+    .comparison-tabs button[aria-selected="true"] { border-color: var(--vscode-focusBorder); background: var(--vscode-toolbar-hoverBackground); }
+    .comparison-tabs button:focus-visible, .comparison-visual a:focus-visible { outline: 2px solid var(--vscode-focusBorder); outline-offset: 2px; }
+    .comparison-sides { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; }
+    .comparison-side { min-width: 0; }
+    .comparison-side h4 { margin: 8px 0; }
+    .comparison-items { padding-left: 24px; }
+    .comparison-items li { margin: 6px 0; }
+    .comparison-pseudocode { font-family: var(--vscode-editor-font-family, monospace); white-space: pre-wrap; }
+    .comparison-correspondence { border-top: 1px solid var(--separator); margin-top: 12px; padding-top: 8px; }
+    @media (max-width: 600px) { .comparison-sides { grid-template-columns: minmax(0, 1fr); } }
     .notice { margin: 8px 0 0; font-size: .9em; white-space: pre-line; }
     .notice.error, .error { color: var(--vscode-errorForeground); }
     .entry { position: relative; margin: 0; padding: 0 0 2px 12px; border-left: 2px solid transparent; }
@@ -570,6 +590,8 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
     ];
     /** "More detail" open state the reader chose, by entry; otherwise the setting decides. */
     const detailChoices = new Map();
+    const comparisonTabChoices = new Map();
+    let comparisonVisualId = 0;
     let state;
     let renderedFile = "";
     let sourceLine = 0;
@@ -1772,6 +1794,148 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
       return button;
     }
 
+    function renderComparisonVisual(view, change, outdated, choiceKey) {
+      const scope = view.scope;
+      const section = el("section", "comparison-visual");
+      section.setAttribute("aria-label", scope.title);
+      section.append(el("h4", "", scope.title));
+      const tabs = el("div", "comparison-tabs");
+      tabs.setAttribute("role", "tablist");
+      tabs.setAttribute("aria-label", scope.title + " comparison views");
+      const pane = el("div");
+      pane.setAttribute("role", "tabpanel");
+      pane.tabIndex = 0;
+      const prefix = "comparison-visual-" + comparisonVisualId++;
+      pane.id = prefix + "-panel";
+      const formats = [["steps", "Steps"]];
+      if ((!state || !state.formats || state.formats.pseudocode !== false) && (scope.original.pseudocode.length || scope.modified.pseudocode.length)) formats.push(["pseudocode", "Pseudocode"]);
+      if ((!state || !state.formats || state.formats.flowchart !== false) && (scope.original.flowchart.nodes.length || scope.modified.flowchart.nodes.length)) formats.push(["flowchart", "Flowchart"]);
+      const buttons = [];
+      function sourceLabel(text, side, occurrenceId) {
+        const links = side === "original" ? view.originalLinks : view.modifiedLinks;
+        const referenceId = !outdated && links && Object.prototype.hasOwnProperty.call(links, occurrenceId) ? links[occurrenceId] : undefined;
+        if (!referenceId) return el("span", "", text);
+        const link = action(text, () => post({ type: "navigate", referenceId }));
+        link.setAttribute("aria-label", text + "; reveal in " + (side === "original" ? change.originalLabel : change.modifiedLabel));
+        return link;
+      }
+      function drawSide(sideName, format) {
+        const side = scope[sideName];
+        const column = el("section", "comparison-side");
+        const label = sideName === "original" ? change.originalLabel : change.modifiedLabel;
+        column.setAttribute("aria-label", label + ": " + formats.find((item) => item[0] === format)[1]);
+        column.append(el("h4", "", label));
+        if (side.region) column.append(el("p", "muted small", "Region: " + side.region));
+        if (side.coverage) column.append(el("p", "muted small", "Coverage: " + side.coverage));
+        if (side.presence === "absent") {
+          column.append(el("p", "muted", "Not present in this version."));
+          return column;
+        }
+        if (format === "flowchart") {
+          if (side.flowchartStatus !== "available" || !side.flowchart.nodes.length) {
+            column.append(el("p", "muted", side.flowchartStatus === "not-applicable" ? "Flowchart not applicable." : "Flowchart unavailable."));
+          }
+          if (side.flowchartReason) column.append(el("p", "muted small", side.flowchartReason));
+          if (side.flowchartStatus !== "available" || !side.flowchart.nodes.length) return column;
+          const occurrences = new Map(scope.units.filter((unit) => unit.side === sideName).map((unit) => [unit.occurrence.id, unit.occurrence]));
+          const chart = {
+            nodes: side.flowchart.nodes.map((node) => {
+              const occurrence = occurrences.get(node.occurrenceId);
+              return { ...node, startLine: occurrence ? occurrence.startLine : 0, endLine: occurrence ? occurrence.endLine : 0 };
+            }),
+            edges: side.flowchart.edges
+          };
+          const hostLinks = sideName === "original" ? view.originalLinks : view.modifiedLinks;
+          const links = chart.nodes.map((node) => {
+            const occurrence = occurrences.get(node.occurrenceId);
+            const target = !outdated && occurrence && hostLinks && Object.prototype.hasOwnProperty.call(hostLinks, node.occurrenceId) ? hostLinks[node.occurrenceId] : undefined;
+            return target ? { target, caption: label + " lines " + occurrence.startLine + "–" + occurrence.endLine } : null;
+          });
+          const graph = renderFlowchart(chart, { entryId: prefix + "-" + sideName }, links);
+          graph.setAttribute("aria-label", label + " flowchart");
+          column.append(graph);
+          return column;
+        }
+        const items = side[format];
+        if (!items.length) column.append(el("p", "muted", format === "steps" ? "No steps recorded for this region." : "No pseudocode recorded for this region."));
+        const list = el("ol", "comparison-items" + (format === "pseudocode" ? " comparison-pseudocode" : ""));
+        for (const item of items) {
+          const row = el("li");
+          if (Number.isFinite(item.depth)) row.setAttribute("style", "margin-left: " + Math.max(0, Math.min(12, item.depth)) + "em");
+          row.append(sourceLabel(item.text, sideName, item.occurrenceId));
+          if (item.detail) row.append(el("p", "muted small", item.detail));
+          list.append(row);
+        }
+        if (items.length) column.append(list);
+        return column;
+      }
+      function select(format) {
+        comparisonTabChoices.set(choiceKey, format);
+        for (const [name, button] of buttons) {
+          button.setAttribute("aria-selected", String(name === format));
+          button.tabIndex = name === format ? 0 : -1;
+        }
+        pane.setAttribute("aria-labelledby", prefix + "-" + format);
+        const sides = el("div", "comparison-sides");
+        sides.append(drawSide("original", format), drawSide("modified", format));
+        pane.replaceChildren(sides);
+      }
+      for (const [format, label] of formats) {
+        const button = el("button", "", label);
+        button.type = "button";
+        button.id = prefix + "-" + format;
+        button.setAttribute("role", "tab");
+        button.setAttribute("aria-controls", pane.id);
+        button.addEventListener("click", () => select(format));
+        button.addEventListener("keydown", (event) => {
+          const index = formats.findIndex((item) => item[0] === format);
+          const next = event.key === "Home" ? 0 : event.key === "End" ? formats.length - 1 : event.key === "ArrowRight" ? (index + 1) % formats.length : event.key === "ArrowLeft" ? (index + formats.length - 1) % formats.length : -1;
+          if (next < 0) return;
+          event.preventDefault();
+          select(formats[next][0]);
+          buttons[next][1].focus();
+        });
+        buttons.push([format, button]);
+        tabs.append(button);
+      }
+      const chosen = comparisonTabChoices.get(choiceKey);
+      select(formats.some((item) => item[0] === chosen) ? chosen : "steps");
+      section.append(tabs, pane);
+      if (scope.unitCorrespondences.length || scope.edgeCorrespondences.length) {
+        const correspondence = el("div", "comparison-correspondence");
+        correspondence.append(el("p", "muted small", "Suggested correspondences · AI-generated, not proof of equivalent behavior."));
+        for (const match of scope.unitCorrespondences) {
+          const original = scope.units.find((unit) => unit.id === match.originalUnitId && unit.side === "original");
+          const modified = scope.units.find((unit) => unit.id === match.modifiedUnitId && unit.side === "modified");
+          if (!original || !modified) continue;
+          const row = el("div");
+          const labels = el("p");
+          labels.append(sourceLabel(original.label, "original", original.occurrence.id), document.createTextNode(" ↔ "), sourceLabel(modified.label, "modified", modified.occurrence.id));
+          row.append(labels);
+          if (match.meaning) row.append(el("p", "", "Meaning: " + match.meaning));
+          if (match.difference) row.append(el("p", "", "Difference: " + match.difference));
+          correspondence.append(row);
+        }
+        for (const match of scope.edgeCorrespondences) {
+          function edgeLabel(side, id) {
+            const edge = side.flowchart.edges.find((item) => item.id === id);
+            if (!edge) return undefined;
+            const from = side.flowchart.nodes.find((node) => node.id === edge.from);
+            const to = side.flowchart.nodes.find((node) => node.id === edge.to);
+            return from && to ? from.label + " → " + to.label + (edge.label ? ": " + edge.label : "") : undefined;
+          }
+          const original = edgeLabel(scope.original, match.originalEdgeId);
+          const modified = edgeLabel(scope.modified, match.modifiedEdgeId);
+          if (!original || !modified) continue;
+          correspondence.append(el("p", "", "Flow: " + original + " ↔ " + modified));
+          if (match.meaning) correspondence.append(el("p", "", "Meaning: " + match.meaning));
+          if (match.difference) correspondence.append(el("p", "", "Difference: " + match.difference));
+        }
+        section.append(correspondence);
+      }
+      return section;
+    }
+
     function renderChange(change) {
       const parts = [el("p", "muted small", change.originalLabel + " → " + change.modifiedLabel)];
       if (change.status === "loading") {
@@ -1802,7 +1966,9 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
       summary.title = "AI-generated explanation of this change";
       parts.push(summary);
       if (result.changes.length) parts.push(el("h2", "folder-heading", "What changed"));
-      for (const item of result.changes) {
+      const visualScopes = result.visualScopes || [];
+      const usedScopes = new Set();
+      for (const [index, item] of result.changes.entries()) {
         const section = el("section", "change-item");
         section.append(inline(el("h3"), item.title));
         if (item.links.length) {
@@ -1820,6 +1986,17 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
         if (sides.children.length) section.append(sides);
         if (item.when) section.append(el("h5", "", "When it differs"), inline(el("p"), item.when));
         if (item.flow) section.append(el("h5", "", "Effect on flow"), inline(el("p"), item.flow));
+        const visual = visualScopes.find((view) => view.scope.id === item.visualScopeId);
+        if (visual && !usedScopes.has(visual.scope.id)) {
+          usedScopes.add(visual.scope.id);
+          section.append(renderComparisonVisual(visual, change, result.outdated || change.status === "outdated", JSON.stringify([change.key, visual.scope.id, index])));
+        }
+        parts.push(section);
+      }
+      for (const visual of visualScopes) {
+        if (usedScopes.has(visual.scope.id)) continue;
+        const section = el("section", "change-item");
+        section.append(renderComparisonVisual(visual, change, result.outdated || change.status === "outdated", JSON.stringify([change.key, visual.scope.id])));
         parts.push(section);
       }
       if (result.outside) parts.push(el("h2", "folder-heading", "Outside functions"), inline(el("p"), result.outside));

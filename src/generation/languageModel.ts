@@ -177,7 +177,14 @@ export class LanguageModelProvider implements GenerationProvider {
     signal?: AbortSignal
   ): Promise<GenerationResult<FileComparisonDraft>> {
     const [system, user] = comparisonPrompt(input);
-    return this.request(system, user, comparisonSchema, parseComparison, signal);
+    const lineCount = (side: ComparisonPromptInput["original"]) =>
+      side.present ? side.source.split(/\r\n|\r|\n/).length : 0;
+    return this.request(system, user, comparisonSchema, (value) => parseComparison(value, {
+      originalLines: lineCount(input.original),
+      modifiedLines: lineCount(input.modified),
+      originalPresent: input.original.present,
+      modifiedPresent: input.modified.present
+    }), signal);
   }
 
   async summarizeFolder(

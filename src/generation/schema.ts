@@ -1,5 +1,10 @@
 import type {
   ExplanationFormat,
+  ComparisonFlowchart,
+  ComparisonVisualScope,
+  ComparisonVisualSide,
+  ComparisonUnit,
+  ComparisonTextItem,
   FileComparisonDraft,
   FileSummary,
   Flowchart,
@@ -134,21 +139,92 @@ export function formatSchemaFor(format: ExplanationFormat): Record<string, unkno
 export const fileSummarySchema = objectSchema({ summary: string }, ["summary"]);
 
 const spanSchema = objectSchema({ startLine: integer, endLine: integer }, ["startLine", "endLine"]);
+const comparisonOccurrenceSchema = objectSchema(
+  { id: string, startLine: integer, endLine: integer },
+  ["id", "startLine", "endLine"]
+);
+const comparisonUnitSchema = objectSchema(
+  {
+    id: string,
+    label: string,
+    side: { type: "string", enum: ["original", "modified"] },
+    occurrence: comparisonOccurrenceSchema
+  },
+  ["id", "label", "side", "occurrence"]
+);
+const comparisonTextItemSchema = objectSchema(
+  { id: string, text: string, detail: string, depth: integer, occurrenceId: string, startLine: integer, endLine: integer },
+  ["id", "text", "detail", "depth", "occurrenceId", "startLine", "endLine"]
+);
+const comparisonFlowchartSchema = objectSchema(
+  {
+    nodes: {
+      type: "array",
+      items: objectSchema(
+        { id: string, kind: { type: "string", enum: ["start", "action", "decision", "end", "show"] }, label: string, occurrenceId: string },
+        ["id", "kind", "label", "occurrenceId"]
+      )
+    },
+    edges: {
+      type: "array",
+      items: objectSchema({ id: string, from: string, to: string, label: string }, ["id", "from", "to", "label"])
+    }
+  },
+  ["nodes", "edges"]
+);
+const comparisonSideSchema = objectSchema(
+  {
+    presence: { type: "string", enum: ["present", "absent"] },
+    region: string,
+    coverage: string,
+    flowchartStatus: { type: "string", enum: ["available", "not-applicable", "unavailable"] },
+    flowchartReason: string,
+    steps: { type: "array", items: comparisonTextItemSchema },
+    pseudocode: { type: "array", items: comparisonTextItemSchema },
+    flowchart: comparisonFlowchartSchema
+  },
+  ["presence", "region", "coverage", "flowchartStatus", "flowchartReason", "steps", "pseudocode", "flowchart"]
+);
+const comparisonVisualScopeSchema = objectSchema(
+  {
+    id: string,
+    title: string,
+    original: comparisonSideSchema,
+    modified: comparisonSideSchema,
+    units: { type: "array", items: comparisonUnitSchema },
+    unitCorrespondences: {
+      type: "array",
+      items: objectSchema(
+        { originalUnitId: string, modifiedUnitId: string, meaning: string, difference: string },
+        ["originalUnitId", "modifiedUnitId", "meaning", "difference"]
+      )
+    },
+    edgeCorrespondences: {
+      type: "array",
+      items: objectSchema(
+        { originalEdgeId: string, modifiedEdgeId: string, meaning: string, difference: string },
+        ["originalEdgeId", "modifiedEdgeId", "meaning", "difference"]
+      )
+    }
+  },
+  ["id", "title", "original", "modified", "units", "unitCorrespondences", "edgeCorrespondences"]
+);
 export const comparisonSchema = objectSchema(
   {
     summary: string,
     changes: {
       type: "array",
       items: objectSchema(
-        { title: string, before: string, after: string, when: string, flow: string, original: spanSchema, modified: spanSchema },
-        ["title", "before", "after", "when", "flow", "original", "modified"]
+        { id: string, title: string, before: string, after: string, when: string, flow: string, original: spanSchema, modified: spanSchema, visualScopeId: string },
+        ["id", "title", "before", "after", "when", "flow", "original", "modified", "visualScopeId"]
       )
     },
+    visualScopes: { type: "array", items: comparisonVisualScopeSchema },
     outside: string,
     possibleEffects: stringArray,
     limitations: stringArray
   },
-  ["summary", "changes", "outside", "possibleEffects", "limitations"]
+  ["summary", "changes", "visualScopes", "outside", "possibleEffects", "limitations"]
 );
 
 const flowNodeSchema = objectSchema(
@@ -571,30 +647,336 @@ function readSpan(value: unknown): { start: number; end: number } {
   return { start: start as number, end: end as number };
 }
 
-/** A change explanation for one file; changes with no title or no behavior text are dropped rather than failing it. */
-export function parseComparison(value: unknown): FileComparisonDraft {
+const MAX_COMPARISON_SCOPES = 12;
+const MAX_COMPARISON_NODES = 96;
+const MAX_COMPARISON_EDGES = 160;
+const MAX_COMPARISON_TEXT = 48_000;
+const COMPARISON_ID = /^[A-Za-z0-9_-]{1,40}$/;
+
+interface ComparisonLineBounds {
+  readonly originalLines: number;
+  readonly modifiedLines: number;
+  readonly originalPresent: boolean;
+  readonly modifiedPresent: boolean;
+}
+
+function comparisonId(value: unknown): value is string {
+  return typeof value === "string" && COMPARISON_ID.test(value);
+}
+
+function comparisonTextLength(value: unknown): number {
+  if (typeof value === "string") return value.length;
+  if (Array.isArray(value)) return value.reduce((total, item) => total + comparisonTextLength(item), 0);
+  if (typeof value === "object" && value !== null) {
+    return Object.values(value).reduce((total, item) => total + comparisonTextLength(item), 0);
+  }
+  return 0;
+}
+
+function checkedComparisonSpan(value: unknown, lineCount: number): { startLine: number; endLine: number } {
+  const source = record(value);
+  const start = source.startLine;
+  const end = source.endLine;
+  if (
+    !Number.isInteger(start) || !Number.isInteger(end) ||
+    (start as number) < 0 || (end as number) < 0 ||
+    ((start as number) === 0) !== ((end as number) === 0) ||
+    (start as number) > (end as number) ||
+    (end as number) > lineCount
+  ) {
+    throw new Error("A visual source span is outside its comparison side.");
+  }
+  return { startLine: start as number, endLine: end as number };
+}
+
+function comparisonStrings(value: unknown, label: string, maxItems: number, maxLength = 200): string[] {
+  if (!Array.isArray(value) || value.length > maxItems) throw new Error(`Invalid visual ${label}.`);
+  return value.map((entry) => {
+    if (typeof entry !== "string" || entry.length > maxLength) throw new Error(`Invalid visual ${label}.`);
+    return entry.trim();
+  });
+}
+
+function parseComparisonSide(
+  value: unknown,
+  side: "original" | "modified",
+  expectedPresent: boolean,
+  lineCount: number
+): ComparisonVisualSide {
+  const source = record(value);
+  const presence = source.presence;
+  if ((presence !== "present" && presence !== "absent") || (presence === "present") !== expectedPresent) {
+    throw new Error("Visual side presence does not match the supplied snapshot.");
+  }
+  const region = readText(source, "region", 300).trim();
+  const coverage = readText(source, "coverage", 500).trim();
+  if ((expectedPresent && !region) || !coverage) throw new Error("Visual side coverage is missing.");
+
+  const flowchartStatus = source.flowchartStatus;
+  if (flowchartStatus !== "available" && flowchartStatus !== "not-applicable" && flowchartStatus !== "unavailable") {
+    throw new Error("Invalid visual flowchart status.");
+  }
+  const flowchartReason = readText(source, "flowchartReason", 300).trim();
+  const chartSource = record(source.flowchart);
+  const rawNodes = chartSource.nodes;
+  const rawEdges = chartSource.edges;
+  if (!Array.isArray(rawNodes) || rawNodes.length > MAX_FLOW_NODES || !Array.isArray(rawEdges) || rawEdges.length > MAX_FLOW_EDGES) {
+    throw new Error("Visual flowchart exceeds its per-side limit.");
+  }
+  const chart: ComparisonFlowchart = {
+    nodes: rawNodes.map((rawNode) => {
+      const node = record(rawNode);
+      const kind = node.kind;
+      if (kind !== "start" && kind !== "action" && kind !== "decision" && kind !== "end" && kind !== "show") {
+        throw new Error("Invalid comparison flowchart node kind.");
+      }
+      const id = readText(node, "id", 40);
+      const occurrenceId = readText(node, "occurrenceId", 40);
+      if (!comparisonId(id) || !comparisonId(occurrenceId)) throw new Error("Invalid comparison flowchart node reference.");
+      return { id, kind, label: readText(node, "label", 160).trim(), occurrenceId };
+    }),
+    edges: rawEdges.map((rawEdge) => {
+      const edge = record(rawEdge);
+      const id = readText(edge, "id", 40);
+      if (!comparisonId(id)) throw new Error("Invalid comparison flowchart edge id.");
+      return {
+        id,
+        from: readText(edge, "from", 40),
+        to: readText(edge, "to", 40),
+        label: readText(edge, "label", 80).trim()
+      };
+    })
+  };
+  const nodeIds = new Set(chart.nodes.map((node) => node.id));
+  if (nodeIds.size !== chart.nodes.length || chart.nodes.some((node) => !node.label) ||
+      new Set(chart.edges.map((edge) => edge.id)).size !== chart.edges.length ||
+      chart.edges.some((edge) => !nodeIds.has(edge.from) || !nodeIds.has(edge.to))) {
+    throw new Error("Invalid comparison flowchart references.");
+  }
+  if (flowchartStatus === "available") {
+    if (!expectedPresent || chart.nodes.length === 0 || flowchartReason) throw new Error("Available flowchart has no usable graph.");
+  } else if (chart.nodes.length > 0 || chart.edges.length > 0 || !flowchartReason) {
+    throw new Error("Unavailable flowchart needs an explicit reason and an empty graph.");
+  }
+  if (!expectedPresent && (region || chart.nodes.length || chart.edges.length)) {
+    throw new Error(`The ${side} side is absent but has visual content.`);
+  }
+
+  const parseItems = (raw: unknown, label: string, maxItems: number, pseudocode: boolean): ComparisonTextItem[] =>
+    readObjects(raw, label, maxItems, (item) => {
+      const id = readText(item, "id", 40);
+      const occurrenceId = readText(item, "occurrenceId", 40);
+      if (!comparisonId(id) || !comparisonId(occurrenceId)) throw new Error(`Invalid visual ${label} reference.`);
+      const span = checkedComparisonSpan({ startLine: item.startLine, endLine: item.endLine }, lineCount);
+      const depth = item.depth;
+      if (pseudocode && (typeof depth !== "number" || !Number.isInteger(depth) || depth < 0 || depth > 4)) {
+        throw new Error("Invalid comparison pseudocode depth.");
+      }
+      return {
+        id,
+        text: readText(item, "text", 300).trim(),
+        ...(pseudocode ? {} : { detail: readText(item, "detail", 500).trim() }),
+        ...(pseudocode ? { depth: depth as number } : {}),
+        occurrenceId,
+        ...span
+      };
+    });
+  return {
+    presence,
+    region,
+    coverage,
+    flowchartStatus,
+    flowchartReason,
+    steps: parseItems(source.steps, "comparison steps", 40, false),
+    pseudocode: parseItems(source.pseudocode, "comparison pseudocode", 40, true),
+    flowchart: chart
+  };
+}
+
+function parseComparisonVisualScope(value: unknown, bounds: ComparisonLineBounds): ComparisonVisualScope {
+  const source = record(value);
+  const id = readText(source, "id", 40);
+  if (!comparisonId(id)) throw new Error("Invalid comparison visual scope id.");
+  const original = parseComparisonSide(source.original, "original", bounds.originalPresent, bounds.originalLines);
+  const modified = parseComparisonSide(source.modified, "modified", bounds.modifiedPresent, bounds.modifiedLines);
+  const units = readObjects(source.units, "comparison units", 60, (item): ComparisonUnit => {
+    const unitId = readText(item, "id", 40);
+    const label = readText(item, "label", 160).trim();
+    const side = item.side;
+    if (!comparisonId(unitId) || !label || (side !== "original" && side !== "modified")) {
+      throw new Error("Invalid comparison unit.");
+    }
+    const occurrenceSource = record(item.occurrence);
+    const occurrenceId = readText(occurrenceSource, "id", 40);
+    if (!comparisonId(occurrenceId)) throw new Error("Invalid comparison occurrence id.");
+    const span = checkedComparisonSpan(
+      { startLine: occurrenceSource.startLine, endLine: occurrenceSource.endLine },
+      side === "original" ? bounds.originalLines : bounds.modifiedLines
+    );
+    if (span.startLine === 0 || (side === "original" ? !bounds.originalPresent : !bounds.modifiedPresent)) {
+      throw new Error("A semantic occurrence needs a source span on a present side.");
+    }
+    return { id: unitId, label, side, occurrence: { id: occurrenceId, ...span } };
+  });
+  if (new Set(units.map((unit) => unit.id)).size !== units.length) throw new Error("Duplicate comparison unit id.");
+
+  const unitById = new Map(units.map((unit) => [unit.id, unit]));
+  const occurrenceBySide = {
+    original: new Map(units.filter((unit) => unit.side === "original").map((unit) => [unit.occurrence.id, unit.id])),
+    modified: new Map(units.filter((unit) => unit.side === "modified").map((unit) => [unit.occurrence.id, unit.id]))
+  };
+  if (occurrenceBySide.original.size !== units.filter((unit) => unit.side === "original").length ||
+      occurrenceBySide.modified.size !== units.filter((unit) => unit.side === "modified").length) {
+    throw new Error("Duplicate side-specific occurrence id.");
+  }
+
+  const unitCorrespondences = readObjects(source.unitCorrespondences, "unit correspondences", 60, (item) => {
+    const originalUnitId = readText(item, "originalUnitId", 40);
+    const modifiedUnitId = readText(item, "modifiedUnitId", 40);
+    if (unitById.get(originalUnitId)?.side !== "original" || unitById.get(modifiedUnitId)?.side !== "modified") {
+      throw new Error("Unit correspondence crosses or misses a side.");
+    }
+    return {
+      originalUnitId,
+      modifiedUnitId,
+      meaning: readText(item, "meaning", 200).trim(),
+      difference: readText(item, "difference", 300).trim()
+    };
+  });
+  if (new Set(unitCorrespondences.map((match) => match.originalUnitId)).size !== unitCorrespondences.length ||
+      new Set(unitCorrespondences.map((match) => match.modifiedUnitId)).size !== unitCorrespondences.length) {
+    throw new Error("Unit correspondences must be one-to-one.");
+  }
+  const matchedUnits = new Map(unitCorrespondences.map((match) => [match.originalUnitId, match.modifiedUnitId]));
+
+  const validateSideReferences = (side: ComparisonVisualSide, name: "original" | "modified") => {
+    const occurrences = occurrenceBySide[name];
+    for (const node of side.flowchart.nodes) {
+      if (!occurrences.has(node.occurrenceId)) throw new Error("Flowchart node references an occurrence on the wrong side.");
+    }
+    for (const item of [...side.steps, ...side.pseudocode]) {
+      if (!occurrences.has(item.occurrenceId) || !item.text) throw new Error("Comparison text references an unknown occurrence.");
+    }
+  };
+  validateSideReferences(original, "original");
+  validateSideReferences(modified, "modified");
+  const originalEdges = new Map(original.flowchart.edges.map((edge) => [edge.id, edge]));
+  const modifiedEdges = new Map(modified.flowchart.edges.map((edge) => [edge.id, edge]));
+  const nodeOccurrence = (side: ComparisonVisualSide, nodeId: string) =>
+    side.flowchart.nodes.find((node) => node.id === nodeId)?.occurrenceId;
+  const edgeCorrespondences = readObjects(source.edgeCorrespondences, "edge correspondences", MAX_COMPARISON_EDGES, (item) => {
+    const originalEdgeId = readText(item, "originalEdgeId", 40);
+    const modifiedEdgeId = readText(item, "modifiedEdgeId", 40);
+    const originalEdge = originalEdges.get(originalEdgeId);
+    const modifiedEdge = modifiedEdges.get(modifiedEdgeId);
+    if (!originalEdge || !modifiedEdge) throw new Error("Edge correspondence references an unknown edge.");
+    const fromOriginal = occurrenceBySide.original.get(nodeOccurrence(original, originalEdge.from) ?? "");
+    const fromModified = occurrenceBySide.modified.get(nodeOccurrence(modified, modifiedEdge.from) ?? "");
+    const toOriginal = occurrenceBySide.original.get(nodeOccurrence(original, originalEdge.to) ?? "");
+    const toModified = occurrenceBySide.modified.get(nodeOccurrence(modified, modifiedEdge.to) ?? "");
+    if (matchedUnits.get(fromOriginal ?? "") !== fromModified || matchedUnits.get(toOriginal ?? "") !== toModified) {
+      throw new Error("Corresponding edges do not connect corresponding operations.");
+    }
+    return {
+      originalEdgeId,
+      modifiedEdgeId,
+      meaning: readText(item, "meaning", 200).trim(),
+      difference: readText(item, "difference", 300).trim()
+    };
+  });
+  if (new Set(edgeCorrespondences.map((match) => match.originalEdgeId)).size !== edgeCorrespondences.length ||
+      new Set(edgeCorrespondences.map((match) => match.modifiedEdgeId)).size !== edgeCorrespondences.length) {
+    throw new Error("Edge correspondences must be one-to-one.");
+  }
+  return {
+    id,
+    title: readText(source, "title", 160).trim(),
+    original,
+    modified,
+    units,
+    unitCorrespondences,
+    edgeCorrespondences
+  };
+}
+
+/** Keeps valid textual changes even when the optional paired visual representation is malformed. */
+export function parseComparison(value: unknown, bounds?: ComparisonLineBounds): FileComparisonDraft {
   const source = record(value);
   const changes = Array.isArray(source.changes) ? source.changes.slice(0, 60) : [];
   const text = (item: Record<string, unknown>, key: string, max: number) =>
     typeof item[key] === "string" && (item[key] as string).length <= max ? (item[key] as string).trim() : "";
+  const seenChangeIds = new Set<string>();
+  let malformedVisual = false;
+  const parsedChanges = changes.flatMap((change) => {
+    if (typeof change !== "object" || change === null) return [];
+    const item = change as Record<string, unknown>;
+    const id = item.id;
+    if (!comparisonId(id) || seenChangeIds.has(id)) return [];
+    const scope = item.visualScopeId;
+    let visualScopeId: string | undefined;
+    if (typeof scope === "string" && scope.length <= 40 && (!scope || comparisonId(scope))) {
+      visualScopeId = scope || undefined;
+    } else {
+      malformedVisual = true;
+    }
+    const parsed = {
+      id,
+      title: text(item, "title", 200),
+      before: text(item, "before", 1_200),
+      after: text(item, "after", 1_200),
+      when: text(item, "when", 600),
+      flow: text(item, "flow", 800),
+      original: readSpan(item.original),
+      modified: readSpan(item.modified),
+      ...(visualScopeId ? { visualScopeId } : {})
+    };
+    if (!parsed.title || (!parsed.before && !parsed.after)) return [];
+    seenChangeIds.add(id);
+    return [parsed];
+  });
+  let visualScopes: ComparisonVisualScope[] | undefined;
+  if (!malformedVisual && source.visualScopes !== undefined) {
+    try {
+      if (!Array.isArray(source.visualScopes) || source.visualScopes.length > MAX_COMPARISON_SCOPES) {
+        throw new Error("Too many comparison visual scopes.");
+      }
+      if (source.visualScopes.length > 0 && !bounds) throw new Error("Snapshot line counts are required.");
+      const totals = { nodes: 0, edges: 0, text: 0 };
+      visualScopes = source.visualScopes.map((rawScope) => {
+        const scope = parseComparisonVisualScope(rawScope, bounds!);
+        totals.nodes += scope.original.flowchart.nodes.length + scope.modified.flowchart.nodes.length;
+        totals.edges += scope.original.flowchart.edges.length + scope.modified.flowchart.edges.length;
+        totals.text += comparisonTextLength(scope);
+        if (totals.nodes > MAX_COMPARISON_NODES || totals.edges > MAX_COMPARISON_EDGES || totals.text > MAX_COMPARISON_TEXT) {
+          throw new Error("Comparison visual response exceeds its total budget.");
+        }
+        return scope;
+      });
+      if (new Set(visualScopes.map((scope) => scope.id)).size !== visualScopes.length) throw new Error("Duplicate comparison visual scope id.");
+      const scopeIds = new Set(visualScopes.map((scope) => scope.id));
+      if (parsedChanges.some((change) => change.visualScopeId && !scopeIds.has(change.visualScopeId))) {
+        throw new Error("A change references an unknown visual scope.");
+      }
+    } catch {
+      visualScopes = undefined;
+      malformedVisual = true;
+    }
+  } else {
+    malformedVisual = true;
+  }
+  if (parsedChanges.some((change) => change.visualScopeId) && !visualScopes?.length) malformedVisual = true;
+  const limitations = readStrings(source.limitations, "limitations", 10).map((entry) => entry.trim()).filter(Boolean);
+  if (malformedVisual) {
+    const notice = "The paired visual comparison was omitted because its data was invalid or exceeded the safety limits; the textual comparison is still available.";
+    if (limitations.length >= 10) limitations.splice(9, 1, notice);
+    else limitations.push(notice);
+  }
   return {
     summary: readText(source, "summary", 800).trim(),
-    changes: changes.flatMap((change) => {
-      if (typeof change !== "object" || change === null) return [];
-      const item = change as Record<string, unknown>;
-      const parsed = {
-        title: text(item, "title", 200),
-        before: text(item, "before", 1_200),
-        after: text(item, "after", 1_200),
-        when: text(item, "when", 600),
-        flow: text(item, "flow", 800),
-        original: readSpan(item.original),
-        modified: readSpan(item.modified)
-      };
-      return parsed.title && (parsed.before || parsed.after) ? [parsed] : [];
-    }),
+    changes: parsedChanges,
+    ...(visualScopes?.length ? { visualScopes } : {}),
     outside: optionalText(source, "outside", 1_200),
     possibleEffects: readStrings(source.possibleEffects, "possible effects", 10).map((entry) => entry.trim()).filter(Boolean),
-    limitations: readStrings(source.limitations, "limitations", 10).map((entry) => entry.trim()).filter(Boolean)
+    limitations
   };
 }

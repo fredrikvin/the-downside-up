@@ -55,7 +55,7 @@ function session(onGenerate?: () => Promise<void>) {
     authorizeExternalData: async () => true
   });
   const changes = new ChangeSession({ service, reveal: async () => undefined, schedule: (task) => task(), changed: () => undefined });
-  return { changes, provider, sent };
+  return { changes, provider, sent, service };
 }
 
 describe("the shown native diff", () => {
@@ -110,5 +110,44 @@ describe("the shown native diff", () => {
     expect(view?.status).toBe("outdated");
     expect(view?.result?.outdated).toBe(true);
     expect(links(view)).toEqual([]);
+  });
+
+  it("adds paired visual views with navigation ids checked against each exact side", async () => {
+    await writeFile(join(root, "a.txt"), "export const a = 2;\n");
+    const opened: string[] = [];
+    const { service } = session();
+    const changes = new ChangeSession({
+      service,
+      reveal: async (target, start, end) => { opened.push(`${target.scheme}:${start}-${end}`); },
+      schedule: (task) => task(),
+      changed: () => undefined
+    });
+    await changes.show(headOf("a.txt"), uri("file", "a.txt"));
+    await changes.explain();
+
+    const callbacks = new Map<string, () => Promise<void>>();
+    const view = changes.view((open) => {
+      const id = `ref-${callbacks.size}`;
+      callbacks.set(id, open);
+      return id;
+    });
+    const visual = view?.result?.visualScopes?.[0];
+    if (!visual) throw new Error("Expected the saved comparison to include paired visual data.");
+    expect(visual?.scope.original.steps).toHaveLength(1);
+    expect(visual?.scope.modified.pseudocode).toHaveLength(1);
+    const originalStep = visual.scope.original.steps[0];
+    if (!originalStep) throw new Error("Expected an original-side step.");
+    const occurrenceId = originalStep.occurrenceId;
+    const reference = visual.originalLinks[occurrenceId];
+    if (!reference) throw new Error("Expected a host-validated original-side link.");
+    await callbacks.get(reference)?.();
+    expect(opened).toEqual(["git:1-2"]);
+    const modifiedStep = visual.scope.modified.steps[0];
+    if (!modifiedStep) throw new Error("Expected a modified-side step.");
+    expect(visual.modifiedLinks[modifiedStep.occurrenceId]).toBeTruthy();
+
+    await writeFile(join(root, "a.txt"), "export const a = 3;\n");
+    await changes.refresh();
+    expect(changes.view(() => "stale")?.result?.visualScopes?.[0]?.originalLinks).toEqual({});
   });
 });

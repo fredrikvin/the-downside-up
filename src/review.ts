@@ -24,6 +24,7 @@ export interface ReviewHost {
   readonly scheduler: {
     readonly prefetchCapacity: number;
     schedule<T>(priority: RequestPriority, task: () => Promise<T>): Promise<T>;
+    onCapacityChange(listener: () => void): () => void;
   };
   /** Reads a confirmed pair of versions again. */
   read(ref: ComparisonRef): Promise<ComparisonSnapshot>;
@@ -71,6 +72,7 @@ export class Review {
   private readonly retried = new Set<ReviewItem>();
   /** Failed files waiting to be tried again, which keep the loop alive. */
   private readonly retrying = new Set<ReviewItem>();
+  private readonly unsubscribeCapacityChange: () => void;
 
   constructor(
     private readonly host: ReviewHost,
@@ -78,7 +80,9 @@ export class Review {
     /** Such as "since main (merge base 1a2b3c4)". */
     readonly base: string,
     readonly items: ReviewItem[]
-  ) {}
+  ) {
+    this.unsubscribeCapacityChange = host.scheduler.onCapacityChange(() => this.wakeUp());
+  }
 
   /** Starts, or continues after a stop, explaining the pending files in the background. */
   start(): void {
@@ -103,6 +107,7 @@ export class Review {
   cancel(): void {
     this.stop();
     for (const controller of this.controllers.values()) controller.abort();
+    this.unsubscribeCapacityChange();
   }
 
   /** Looks for the next file again, such as after the reader moved or a slot freed. */
@@ -174,7 +179,9 @@ export class Review {
     const pending = () => this.items.filter((item) => item.status === "pending");
     while (active()) {
       if (this.host.scheduler.prefetchCapacity === 0 || pending().length === 0) {
-        if (pending().length === 0 && !this.items.some((item) => item.status === "explaining") && this.retrying.size === 0) {
+        const retryableFailure = this.items.some((item) => item.status === "failed" && !this.retried.has(item));
+        if (pending().length === 0 && !this.items.some((item) => item.status === "explaining") && !retryableFailure && this.retrying.size === 0) {
+          this.unsubscribeCapacityChange();
           this.host.changed();
           return;
         }

@@ -11,7 +11,7 @@ import {
   parseFileSummary,
   parseFormat
 } from "../src/generation/schema";
-import type { ExplanationPromptInput } from "../src/generation/provider";
+import type { ComparisonPromptInput, ExplanationPromptInput } from "../src/generation/provider";
 
 const overview: RepositoryOverview = {
   purpose: "Observed checkout flow.",
@@ -120,6 +120,41 @@ describe("structured generation", () => {
       output: [{ content: [{ type: "output_text", text: JSON.stringify({ purpose: "only one field" }) }] }]
     }));
     await expect(provider.explainFunction(promptInput)).rejects.toThrow(/invalid "title"/i);
+  });
+
+  it("allocates a bounded output budget for paired visual comparisons", async () => {
+    const fetch = vi.fn().mockResolvedValue(response({
+      status: "completed",
+      output: [{
+        type: "message",
+        content: [{
+          type: "output_text",
+          text: JSON.stringify({
+            summary: "The request now retries.",
+            changes: [],
+            visualScopes: [],
+            outside: "",
+            possibleEffects: [],
+            limitations: []
+          })
+        }]
+      }],
+      usage: { input_tokens: 100, output_tokens: 20 }
+    }));
+    vi.stubGlobal("fetch", fetch);
+    const provider = new OpenAIProvider("gpt-4.1-mini", "test-key");
+    const input: ComparisonPromptInput = {
+      repositoryName: "sample",
+      languageId: "typescript",
+      original: { path: "sample.ts", label: "Before", present: true, source: "send()" },
+      modified: { path: "sample.ts", label: "After", present: true, source: "retry(send)" }
+    };
+
+    await provider.explainComparison(input);
+
+    const [, init] = fetch.mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(init.body as string) as Record<string, unknown>;
+    expect(body.max_output_tokens).toBe(24_000);
   });
 
   it("honors cancellation and labels missing usage as estimates", async () => {

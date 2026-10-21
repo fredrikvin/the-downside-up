@@ -51,6 +51,8 @@ interface ResponseShape {
   readonly usage?: { readonly input_tokens?: number; readonly output_tokens?: number };
 }
 
+const MAX_COMPARISON_OUTPUT_TOKENS = 24_000;
+
 export class OpenAIProvider implements GenerationProvider {
   readonly kind = "openai" as const;
 
@@ -96,7 +98,14 @@ export class OpenAIProvider implements GenerationProvider {
     signal?: AbortSignal
   ): Promise<GenerationResult<FileComparisonDraft>> {
     const [system, user] = comparisonPrompt(input);
-    return this.request(system, user, "file_comparison", comparisonSchema, parseComparison, signal);
+    const lineCount = (side: ComparisonPromptInput["original"]) =>
+      side.present ? side.source.split(/\r\n|\r|\n/).length : 0;
+    return this.request(system, user, "file_comparison", comparisonSchema, (value) => parseComparison(value, {
+      originalLines: lineCount(input.original),
+      modifiedLines: lineCount(input.modified),
+      originalPresent: input.original.present,
+      modifiedPresent: input.modified.present
+    }), signal, MAX_COMPARISON_OUTPUT_TOKENS);
   }
 
   async summarizeFolder(
@@ -137,7 +146,8 @@ export class OpenAIProvider implements GenerationProvider {
     schemaName: string,
     schema: Record<string, unknown>,
     parse: (value: unknown) => T,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    maxOutputTokens = 1_600
   ): Promise<GenerationResult<T>> {
     if (signal?.aborted) throw new DOMException("The request was cancelled.", "AbortError");
     const requestController = new AbortController();
@@ -159,7 +169,7 @@ export class OpenAIProvider implements GenerationProvider {
         body: JSON.stringify({
           model: this.modelId,
           store: false,
-          max_output_tokens: 1_600,
+          max_output_tokens: maxOutputTokens,
           input: [
             { role: "system", content: [{ type: "input_text", text: system }] },
             { role: "user", content: [{ type: "input_text", text: user }] }
