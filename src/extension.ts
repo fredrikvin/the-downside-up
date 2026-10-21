@@ -342,14 +342,15 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       Boolean(editor && vscode.window.tabGroups.activeTabGroup === group && sameUri(editor.document.uri, uri));
     let subscription: vscode.Disposable | undefined;
     let timeout: ReturnType<typeof setTimeout> | undefined;
-    let acceptFocus: (editor: vscode.TextEditor) => void = () => undefined;
+    let acceptFocus: (editor: vscode.TextEditor | undefined) => void = () => undefined;
     // Workbench commands can finish before the extension host sees the new active editor.
-    const focused = new Promise<vscode.TextEditor>((resolve, reject) => {
+    const focused = new Promise<vscode.TextEditor | undefined>((resolve) => {
       acceptFocus = resolve;
       subscription = vscode.window.onDidChangeActiveTextEditor((editor) => { if (matches(editor)) resolve(editor); });
-      timeout = setTimeout(() => reject(new Error("VS Code could not focus the requested side of the comparison. Open the diff again and try selecting the item.")), 3_000);
+      // A window without OS focus may ignore the side-focus command; the side is then selected without focus.
+      timeout = setTimeout(() => resolve(undefined), 1_500);
     });
-    let editor: vscode.TextEditor;
+    let editor: vscode.TextEditor | undefined;
     try {
       [editor] = await Promise.all([
         focused,
@@ -370,6 +371,10 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       subscription?.dispose();
       clearTimeout(timeout);
     }
+    // Both sides of a shown diff are visible editors without their own view column.
+    editor ??= vscode.window.visibleTextEditors.find((candidate) => candidate.viewColumn === undefined && sameUri(candidate.document.uri, uri))
+      ?? vscode.window.visibleTextEditors.find((candidate) => sameUri(candidate.document.uri, uri));
+    if (!editor) throw new Error("The comparison editor is no longer visible. Open the diff again before selecting its source lines.");
     const document = editor.document;
     const last = Math.max(0, document.lineCount - 1);
     const first = Math.min(Math.max(startLine - 1, 0), last);

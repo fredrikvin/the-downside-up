@@ -404,10 +404,15 @@ export async function run(): Promise<void> {
     assert.equal(api.shownChange()?.status, "current", "Explain changes is the explicit request for one diff.");
     for (const side of ["original", "modified", "modified", "original", "original"] as const) {
       await vscode.commands.executeCommand("downsideUp.showFileOverview");
+      for (const visible of vscode.window.visibleTextEditors) visible.selection = new vscode.Selection(0, 0, 0, 0);
       await api.revealChange(side);
-      assert.equal(vscode.window.activeTextEditor?.document.uri.toString(), (side === "original" ? badgeUri : nextBadgeUri).toString(),
-        `Selecting a ${side} item focuses its own side of the native diff.`);
-      assert.ok(!vscode.window.activeTextEditor?.selection.isEmpty, "The requested side's source range is selected.");
+      const sideUri = (side === "original" ? badgeUri : nextBadgeUri).toString();
+      // An unfocused test window may ignore side focus; the side's own editor is then selected without it.
+      if (vscode.window.state.focused) {
+        assert.equal(vscode.window.activeTextEditor?.document.uri.toString(), sideUri, `Selecting a ${side} item focuses its own side of the native diff.`);
+      }
+      const sideEditor = vscode.window.visibleTextEditors.find((editor) => editor.viewColumn === undefined && editor.document.uri.toString() === sideUri);
+      assert.ok(sideEditor && !sideEditor.selection.isEmpty, `Selecting a ${side} item selects its range in its own side of the native diff.`);
       assert.ok(vscode.window.tabGroups.all.some((group) => group.activeTab?.input instanceof vscode.TabInputTextDiff),
         "Source selection keeps the native diff open.");
     }
