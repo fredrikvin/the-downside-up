@@ -20,7 +20,7 @@ import type { ChangeView } from "./presentation/panel";
 export interface ChangeSessionHost {
   readonly service: ExplanationService;
   /** Opens one-based lines of one side of the shown diff, checked by the caller's snapshot. */
-  readonly reveal: (uri: vscode.Uri, startLine: number, endLine: number) => Promise<void>;
+  readonly reveal: (uri: vscode.Uri, startLine: number, endLine: number, side: "original" | "modified") => Promise<void>;
   /** Runs a request in a shared slot, behind explicit requests when prefetching. */
   readonly schedule: <T>(task: () => Promise<T>, priority?: "explicit" | "prefetch") => Promise<T>;
   readonly prefetch?: {
@@ -266,7 +266,7 @@ export class ChangeSession {
       for (const [name, span, uri] of [["Original", change.original, shown.originalUri], ["Modified", change.modified, shown.modifiedUri]] as const) {
         if (span.start < 1) continue;
         const caption = `${name} ${span.start === span.end ? "line" : "lines"} ${span.start === span.end ? span.start : `${span.start}–${span.end}`}`;
-        out.push({ referenceId: register(() => this.host.reveal(uri, span.start, span.end)), caption });
+        out.push({ referenceId: register(() => this.host.reveal(uri, span.start, span.end, name === "Original" ? "original" : "modified")), caption });
       }
       return out;
     };
@@ -276,7 +276,7 @@ export class ChangeSession {
         .filter((unit) => unit.side === name)
         .map((unit) => [
           unit.occurrence.id,
-          register(() => this.host.reveal(uri, unit.occurrence.startLine, unit.occurrence.endLine))
+          register(() => this.host.reveal(uri, unit.occurrence.startLine, unit.occurrence.endLine, name))
         ]));
     };
     const status: ChangeView["status"] = shown.controller ? "loading"

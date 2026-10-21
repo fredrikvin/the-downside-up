@@ -402,6 +402,15 @@ export async function run(): Promise<void> {
     assert.equal(api.allExplanations().length, requestsBefore);
     await api.explainChange();
     assert.equal(api.shownChange()?.status, "current", "Explain changes is the explicit request for one diff.");
+    for (const side of ["original", "modified", "modified", "original", "original"] as const) {
+      await vscode.commands.executeCommand("downsideUp.showFileOverview");
+      await api.revealChange(side);
+      assert.equal(vscode.window.activeTextEditor?.document.uri.toString(), (side === "original" ? badgeUri : nextBadgeUri).toString(),
+        `Selecting a ${side} item focuses its own side of the native diff.`);
+      assert.ok(!vscode.window.activeTextEditor?.selection.isEmpty, "The requested side's source range is selected.");
+      assert.ok(vscode.window.tabGroups.all.some((group) => group.activeTab?.input instanceof vscode.TabInputTextDiff),
+        "Source selection keeps the native diff open.");
+    }
     const repositoryRoot = await findRepositoryRoot(reactRoot);
     assert.equal(await api.commandRoot(), repositoryRoot, "Repository commands act on the shown diff's repository.");
 
@@ -708,8 +717,17 @@ export async function run(): Promise<void> {
     "flowchart nodes under the cursor to be highlighted"
   );
   const nodeIndex = withFlowchart!.flowchart!.nodes.findIndex((node) => node.endLine > node.startLine);
+  assert.ok(nodeIndex >= 0, "The chart includes a source-linked node.");
   await api.revealStep("checkout", nodeIndex, "node");
-  assert.ok(api.revealedLines(), "Clicking a node highlights its lines.");
+  const node = withFlowchart!.flowchart!.nodes[nodeIndex]!;
+  const nodeEditor = vscode.window.activeTextEditor!;
+  assert.equal(nodeEditor.document.uri.toString(), goDocument.uri.toString(), "Clicking a node reveals the function's source document.");
+  assert.ok(nodeEditor.selection.isEmpty, "Clicking a node uses a line highlight, not a text selection.");
+  assert.equal(nodeEditor.selection.active.line, checkoutStart + node.startLine - 1, "Clicking a node moves the caret to its source line.");
+  assert.deepEqual(api.revealedLines(), {
+    start: checkoutStart + node.startLine - 1,
+    end: checkoutStart + node.endLine - 1
+  }, "Clicking a node highlights its exact source range.");
   await waitFor(
     async () => JSON.stringify(api.stepHighlight()?.nodes) === JSON.stringify([nodeIndex]) ? true : undefined,
     "exactly the clicked node to stay highlighted"

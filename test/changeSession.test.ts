@@ -228,7 +228,7 @@ describe("the shown native diff", () => {
     const { service } = session();
     const changes = new ChangeSession({
       service,
-      reveal: async (target, start, end) => { opened.push(`${target.scheme}:${start}-${end}`); },
+      reveal: async (target, start, end, side) => { opened.push(`${side}:${target.scheme}:${start}-${end}`); },
       schedule: (task) => task(),
       changed: () => undefined
     });
@@ -251,10 +251,12 @@ describe("the shown native diff", () => {
     const reference = visual.originalLinks[occurrenceId];
     if (!reference) throw new Error("Expected a host-validated original-side link.");
     await callbacks.get(reference)?.();
-    expect(opened).toEqual(["git:1-2"]);
+    expect(opened).toEqual(["original:git:1-2"]);
     const modifiedStep = visual.scope.modified.steps[0];
     if (!modifiedStep) throw new Error("Expected a modified-side step.");
     expect(visual.modifiedLinks[modifiedStep.occurrenceId]).toBeTruthy();
+    await callbacks.get(visual.modifiedLinks[modifiedStep.occurrenceId]!)?.();
+    expect(opened).toEqual(["original:git:1-2", "modified:file:1-2"]);
 
     await writeFile(join(root, "a.txt"), "export const a = 3;\n");
     await changes.refresh();

@@ -12,10 +12,13 @@ class TestElement {
   hidden = false;
   disabled = false;
   focused = false;
-  readonly listeners = new Map<string, (event?: { key?: string; preventDefault(): void; stopPropagation(): void }) => void>();
+  readonly listeners = new Map<string, (event?: { key?: string; target?: TestElement; preventDefault(): void; stopPropagation(): void }) => void>();
   readonly dataset: Record<string, string> = {};
   readonly style: Record<string, string> = {};
-  readonly classList = { add: (...names: string[]) => { this.className += " " + names.join(" "); } };
+  readonly classList = {
+    add: (...names: string[]) => { this.className += " " + names.join(" "); },
+    remove: (...names: string[]) => { this.className = this.className.split(" ").filter((name) => !names.includes(name)).join(" "); }
+  };
   readonly clientWidth = 400;
   readonly offsetWidth = 320;
   readonly offsetHeight = 200;
@@ -30,12 +33,24 @@ class TestElement {
   replaceChildren(...children: Array<TestElement | string>): void { this.children.length = 0; this.append(...children); this.textContent = ""; }
   setAttribute(name: string, value: string): void { this.attributes.set(name, value); }
   getAttribute(name: string): string | undefined { return this.attributes.get(name); }
-  querySelectorAll(): TestElement[] { return []; }
+  matches(selector: string): boolean {
+    if (selector.startsWith("[data-")) return selector.slice(6, -1) in this.dataset;
+    if (selector.startsWith(".")) return selector.slice(1).split(".").every((name) => this.className.split(" ").includes(name));
+    return this.tagName === selector;
+  }
+  closest(selector: string): TestElement | undefined { return this.matches(selector) ? this : this.parentElement?.closest(selector); }
+  querySelectorAll(selector: string): TestElement[] {
+    return this.elements().slice(1).filter((node) => selector.split(",").some((part) => node.matches(part.trim())));
+  }
+  querySelector(selector: string): TestElement | undefined {
+    const data = /^\[data-(\w+)="(\d+)"\]$/.exec(selector);
+    return data ? this.elements().slice(1).find((node) => node.dataset[data[1]!] === data[2]) : this.querySelectorAll(selector)[0];
+  }
   getBoundingClientRect() { const top = (Number(this.style.gridRow || 1) - 1) * 100; return { width: 320, height: 40, left: 0, right: 320, top, bottom: top + 40 }; }
   getTotalLength(): number { return 100; }
   getPointAtLength(length: number) { return { x: 160, y: length }; }
   getBBox() { return { x: 100, y: 50, width: 80, height: 12 }; }
-  addEventListener(type: string, listener: (event?: { key?: string; preventDefault(): void; stopPropagation(): void }) => void): void { this.listeners.set(type, listener); }
+  addEventListener(type: string, listener: (event?: { key?: string; target?: TestElement; preventDefault(): void; stopPropagation(): void }) => void): void { this.listeners.set(type, listener); }
   focus(): void { this.focused = true; }
   elements(): TestElement[] {
     return [this, ...this.children.flatMap((child) => typeof child === "string" ? [] : child.elements())];
@@ -53,13 +68,14 @@ function webviewHelpers() {
     if (!elements.has(id)) elements.set(id, new TestElement("button"));
     return elements.get(id)!;
   };
-  const helpers = new Function("acquireVsCodeApi", "document", "window", "requestAnimationFrame", script + "\nreturn { layoutFlow, downwardPath, renderPseudocode, renderFlowchart, renderEntry, renderAiBody, missingFormat, renderHeader, renderCrumbs, renderActivity, renderPageActions, renderChange, setFormats: (formats) => { state = { formats }; } };")(
+  const helpers = new Function("acquireVsCodeApi", "document", "window", "requestAnimationFrame", script + "\nreturn { layoutFlow, downwardPath, renderPseudocode, renderFlowchart, renderEntry, renderAiBody, missingFormat, renderHeader, renderCrumbs, renderActivity, renderPageActions, renderChange, highlightSteps, setFormats: (formats) => { state = { formats }; } };")(
     () => ({ getState: () => ({}), postMessage: (message: unknown) => messages.push(message) }),
     {
       getElementById: element,
       createElement: (tag: string) => new TestElement(tag),
       createElementNS: (_ns: string, tag: string) => new TestElement(tag),
-      createTextNode: (text: string) => text
+      createTextNode: (text: string) => text,
+      querySelectorAll: (selector: string) => [...elements.values()].flatMap((node) => node.querySelectorAll(selector))
     },
     { addEventListener: () => undefined },
     (callback: () => void) => { frames.push(callback); return frames.length; }
@@ -67,7 +83,7 @@ function webviewHelpers() {
     layoutFlow(chart: Flowchart, limit?: number): { rows: Flowchart["nodes"][]; back: Set<Flowchart["edges"][number]> };
     downwardPath(points: Array<{ x: number; y: number }>): string;
     renderPseudocode(lines: NonNullable<NonNullable<ExplanationView["explanation"]>["pseudocode"]>, view: ExplanationView): TestElement;
-    renderFlowchart(chart: Flowchart, view: Pick<ExplanationView, "entryId">, links?: Array<{ target: string; caption: string } | null>): TestElement;
+    renderFlowchart(chart: Flowchart, view: Pick<ExplanationView, "entryId"> & Partial<ExplanationView>, links?: Array<{ target: string; caption: string } | null>): TestElement;
     renderEntry(entry: Record<string, unknown>, views: Map<string, ExplanationView>): TestElement;
     renderAiBody(view: ExplanationView): TestElement;
     missingFormat(view: ExplanationView, format: string): TestElement;
@@ -76,6 +92,7 @@ function webviewHelpers() {
     renderActivity(state: Pick<PanelState, "busy" | "notice" | "folder" | "stats">): void;
     renderPageActions(state: Partial<PanelState>): void;
     renderChange(change: ChangeView): TestElement[];
+    highlightSteps(items: { entryId: string; steps: number[]; pseudocode: number[]; nodes: number[] }): void;
     setFormats(formats: PanelState["formats"]): void;
   };
   messages.length = 0;
@@ -423,6 +440,50 @@ describe("preview webview document", () => {
     expect(messages).toEqual([{ type: "navigate", referenceId: "host" }]);
   });
 
+  it("reveals ordinary flowchart nodes from their labels and shapes, without selecting a containing node", () => {
+    const { renderFlowchart, messages, flushFrames } = webviewHelpers();
+    const chart: Flowchart = {
+      nodes: [
+        { id: "show", kind: "show", label: "Results", startLine: 1, endLine: 6 },
+        { id: "choice", kind: "decision", parent: "show", label: "Ready?", startLine: 2, endLine: 2 },
+        { id: "done", kind: "end", label: "Done", startLine: 6, endLine: 6 }
+      ],
+      edges: [{ from: "show", to: "done", label: "" }]
+    };
+    const view: ExplanationView = {
+      entryId: "f", functionName: "run", status: "current", detail: "", references: [], limitations: [],
+      linked: { steps: [], pseudocode: [], nodes: [true, true, true] }
+    };
+    const graph = renderFlowchart(chart, view);
+    flushFrames();
+    const nodes = graph.elements().filter((node) => node.dataset.node !== undefined);
+    expect(nodes.map((node) => node.dataset.node)).toEqual(["0", "1", "2"]);
+    const choice = nodes[1]!;
+    for (const target of [choice, choice.elements().find((node) => node.className === "decision-content")!, choice.elements().find((node) => node.tagName === "polygon")!]) {
+      const click = { target, preventDefault() {}, stopPropagation() {} };
+      choice.listeners.get("click")?.(click);
+      nodes[0]!.listeners.get("click")?.(click);
+      expect(messages.splice(0)).toEqual([{ type: "revealItem", entryId: "f", kind: "node", index: 1 }]);
+    }
+    choice.listeners.get("keydown")?.({ target: choice, key: "Enter", preventDefault() {}, stopPropagation() {} });
+    expect(messages).toEqual([{ type: "revealItem", entryId: "f", kind: "node", index: 1 }]);
+  });
+
+  it("retains a source-selected node when the flowchart is drawn after its highlight arrives", () => {
+    const { renderFlowchart, element, highlightSteps, flushFrames } = webviewHelpers();
+    const graph = renderFlowchart({
+      nodes: [{ id: "work", kind: "action", label: "Do work", startLine: 1, endLine: 2 }],
+      edges: []
+    }, {
+      entryId: "f",
+      linked: { steps: [], pseudocode: [], nodes: [true] }
+    });
+    element("f-ai").append(graph);
+    highlightSteps({ entryId: "f", steps: [], pseudocode: [], nodes: [0] });
+    flushFrames();
+    expect(graph.elements().find((node) => node.dataset.node === "0")?.className.split(" ")).toContain("active");
+  });
+
   it("shows Explain only for an unexplained entry and renders prefetched loading inline", () => {
     const { renderEntry, messages } = webviewHelpers();
     const entry = {
@@ -521,7 +582,7 @@ describe("change view", () => {
     const { renderChange, messages, flushFrames } = webviewHelpers();
     const cards = renderChange(withVisual());
     const elements = () => cards.flatMap((card) => card.elements());
-    const click = (text: string) => elements().find((node) => node.listeners.has("click") && (node.textContent === text || node.children.includes(text)))?.listeners.get("click")?.(event);
+    const click = (text: string) => elements().find((node) => node.listeners.has("click") && node.elements().some((part) => part.textContent === text || part.textContent === text + "." || part.children.includes(text)))?.listeners.get("click")?.(event);
     const visibleTexts = () => texts(cards).join(" ");
     expect(visibleTexts()).toContain("Before step <script>alert(1)</script>");
     expect(visibleTexts()).toContain("After step <script>alert(1)</script>");
@@ -531,6 +592,9 @@ describe("change view", () => {
     expect(elements().find((node) => node.className === "comparison-visual")).toBeDefined();
     expect(elements().find((node) => node.attributes.get("role") === "tablist")?.attributes.get("aria-label")).toBe("Paired <b>routine</b> comparison views");
     expect(elements().find((node) => node.textContent === "Steps")?.attributes.get("aria-selected")).toBe("true");
+    expect(elements().filter((node) => node.attributes.get("role") === "tab").every((node) => node.className === "tab")).toBe(true);
+    expect(elements().find((node) => node.attributes.get("role") === "tablist")?.className).toBe("tabs");
+    expect(elements().filter((node) => node.className === "step linked")).toHaveLength(2);
     expect(messages).toEqual([]);
     click("Before step <script>alert(1)</script>");
     click("After step <script>alert(1)</script>");
@@ -539,7 +603,10 @@ describe("change view", () => {
     expect(messages).toEqual([]);
     expect(visibleTexts()).not.toContain("Before step");
     expect(visibleTexts()).toContain("Before pseudocode");
-    expect(elements().find((node) => node.tagName === "li" && node.attributes.has("style"))?.attributes.get("style")).toBe("margin-left: 2em");
+    const pseudoRows = elements().filter((node) => node.className.includes("pseudo-line"));
+    expect(pseudoRows).toHaveLength(2);
+    expect(pseudoRows.every((node) => node.tagName === "div" && node.style.paddingLeft === "74px")).toBe(true);
+    expect(pseudoRows.every((node) => node.elements().every((part) => part.tagName !== "a"))).toBe(true);
     click("Before pseudocode");
     click("After pseudocode");
     expect(messages.splice(0)).toEqual([{ type: "navigate", referenceId: "host-original" }, { type: "navigate", referenceId: "host-modified" }]);
@@ -587,15 +654,27 @@ describe("change view", () => {
       expect(highlighted).toHaveLength(2);
       expect(highlighted.every((node) => node.elements().some((part) => part.className === "pseudo-token-keyword" && part.textContent === "if"))).toBe(true);
       expect(elements().some((node) => node.tagName === "b")).toBe(false);
-      expect(highlighted.every((node) => node.tagName === (status === "current" ? "a" : "span"))).toBe(true);
+      expect(highlighted.every((node) => node.tagName === "div" && node.className.includes("pseudo-line"))).toBe(true);
+      expect(highlighted.every((node) => node.className.includes("linked") === (status === "current"))).toBe(true);
       expect(messages).toEqual([]);
-      highlighted[0]!.listeners.get("keydown")?.({ ...event, key: "Enter" });
+      highlighted[0]!.listeners.get("keydown")?.({ ...event, key: "Enter", target: highlighted[0] });
       expect(messages.splice(0)).toEqual(status === "current" ? [{ type: "navigate", referenceId: "host-original" }] : []);
       elements().find((node) => node.textContent === "Flowchart")?.listeners.get("click")?.(event);
       flushFrames();
-      expect(elements().filter((node) => node.tagName === "polygon")).toHaveLength(2);
+      expect(elements().filter((node) => node.tagName === "polygon")).toHaveLength(4);
+      expect(elements().filter((node) => node.attributes.get("class") === "decision-highlight")).toHaveLength(2);
       expect(messages).toEqual([]);
     }
+  });
+
+  it("shares subtle text highlights and shape-following flowchart halos with normal explanations", () => {
+    const html = panelHtml("n");
+    expect(html).toContain(".step.active, .pseudo-line.active { background: var(--item-highlight); }");
+    expect(html).toContain(".step.linked:is(:hover, :focus-visible), .pseudo-line.linked:is(:hover, :focus-visible)");
+    expect(html).toContain("box-shadow: 0 0 0 5px var(--item-highlight)");
+    expect(html).toContain(".decision-shape .decision-highlight { fill: none; stroke: transparent; stroke-width: 10;");
+    expect(html).toContain("> .decision-shape > .decision-highlight { stroke: var(--item-highlight); }");
+    expect(html).not.toContain(".comparison-tabs");
   });
 
   it("keeps comparison tabs local, keyboard accessible, and independent of other change cards", () => {

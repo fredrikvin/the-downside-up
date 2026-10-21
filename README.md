@@ -44,7 +44,11 @@ and billing.
 - **Understand a change.** With the preview open, show a Git diff in VS Code
   and click **Explain changes** to compare the behavior on both sides in
   plain-language steps, pseudocode, and flowcharts, alongside the summary and
-  before/after explanation. Click a visual item to reveal its source lines.
+  before/after explanation. These use the same underlined tabs and subtle
+  background highlights as normal files; pseudocode rows have no link styling.
+  Flowchart highlights follow the node's shape with a slightly larger halo.
+  Click a visual item to focus and select its source lines in the matching
+  Before or After side of the existing diff editor.
   With **Prefetch** enabled and sharing already approved, the comparison
   preloads automatically when the preview shows the diff. Otherwise,
   **Explain changes** sends both versions of that one file.

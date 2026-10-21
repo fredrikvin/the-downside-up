@@ -329,20 +329,54 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
   };
 
   /** Reveals lines of one side of the shown diff, clamped to that document. */
-  const revealChangeLines = async (uri: vscode.Uri, startLine: number, endLine: number): Promise<void> => {
-    const editor = vscode.window.visibleTextEditors.find((candidate) => sameUri(candidate.document.uri, uri));
-    const document = editor?.document ?? await vscode.workspace.openTextDocument(uri);
+  const revealChangeLines = async (uri: vscode.Uri, startLine: number, endLine: number, side: "original" | "modified"): Promise<void> => {
+    const group = vscode.window.tabGroups.all.find((candidate) => {
+      const input = candidate.activeTab?.input;
+      return input instanceof vscode.TabInputTextDiff && sameUri(input[side], uri) && change.shows(input.original, input.modified);
+    });
+    if (!group) throw new Error("The comparison editor is no longer visible. Open the diff again before selecting its source lines.");
+    const positions = ["First", "Second", "Third", "Fourth", "Fifth", "Sixth", "Seventh", "Eighth"];
+    const position = positions[group.viewColumn - 1];
+    if (!position) throw new Error("The comparison editor group cannot be focused. Move the diff to one of the first eight editor groups.");
+    const matches = (editor: vscode.TextEditor | undefined): editor is vscode.TextEditor =>
+      Boolean(editor && vscode.window.tabGroups.activeTabGroup === group && sameUri(editor.document.uri, uri));
+    let subscription: vscode.Disposable | undefined;
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    let acceptFocus: (editor: vscode.TextEditor) => void = () => undefined;
+    // Workbench commands can finish before the extension host sees the new active editor.
+    const focused = new Promise<vscode.TextEditor>((resolve, reject) => {
+      acceptFocus = resolve;
+      subscription = vscode.window.onDidChangeActiveTextEditor((editor) => { if (matches(editor)) resolve(editor); });
+      timeout = setTimeout(() => reject(new Error("VS Code could not focus the requested side of the comparison. Open the diff again and try selecting the item.")), 3_000);
+    });
+    let editor: vscode.TextEditor;
+    try {
+      [editor] = await Promise.all([
+        focused,
+        (async () => {
+          await vscode.commands.executeCommand(`workbench.action.focus${position}EditorGroup`);
+          // VS Code calls the modified side primary and the original side secondary.
+          await vscode.commands.executeCommand(side === "original"
+            ? "workbench.action.compareEditor.focusSecondarySide"
+            : "workbench.action.compareEditor.focusPrimarySide");
+          const active = vscode.window.activeTextEditor;
+          if (matches(active)) {
+            // No change event is emitted when this side already has focus.
+            acceptFocus(active);
+          }
+        })()
+      ]);
+    } finally {
+      subscription?.dispose();
+      clearTimeout(timeout);
+    }
+    const document = editor.document;
     const last = Math.max(0, document.lineCount - 1);
     const first = Math.min(Math.max(startLine - 1, 0), last);
     const final = Math.min(Math.max(endLine - 1, first), last);
     const range = new vscode.Range(first, 0, final, document.lineAt(final).text.length);
-    if (editor) {
-      // The diff stays open; showing the document again would open it as a separate tab.
-      editor.selection = new vscode.Selection(range.start, range.end);
-      editor.revealRange(range, vscode.TextEditorRevealType.InCenterIfOutsideViewport);
-    } else {
-      await vscode.window.showTextDocument(document, { selection: range, preserveFocus: false });
-    }
+    editor.selection = new vscode.Selection(range.start, range.end);
+    editor.revealRange(range, vscode.TextEditorRevealType.InCenterIfOutsideViewport);
   };
 
   const change = new ChangeSession({
@@ -3556,6 +3590,18 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       return view ? { fileName: view.fileName, facts: view.facts, status: view.status, explained: Boolean(view.result), links: view.result?.changes.reduce((sum, item) => sum + item.links.length, 0) ?? 0 } : undefined;
     },
     explainChange: () => change.explain(),
+    revealChange: async (side: "original" | "modified") => {
+      const handlers = new Map<string, () => Promise<void>>();
+      const view = change.view((open) => {
+        const id = String(handlers.size);
+        handlers.set(id, open);
+        return id;
+      });
+      const link = view?.result?.changes.flatMap((item) => item.links)
+        .find((item) => item.caption.startsWith(side === "original" ? "Original " : "Modified "));
+      if (!link) throw new Error("No checked comparison source link is available.");
+      await handlers.get(link.referenceId)!();
+    },
     reviewChanges: (base: string) => {
       const root = preview?.root ?? change.root;
       return root ? startReview(root, base, "for testing", false) : Promise.resolve(0);
@@ -3632,6 +3678,7 @@ export interface DownsideUpTestApi {
   reviewItems(): Array<{ path: string; change: string; status: string }>;
   /** The native diff shown in the preview, or undefined. */
   shownChange(): { fileName: string; facts: string; status: string; explained: boolean; links: number } | undefined;
+  revealChange(side: "original" | "modified"): Promise<void>;
   explainChange(): Promise<void>;
   stopReview(): void;
   /** The repository that Clear Cache and Refresh Repository Context act on now. */

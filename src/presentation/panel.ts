@@ -259,7 +259,7 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'nonce-${nonce}'; script-src 'nonce-${nonce}';">
   <style nonce="${nonce}">
-    :root { --separator: var(--vscode-textSeparator-foreground, rgba(128, 128, 128, .35)); }
+    :root { --separator: var(--vscode-textSeparator-foreground, rgba(128, 128, 128, .35)); --item-highlight: var(--vscode-editor-selectionHighlightBackground, rgba(128, 128, 128, .22)); }
     html, body { margin: 0; }
     body {
       color: var(--vscode-editor-foreground);
@@ -335,16 +335,10 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
     .change-sides p, .change-item p { margin: 0 0 4px; }
     .change-links { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: .85em; margin-bottom: 4px; }
     .comparison-visual { margin-top: 12px; overflow-wrap: anywhere; }
-    .comparison-tabs { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
-    .comparison-tabs button { font: inherit; color: inherit; background: transparent; border: 1px solid var(--separator); border-radius: 4px; padding: 4px 8px; cursor: pointer; }
-    .comparison-tabs button[aria-selected="true"] { border-color: var(--vscode-focusBorder); background: var(--vscode-toolbar-hoverBackground); }
-    .comparison-tabs button:focus-visible, .comparison-visual a:focus-visible { outline: 2px solid var(--vscode-focusBorder); outline-offset: 2px; }
+    .comparison-visual > .tabs { margin: 8px 0; }
     .comparison-sides { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; }
     .comparison-side { min-width: 0; }
     .comparison-side h4 { margin: 8px 0; }
-    .comparison-items { padding-left: 24px; }
-    .comparison-items li { margin: 6px 0; }
-    .comparison-pseudocode { font-family: var(--vscode-editor-font-family, monospace); white-space: pre-wrap; }
     .comparison-correspondence { border-top: 1px solid var(--separator); margin-top: 12px; padding-top: 8px; }
     @media (max-width: 600px) { .comparison-sides { grid-template-columns: minmax(0, 1fr); } }
     .notice { margin: 8px 0 0; font-size: .9em; white-space: pre-line; }
@@ -408,8 +402,8 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
     .step-phase { margin: 10px 0 4px; font-weight: 600; color: var(--vscode-descriptionForeground); }
     .steps > ol { margin-bottom: 8px; }
     .step.linked { cursor: pointer; }
-    .step.linked:hover { background: var(--vscode-list-hoverBackground, rgba(128, 128, 128, .12)); }
-    .step.active, .pseudo-line.active { background: var(--vscode-editor-selectionHighlightBackground, rgba(128, 128, 128, .22)); }
+    .step.linked:is(:hover, :focus-visible), .pseudo-line.linked:is(:hover, :focus-visible),
+    .step.active, .pseudo-line.active { background: var(--item-highlight); }
     .flow-head { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; margin: 16px 0 6px; }
     .flow-head h5 { margin: 0; }
     .tabs { display: flex; flex-wrap: wrap; gap: 2px; font-size: .85em; }
@@ -419,7 +413,6 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
     .pseudo-line { padding: 2px 6px; border-radius: 4px; white-space: pre-wrap; }
     .pseudo-line.gap { margin-top: 1.1em; }
     .pseudo-line.linked { cursor: pointer; }
-    .pseudo-line.linked:hover { background: var(--vscode-list-hoverBackground, rgba(128, 128, 128, .12)); }
     .pseudo-code {
       --pseudo-keyword: #c586c0; --pseudo-string: #ce9178; --pseudo-number: #b5cea8; --pseudo-name: #9cdcfe;
       color: var(--vscode-editor-foreground);
@@ -483,7 +476,7 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
     .folder-contents > summary { cursor: pointer; font-weight: 600; }
     .structure-node:hover, .structure-node:focus-visible { border-color: var(--vscode-focusBorder); }
     .flow-scroll { margin: 6px 0 12px; }
-    .flow { position: relative; display: inline-grid; width: max-content; grid-auto-columns: max-content; column-gap: 32px; row-gap: 64px; align-items: center; padding: 4px 16px 8px 4px; }
+    .flow { position: relative; display: inline-grid; width: max-content; grid-auto-columns: max-content; column-gap: 32px; row-gap: 64px; align-items: center; padding: 8px 16px 8px 8px; }
     .flow.has-loops { padding-left: 56px; }
     .flow-node {
       position: relative; z-index: 1; justify-self: center; max-width: 170px; padding: 6px 12px; text-align: center; font-size: .9em; line-height: 1.35;
@@ -502,6 +495,7 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
       fill: var(--vscode-editorWidget-background, var(--vscode-editor-background));
       stroke: var(--vscode-charts-yellow, #c9a000); stroke-width: 2;
     }
+    .decision-shape .decision-highlight { fill: none; stroke: transparent; stroke-width: 10; stroke-linejoin: round; }
     /* What a function returns to be shown on screen, drawn like a small window. */
     .flow-node.kind-show {
       --show: var(--vscode-charts-blue, #3794ff);
@@ -514,15 +508,16 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
     }
     .flow-node.holds { max-width: none; padding: 4px 8px 8px; }
     .flow-node.holds > .flow-node-label { margin-bottom: 2px; }
-    .flow.flow-inner { display: inline-grid; column-gap: 20px; row-gap: 52px; padding: 6px 8px 2px 2px; text-align: center; }
+    .flow.flow-inner { display: inline-grid; column-gap: 20px; row-gap: 52px; padding: 8px; text-align: center; }
     .flow.flow-inner.has-loops { padding-left: 40px; }
     .flow-node.kind-start, .flow-node.kind-end { color: var(--vscode-descriptionForeground, inherit); }
     .flow-node.linked { cursor: pointer; }
     .flow-node.linked:hover { border-color: var(--vscode-focusBorder); }
-    .flow-node.active { outline: 2px solid var(--vscode-textLink-foreground, #3794ff); outline-offset: 2px; }
+    .flow-node.active, .flow-node.linked:is(:hover, :focus-visible) { box-shadow: 0 0 0 5px var(--item-highlight); }
+    .flow-node.kind-decision.active, .flow-node.kind-decision.linked:is(:hover, :focus-visible) { box-shadow: none; }
     .flow-node.kind-decision:is(.active, :focus-visible) { outline: none; }
-    .flow-node.kind-decision.linked:hover .decision-shape polygon,
-    .flow-node.kind-decision:is(.active, :focus-visible) .decision-shape polygon { stroke: var(--vscode-focusBorder); stroke-width: 3; }
+    .flow-node.kind-decision.active > .decision-shape > .decision-highlight,
+    .flow-node.kind-decision.linked:is(:hover, :focus-visible) > .decision-shape > .decision-highlight { stroke: var(--item-highlight); }
     .flow-edges { position: absolute; left: 0; top: 0; pointer-events: none; overflow: visible; z-index: 0; }
     .flow-edge { fill: none; stroke: var(--vscode-descriptionForeground, #888); stroke-width: 1.3; }
     .flow-arrow { fill: var(--vscode-descriptionForeground, #888); }
@@ -1064,7 +1059,11 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
               const diamond = document.createElementNS(SVG, "polygon");
               diamond.setAttribute("points", "50,0 100,50 50,100 0,50");
               diamond.setAttribute("vector-effect", "non-scaling-stroke");
-              shape.append(diamond);
+              const halo = document.createElementNS(SVG, "polygon");
+              halo.setAttribute("class", "decision-highlight");
+              halo.setAttribute("points", "50,0 100,50 50,100 0,50");
+              halo.setAttribute("vector-effect", "non-scaling-stroke");
+              shape.append(halo, diamond);
               content = el("div", "decision-content", node.label);
               box.append(shape, content);
               box.setAttribute("aria-label", "Decision: " + node.label + (links && links[index] ? "; " + links[index].caption : ""));
@@ -1184,6 +1183,8 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
         flow.setAttribute("aria-label", "Flowchart");
         const scale = fitChart(flow, scroll);
         for (const level of levels) drawLevel(level, scale);
+        // Drawing replaces the nodes after the host may already have highlighted them.
+        if (!links && activeSteps.entryId === view.entryId) highlightSteps(activeSteps);
       };
       observeChart(scroll, draw);
       return scroll;
@@ -1861,7 +1862,7 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
       const section = el("section", "comparison-visual");
       section.setAttribute("aria-label", scope.title);
       section.append(el("h4", "", scope.title));
-      const tabs = el("div", "comparison-tabs");
+      const tabs = el("div", "tabs");
       tabs.setAttribute("role", "tablist");
       tabs.setAttribute("aria-label", scope.title + " comparison views");
       const pane = el("div");
@@ -1873,12 +1874,14 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
       if ((!state || !state.formats || state.formats.pseudocode !== false) && (scope.original.pseudocode.length || scope.modified.pseudocode.length)) formats.push(["pseudocode", "Pseudocode"]);
       if ((!state || !state.formats || state.formats.flowchart !== false) && (scope.original.flowchart.nodes.length || scope.modified.flowchart.nodes.length)) formats.push(["flowchart", "Flowchart"]);
       const buttons = [];
-      function sourceLabel(text, side, occurrenceId, pseudocode = false) {
+      function sourceReference(side, occurrenceId) {
         const links = side === "original" ? view.originalLinks : view.modifiedLinks;
-        const referenceId = !outdated && links && Object.prototype.hasOwnProperty.call(links, occurrenceId) ? links[occurrenceId] : undefined;
-        if (!referenceId) return pseudocode ? highlightPseudocode(el("span"), text) : el("span", "", text);
-        const link = action(pseudocode ? "" : text, () => post({ type: "navigate", referenceId }));
-        if (pseudocode) highlightPseudocode(link, text);
+        return !outdated && links && Object.prototype.hasOwnProperty.call(links, occurrenceId) ? links[occurrenceId] : undefined;
+      }
+      function sourceLabel(text, side, occurrenceId) {
+        const referenceId = sourceReference(side, occurrenceId);
+        if (!referenceId) return el("span", "", text);
+        const link = action(text, () => post({ type: "navigate", referenceId }));
         link.setAttribute("aria-label", text + "; reveal in " + (side === "original" ? change.originalLabel : change.modifiedLabel));
         return link;
       }
@@ -1921,12 +1924,30 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
         }
         const items = side[format];
         if (!items.length) column.append(el("p", "muted", format === "steps" ? "No steps recorded for this region." : "No pseudocode recorded for this region."));
-        const list = el("ol", "comparison-items" + (format === "pseudocode" ? " comparison-pseudocode" : ""));
+        const pseudocode = format === "pseudocode";
+        const list = el(pseudocode ? "div" : "ol", pseudocode ? "pseudo" : "steps");
         for (const item of items) {
-          const row = el("li");
-          if (Number.isFinite(item.depth)) row.setAttribute("style", "margin-left: " + Math.max(0, Math.min(12, item.depth)) + "em");
-          row.append(sourceLabel(item.text, sideName, item.occurrenceId, format === "pseudocode"));
-          if (item.detail) row.append(el("p", "muted small", item.detail));
+          const row = el(pseudocode ? "div" : "li", pseudocode ? "pseudo-line" : "step");
+          if (pseudocode) {
+            row.style.paddingLeft = (26 + Math.max(0, Math.min(4, item.depth || 0)) * 24) + "px";
+            row.style.textIndent = "-20px";
+            highlightPseudocode(row, item.text);
+          } else {
+            row.append(el("strong", "", item.text.replace(/[.:]?$/, ".")));
+            if (item.detail) inline(row, " " + item.detail);
+          }
+          const referenceId = sourceReference(sideName, item.occurrenceId);
+          if (referenceId) {
+            row.classList.add("linked");
+            row.tabIndex = 0;
+            row.title = "Reveal these lines in " + label;
+            row.addEventListener("click", () => post({ type: "navigate", referenceId }));
+            row.addEventListener("keydown", (event) => {
+              if (event.target !== row || (event.key !== "Enter" && event.key !== " ")) return;
+              event.preventDefault();
+              post({ type: "navigate", referenceId });
+            });
+          }
           list.append(row);
         }
         if (items.length) column.append(list);
@@ -1944,7 +1965,7 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
         pane.replaceChildren(sides);
       }
       for (const [format, label] of formats) {
-        const button = el("button", "", label);
+        const button = el("button", "tab", label);
         button.type = "button";
         button.id = prefix + "-" + format;
         button.setAttribute("role", "tab");

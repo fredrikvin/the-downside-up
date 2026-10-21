@@ -386,11 +386,22 @@ When a comparison includes a visual scope, its change card also offers
 versions together. Each side has its own ordered explanation and control-flow
 chart from the exact numbered source; the model supplies explicit operation
 and edge correspondences, so similar labels alone do not imply a match.
+The tabs, numbered steps, and unnumbered, indented pseudocode share the
+normal-file styles. Linked rows retain ordinary text styling, with a subtle
+background highlight on hover or keyboard focus rather than link colours
+or underlines. The same highlight colour marks active source-linked items.
+Flowchart nodes in all views gain a slightly larger shape-following background
+halo on hover, keyboard focus, or active source selection, including diamonds.
 Changed behavior stays paired, while added, removed, or uncertain operations
 remain unmatched. Scopes name the source region and coverage; an unavailable
 chart says why instead of inventing a path. Visual text is rendered as text,
 and clicking a linked step, pseudocode line, or chart node reveals only the
-host-validated lines on that side. Switching tabs is local and makes no
+host-validated lines on that side. Selecting an item focuses its existing
+native diff editor group and the original (Before) or modified (After) side
+before selecting and revealing the range; it does not open a separate file
+tab. If that comparison is no longer visible or its side cannot be focused,
+navigation reports an error instead of opening another document.
+Switching tabs is local and makes no
 request. Valid side views survive invalid operation or connection matching;
 unverified matches are omitted with a specific limitation, never inferred.
 A malformed visual scope does not discard other valid scopes. Unsafe source
