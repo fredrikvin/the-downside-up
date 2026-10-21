@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as vscode from "vscode";
 import { MemoryRepositoryCacheStore } from "../src/cache/store";
-import { ChangeSession } from "../src/changeSession";
+import { ChangeSession, type ChangeSessionHost } from "../src/changeSession";
 import { ExplanationService } from "../src/controller";
 import type { ComparisonPromptInput } from "../src/generation/provider";
 import { MockProvider } from "../src/generation/mock";
@@ -37,7 +37,7 @@ afterEach(async () => {
   await rm(root, { recursive: true, force: true });
 });
 
-function session(onGenerate?: () => Promise<void>) {
+function session(onGenerate?: () => Promise<void>, options: Partial<Pick<ChangeSessionHost, "prefetch" | "schedule">> = {}) {
   const provider = new MockProvider();
   const sent: ComparisonPromptInput[] = [];
   const explain = provider.explainComparison.bind(provider);
@@ -54,8 +54,14 @@ function session(onGenerate?: () => Promise<void>) {
     createProvider: async () => provider,
     authorizeExternalData: async () => true
   });
-  const changes = new ChangeSession({ service, reveal: async () => undefined, schedule: (task) => task(), changed: () => undefined });
+  const changes = new ChangeSession({
+    service, reveal: async () => undefined, schedule: (task) => task(), changed: () => undefined, ...options
+  });
   return { changes, provider, sent, service };
+}
+
+function prefetchOptions(allowed = true) {
+  return { enabled: vi.fn(() => true), allowed: vi.fn(async () => allowed), background: vi.fn() };
 }
 
 describe("the shown native diff", () => {
@@ -66,6 +72,110 @@ describe("the shown native diff", () => {
     await changes.refresh();
     expect(changes.view(() => "id")?.status).toBe("ready");
     expect(provider.requests).toBe(0);
+  });
+
+  it("preloads a diff with background priority and a marked no-prompt signal when opted in", async () => {
+    await writeFile(join(root, "a.txt"), "export const a = 2;\n");
+    const prefetch = prefetchOptions();
+    const priorities: Array<string | undefined> = [];
+    const { changes, provider } = session(undefined, {
+      prefetch,
+      schedule: (task, priority) => { priorities.push(priority); return task(); }
+    });
+    await changes.show(headOf("a.txt"), uri("file", "a.txt"));
+    await vi.waitFor(() => expect(changes.view(() => "id")?.status).toBe("current"));
+    expect(provider.requests).toBe(1);
+    expect(priorities).toEqual(["prefetch"]);
+    expect(prefetch.allowed).toHaveBeenCalledWith(root);
+    expect(prefetch.background).toHaveBeenCalledWith(expect.any(AbortSignal));
+
+    changes.clear();
+    await changes.show(headOf("a.txt"), uri("file", "a.txt"));
+    expect(changes.view(() => "id")?.status).toBe("current");
+    expect(provider.requests).toBe(1);
+  });
+
+  it.each(["disabled", "unapproved", "untrusted"] as const)("sends nothing when prefetch is %s", async (reason) => {
+    await writeFile(join(root, "a.txt"), "export const a = 2;\n");
+    const prefetch = prefetchOptions(reason !== "unapproved");
+    prefetch.enabled.mockReturnValue(reason !== "disabled");
+    workspace.isTrusted = reason !== "untrusted";
+    const { changes, provider } = session(undefined, { prefetch });
+    await changes.show(headOf("a.txt"), uri("file", "a.txt"));
+    await vi.waitFor(() => expect(changes.busy).toBe(false));
+    expect(provider.requests).toBe(0);
+    expect(changes.view(() => "id")?.message ?? "").not.toContain("not approved");
+  });
+
+  it("can start after enabling prefetch or granting sharing approval while the diff is shown", async () => {
+    await writeFile(join(root, "a.txt"), "export const a = 2;\n");
+    const prefetch = prefetchOptions(false);
+    const { changes, provider } = session(undefined, { prefetch });
+    await changes.show(headOf("a.txt"), uri("file", "a.txt"));
+    await vi.waitFor(() => expect(changes.busy).toBe(false));
+    prefetch.allowed.mockResolvedValue(true);
+    await changes.prefetch();
+    expect(changes.view(() => "id")?.status).toBe("current");
+    expect(provider.requests).toBe(1);
+  });
+
+  it("does not regenerate on edits, refreshes, or repeated show events", async () => {
+    await writeFile(join(root, "a.txt"), "export const a = 2;\n");
+    const { changes, provider } = session(undefined, { prefetch: prefetchOptions() });
+    await changes.show(headOf("a.txt"), uri("file", "a.txt"));
+    await vi.waitFor(() => expect(changes.view(() => "id")?.status).toBe("current"));
+    await writeFile(join(root, "a.txt"), "export const a = 3;\n");
+    await changes.refresh();
+    await changes.show(headOf("a.txt"), uri("file", "a.txt"));
+    await changes.prefetch();
+    expect(changes.view(() => "id")?.status).toBe("outdated");
+    expect(provider.requests).toBe(1);
+  });
+
+  it("surfaces a failed prefetch without automatically retrying it", async () => {
+    await writeFile(join(root, "a.txt"), "export const a = 2;\n");
+    const { changes, sent } = session(async () => { throw new Error("Invalid JSON"); }, { prefetch: prefetchOptions() });
+    await changes.show(headOf("a.txt"), uri("file", "a.txt"));
+    await vi.waitFor(() => expect(changes.view(() => "id")?.status).toBe("failed"));
+    await changes.refresh();
+    await changes.prefetch();
+    expect(changes.view(() => "id")?.message).toBe("Invalid JSON");
+    expect(sent).toHaveLength(1);
+  });
+
+  it.each(["disabled", "switched", "refreshed", "cancelled"] as const)(
+    "drops a queued prefetch when %s before a request slot opens",
+    async (reason) => {
+      await writeFile(join(root, "a.txt"), "export const a = 2;\n");
+      const prefetch = prefetchOptions();
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      const queued = vi.fn();
+      const { changes, provider } = session(undefined, {
+        prefetch,
+        schedule: async (task) => { queued(); await gate; return task(); }
+      });
+      await changes.show(headOf("a.txt"), uri("file", "a.txt"));
+      await vi.waitFor(() => expect(queued).toHaveBeenCalledOnce());
+      if (reason === "disabled") prefetch.enabled.mockReturnValue(false);
+      else if (reason === "switched") changes.clear();
+      else if (reason === "refreshed") await changes.refresh();
+      else changes.cancel();
+      release();
+      await vi.waitFor(() => expect(changes.busy).toBe(false));
+      expect(provider.requests).toBe(0);
+    }
+  );
+
+  it("rejects a prefetched comparison if either source changes during generation", async () => {
+    await writeFile(join(root, "a.txt"), "export const a = 2;\n");
+    const { changes } = session(async () => {
+      await writeFile(join(root, "a.txt"), "export const a = 3;\n");
+    }, { prefetch: prefetchOptions() });
+    await changes.show(headOf("a.txt"), uri("file", "a.txt"));
+    await vi.waitFor(() => expect(changes.view(() => "id")?.status).toBe("failed"));
+    expect(changes.view(() => "id")?.message).toContain("changed while");
+    expect(changes.view(() => "id")?.result).toBeUndefined();
   });
 
   it("explains what HEAD is when asked, not the commit it named when the diff was shown", async () => {

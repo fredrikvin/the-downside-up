@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { estimateTokens } from "../src/core/fingerprint";
 import type { FunctionExplanation, RepositoryOverview } from "../src/core/types";
-import { explanationPrompt, fileSummaryPrompt } from "../src/generation/prompts";
+import { comparisonPrompt, explanationPrompt, fileSummaryPrompt } from "../src/generation/prompts";
 import { OpenAIProvider } from "../src/generation/openai";
 import {
   explanationSchema,
@@ -65,6 +65,20 @@ afterEach(() => {
 });
 
 describe("structured generation", () => {
+  it("asks for compact changed-region visuals without dropping material branches or exits", () => {
+    const [system] = comparisonPrompt({
+      repositoryName: "sample",
+      languageId: "typescript",
+      original: { path: "sample.ts", label: "Before", present: true, source: "send()" },
+      modified: { path: "sample.ts", label: "After", present: true, source: "retry(send)" }
+    });
+    expect(system).toContain("focused on the changed behavior, not a diagram of the whole file");
+    expect(system).toContain("Prefer one to three scopes");
+    expect(system).toContain("preserve a material branch or exit");
+    expect(system).toContain("compact JSON without indentation");
+    expect(system).toContain("Always finish the JSON object");
+  });
+
   it("validates model output, reports provider token counts, and disables response storage", async () => {
     const fetch = vi.fn().mockResolvedValue(response({
       status: "completed",

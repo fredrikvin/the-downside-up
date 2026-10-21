@@ -24,8 +24,10 @@ Neither phase is a debugger, compiler, correctness proof, or security review.
 
 ## Proposed first-version experience
 
-1. Open a native diff and its existing Downside Up preview. Opening remains
-   cache-only. **Explain changes** is the explicit generation request.
+1. Open a native diff and its existing Downside Up preview. Opening checks
+   the cache first; existing opt-in prefetch may generate a missing comparison
+   using sharing approval already given. **Explain changes** remains the
+   explicit generation request.
 2. Show the file summary and one card per meaningful change, including when
    behavior differs. Closely related changes in the same region can share a
    visual comparison instead of repeating the whole function.
@@ -182,9 +184,11 @@ generation and final validation; immutable review bases stay immutable.
 Outdated diagrams remain clearly marked as saved explanations, with source
 links disabled. Trace playback will also be disabled until current.
 
-Opening, switching, scrolling, resizing, folding, expanding, and following
-source links must make zero provider requests. Only explicit generation
-actions and the already-confirmed review set may generate, under existing
+Scrolling, resizing, folding, expanding, switching comparison tabs, and following
+source links must make zero provider requests. Generation is limited to explicit
+actions, the already-confirmed review set, and missing comparisons when the
+preview first shows a diff with existing user-level prefetch enabled.
+Prefetch uses only existing consent and never prompts. All paths retain existing
 exclusion, workspace-trust, size-limit, and consent rules.
 
 The review lifecycle prerequisites from the 0.39.1 review are addressed in

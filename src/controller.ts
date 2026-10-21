@@ -1222,7 +1222,7 @@ export class ExplanationService {
 
   /**
    * Explains what the change between two exact versions of one file does,
-   * on explicit request only, with one bounded request holding both sides.
+   * on explicit request or opted-in prefetch, with one bounded request holding both sides.
    * `reread` reads the sides again after the model answers; a result is
    * rejected, not saved, when either side changed meanwhile.
    */

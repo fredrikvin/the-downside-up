@@ -155,8 +155,15 @@ end of the preview.
 changes switches it to a change view of that pair; **Explain changes** sends
 both versions of that file to the Functions model (asking for sharing approval
 like any explanation) and saves the result in the repository cache. Opening
-a diff, or **Open Preview to the Side** from either side of one, only looks up a
-saved explanation. **Review Changes…** confirms a count of file comparisons,
+a diff, or **Open Preview to the Side** from either side of one, looks up a
+saved explanation first. With **Prefetch: Enabled** and sharing already approved
+for the repository and Functions model, a missing comparison preloads in the
+background, including paired Steps, Pseudocode, and Flowchart views. It never
+prompts for consent or regenerates an outdated comparison after an edit.
+Invalid cross-side matching no longer hides otherwise valid charts: the
+matching is omitted with a specific limitation. Invalid source references
+still reject their visual scope, without discarding other valid scopes.
+**Review Changes…** confirms a count of file comparisons,
 explains them in the background like prefetching, and opens each in its native
 diff. Binary, oversized, excluded, and identical files are skipped. See
 `docs/prototype.md` for the scope and limits.
@@ -518,6 +525,17 @@ Declining keeps the banner available without retrying the prompt.
 Background work never asks for approval on its own. Loading explanations
 show skeleton lines inline as they are queued or generated. Every prefetched explanation
 counts toward your provider's usage limits or billing.
+
+This setting also preloads the Git diff first shown in the preview, using
+only the Functions model and its existing sharing approval. Saved comparisons
+are reused. File edits, cursor movement, and refreshes never generate a new
+comparison; use **Explain changes** to update an outdated or failed one.
+Diff prefetch uses background request priority, stops on cancellation or when
+disabled, and does not automatically retry failures. Review Changes batches
+keep their own confirmed scope and do not also prefetch the shown diff.
+Comparisons use the current Functions model, with compact visuals focused on
+the changed behavior rather than full-file diagrams; no separate review model
+or additional model calls are needed.
 
 Recent function context is reused within the session while the selected document
 and its tracked files and unsaved buffers are unchanged. Clicking or refocusing the

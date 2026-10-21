@@ -348,7 +348,12 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
   const change = new ChangeSession({
     get service() { return service; },
     reveal: revealChangeLines,
-    schedule: (task) => scheduler.schedule("explicit", task),
+    schedule: (task, priority = "explicit") => scheduler.schedule(priority, task),
+    prefetch: {
+      enabled: () => prefetchSettings().enabled && !reviewSession,
+      allowed: (root) => reviewSharingAllowed(root),
+      background: (signal) => prefetchSignals.add(signal)
+    },
     changed: () => render()
   });
 
@@ -1809,7 +1814,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     return undefined;
   };
 
-  /** Shows a native diff in the preview. Only a saved explanation is looked up; the reader asks for a new one. */
+  /** Shows a native diff, using the same opt-in background generation as file previews. */
   const showChange = async (diff: { original: vscode.Uri; modified: vscode.Uri }, force: boolean): Promise<void> => {
     if (!panel) return;
     regeneration?.abort();
@@ -2284,7 +2289,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     return vscode.workspace.isTrusted && (await unapprovedPrefetchModels(root)).length === 0;
   };
 
-  /** Whether review mode may send code now, without any prompt; comparisons use only the Functions model. */
+  /** Whether comparisons may send code now, without any prompt; they use only the Functions model. */
   const reviewSharingAllowed = async (root: string): Promise<boolean> => {
     return vscode.workspace.isTrusted && (await unapprovedPrefetchModels(root, [describeProvider()])).length === 0;
   };
@@ -3124,6 +3129,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
 
   /** Prefetching that stopped for lack of code-sharing approval starts again once it is given. */
   const afterConsent = (root: string): void => {
+    if (panel && change.root === root) void change.prefetch();
     if (!panel || !preview || preview.root !== root || prefetchSession || !prefetchSettings().enabled) return;
     startPrefetch(preview.document, root);
   };
@@ -3408,6 +3414,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
 
   const onConfigChange = vscode.workspace.onDidChangeConfiguration((event) => {
     if (change.active && ["downsideUp.provider", "downsideUp.languageModel", "downsideUp.openai", "downsideUp.exclusion"].some((key) => event.affectsConfiguration(key))) {
+      change.stopPrefetch();
       void change.refresh().catch(() => undefined);
     }
     if (["downsideUp.provider", "downsideUp.languageModel", "downsideUp.openai", "downsideUp.projectMap"].some((key) => event.affectsConfiguration(key))) {
@@ -3434,6 +3441,8 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       wakePrefetch();
     }
     if (event.affectsConfiguration("downsideUp.prefetch")) {
+      if (!prefetchSettings().enabled) change.stopPrefetch();
+      else if (panel && change.active) void change.prefetch();
       if (!prefetchSettings().enabled) stopPrefetch();
       else if (prefetchSession) wakePrefetch();
       else if (panel && preview) startPrefetch(preview.document, preview.root);

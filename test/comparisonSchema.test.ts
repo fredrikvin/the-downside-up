@@ -114,7 +114,7 @@ describe("parseComparison", () => {
     expect(parsed.limitations.join(" ")).toContain("paired visual comparison was omitted");
   });
 
-  it("rejects unit correspondences that are not one-to-one without losing the text comparison", () => {
+  it("rejects non-one-to-one matching without losing valid side views", () => {
     const visual = scope();
     visual.units.push({
       id: "after-request-copy",
@@ -130,8 +130,11 @@ describe("parseComparison", () => {
     });
     const parsed = parseComparison({ ...base, changes: [change()], visualScopes: [visual] }, bounds);
     expect(parsed.changes).toHaveLength(1);
-    expect(parsed.visualScopes).toBeUndefined();
-    expect(parsed.limitations[0]).toContain("paired visual comparison was omitted");
+    expect(parsed.visualScopes).toHaveLength(1);
+    expect(parsed.visualScopes?.[0]?.original.flowchart).toEqual(visual.original.flowchart);
+    expect(parsed.visualScopes?.[0]?.unitCorrespondences).toEqual([]);
+    expect(parsed.visualScopes?.[0]?.edgeCorrespondences).toEqual([]);
+    expect(parsed.limitations.join(" ")).toContain("Unit correspondences must be one-to-one");
   });
 
   it("requires matched edges to connect explicitly corresponding operations", () => {
@@ -139,7 +142,10 @@ describe("parseComparison", () => {
     visual.modified.flowchart.edges[0]!.from = "modified-work";
     visual.modified.flowchart.edges[0]!.to = "modified-start";
     const parsed = parseComparison({ ...base, changes: [change()], visualScopes: [visual] }, bounds);
-    expect(parsed.visualScopes).toBeUndefined();
+    expect(parsed.visualScopes).toHaveLength(1);
+    expect(parsed.visualScopes?.[0]?.edgeCorrespondences).toEqual([]);
+    expect(parsed.visualScopes?.[0]?.unitCorrespondences).toEqual(visual.unitCorrespondences);
+    expect(parsed.limitations.join(" ")).toContain("Corresponding edges do not connect corresponding operations");
     expect(parsed.changes).toHaveLength(1);
   });
 
@@ -221,10 +227,36 @@ describe("parseComparison", () => {
     expect(parsed.limitations.join(" ")).toContain("safety limits");
   });
 
-  it("marks a visual scope discarded when its id is not unique or referenced", () => {
+  it("keeps valid charts when a change references an unknown visual scope", () => {
     const parsed = parseComparison({ ...base, changes: [change({ visualScopeId: "missing" })], visualScopes: [scope()] }, bounds);
-    expect(parsed.visualScopes).toBeUndefined();
+    expect(parsed.visualScopes).toHaveLength(1);
     expect(parsed.changes).toHaveLength(1);
+    expect(parsed.changes[0]?.visualScopeId).toBeUndefined();
+    expect(parsed.limitations.join(" ")).toContain("visual link was omitted");
+  });
+
+  it("keeps valid scopes when another scope fails and reports the exact validation reason", () => {
+    const invalid = scope();
+    invalid.id = "invalid-scope";
+    invalid.modified.steps[0]!.endLine = 11;
+    const parsed = parseComparison({ ...base, changes: [change()], visualScopes: [invalid, scope()] }, bounds);
+    expect(parsed.visualScopes).toHaveLength(1);
+    expect(parsed.visualScopes?.[0]?.id).toBe("request");
+    expect(parsed.limitations.join(" ")).toContain("Visual scope 1 was omitted: A visual source span is outside its comparison side.");
+  });
+
+  it("still rejects unsafe source references and reports why", () => {
+    const invalid = scope();
+    invalid.original.flowchart.nodes[0]!.occurrenceId = "unknown-occurrence";
+    const parsed = parseComparison({ ...base, changes: [change()], visualScopes: [invalid] }, bounds);
+    expect(parsed.visualScopes).toBeUndefined();
+    expect(parsed.limitations.join(" ")).toContain("Flowchart node references an occurrence on the wrong side");
+  });
+
+  it("rejects duplicate scope identities rather than guessing the intended link", () => {
+    const parsed = parseComparison({ ...base, changes: [change()], visualScopes: [scope(), scope()] }, bounds);
+    expect(parsed.visualScopes).toBeUndefined();
+    expect(parsed.limitations.join(" ")).toContain("Duplicate comparison visual scope id");
   });
 
   it("keeps a textual comparison without visual data unchanged", () => {

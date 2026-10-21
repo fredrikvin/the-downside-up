@@ -172,6 +172,17 @@ describe("VS Code language model generation", () => {
     expect(sendRequest).toHaveBeenCalledTimes(3);
   });
 
+  it("rejects an incomplete comparison without repairing it or making another model call", async () => {
+    const { provider, sendRequest } = fakeModel(async () => streamOf(['{"summary":"Adds a retry","visualScopes":[']));
+    await expect(provider.explainComparison({
+      repositoryName: "sample",
+      languageId: "typescript",
+      original: { path: "sample.ts", label: "Before", present: true, source: "send()" },
+      modified: { path: "sample.ts", label: "After", present: true, source: "retry(send)" }
+    })).rejects.toThrow(/did not return valid JSON/);
+    expect(sendRequest).toHaveBeenCalledTimes(1);
+  });
+
   it("maps permission, quota, and availability failures to actionable messages", async () => {
     const failures = [
       LanguageModelError.NoPermissions(),

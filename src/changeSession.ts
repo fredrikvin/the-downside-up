@@ -21,8 +21,13 @@ export interface ChangeSessionHost {
   readonly service: ExplanationService;
   /** Opens one-based lines of one side of the shown diff, checked by the caller's snapshot. */
   readonly reveal: (uri: vscode.Uri, startLine: number, endLine: number) => Promise<void>;
-  /** Runs an explicit request in a shared request slot. */
-  readonly schedule: <T>(task: () => Promise<T>) => Promise<T>;
+  /** Runs a request in a shared slot, behind explicit requests when prefetching. */
+  readonly schedule: <T>(task: () => Promise<T>, priority?: "explicit" | "prefetch") => Promise<T>;
+  readonly prefetch?: {
+    readonly enabled: () => boolean;
+    readonly allowed: (root: string) => Promise<boolean>;
+    readonly background: (signal: AbortSignal) => void;
+  };
   /** The shown state changed; draw it again. */
   readonly changed: () => void;
 }
@@ -40,6 +45,8 @@ interface Shown {
   error?: string;
   detail?: string;
   controller?: AbortController;
+  prefetching?: boolean;
+  prefetchAttempted?: boolean;
 }
 
 /** Reading options for a snapshot: unsaved editor text stands in for the working file, and exclusions are checked per side. */
@@ -56,8 +63,8 @@ const capitalized = (text: string): string => text.charAt(0).toUpperCase() + tex
 
 /**
  * The native diff shown in the preview. Showing it only looks up a saved
- * explanation; the model is asked only by `explain`, which the reader
- * triggers, for the exact two versions the diff shows.
+ * explanation, then optionally prefetches with existing sharing approval.
+ * Explicit requests may ask for consent for the exact versions shown.
  */
 export class ChangeSession {
   private shown: Shown | undefined;
@@ -95,7 +102,11 @@ export class ChangeSession {
     this.shown?.controller?.abort();
   }
 
-  /** Looks up the saved explanation for a diff's two documents; never asks a model. */
+  stopPrefetch(): void {
+    if (this.shown?.prefetching) this.shown.controller?.abort();
+  }
+
+  /** Looks up a saved comparison, then prefetches on first showing when opted in. */
   async show(original: vscode.Uri, modified: vscode.Uri, force = false): Promise<void> {
     const key = keyOf(original, modified);
     if (this.shown?.key === key && !force) return;
@@ -110,7 +121,10 @@ export class ChangeSession {
     } catch (error) {
       shown.problem = `The change could not be read: ${error instanceof Error ? error.message : String(error)}`;
     }
-    if (epoch === this.epoch && this.shown === shown) this.host.changed();
+    if (epoch === this.epoch && this.shown === shown) {
+      this.host.changed();
+      if (!previous) void this.prefetch();
+    }
   }
 
   /** Reads the same pair again, such as after an edit, a save, or a setting change. */
@@ -163,15 +177,36 @@ export class ChangeSession {
 
   /** Explains the shown pair; the reader asked for it. */
   async explain(): Promise<void> {
+    await this.generate(false);
+  }
+
+  /** Never prompts, retries a failed attempt, or regenerates an outdated saved comparison. */
+  async prefetch(): Promise<void> {
+    const shown = this.shown;
+    if (!this.host.prefetch?.enabled() || !shown || shown.saved || shown.error || shown.problem || shown.prefetchAttempted) return;
+    await this.generate(true);
+  }
+
+  private async generate(prefetching: boolean): Promise<void> {
     const shown = this.shown;
     const root = shown?.root;
     if (!shown?.ref || !root || shown.controller) return;
+    const background = this.host.prefetch;
+    const epoch = this.epoch;
     const controller = new AbortController();
+    const mayPrefetch = () => this.shown === shown && epoch === this.epoch
+      && vscode.workspace.isTrusted && background?.enabled() === true && !controller.signal.aborted;
     shown.controller = controller;
+    shown.prefetching = prefetching;
+    if (prefetching) this.host.prefetch?.background(controller.signal);
     shown.error = undefined;
     shown.detail = "Reading both versions…";
     this.host.changed();
     try {
+      if (prefetching) {
+        if (!background || !mayPrefetch() || !(await background.allowed(root)) || !mayPrefetch()) return;
+        shown.prefetchAttempted = true;
+      }
       const snapshot = await this.currentPair(shown, root);
       if (controller.signal.aborted) return;
       shown.snapshot = snapshot;
@@ -180,11 +215,17 @@ export class ChangeSession {
       shown.detail = "Explaining the changes…";
       this.host.changed();
       // The final check reads the documents shown by then, so a moved HEAD or index discards the result.
-      const result = await this.host.schedule(() =>
-        this.host.service.explainComparison(snapshot, () => this.currentPair(shown, root), controller.signal));
+      const result = await this.host.schedule(async () => {
+        if (controller.signal.aborted || (prefetching && !mayPrefetch())) {
+          throw new DOMException("Prefetching moved on.", "AbortError");
+        }
+        return this.host.service.explainComparison(snapshot, () => this.currentPair(shown, root), controller.signal);
+      }, prefetching ? "prefetch" : "explicit");
       if (this.shown === shown) shown.saved = result;
     } catch (error) {
       if (controller.signal.aborted) {
+        shown.error = undefined;
+      } else if (error instanceof DOMException && error.name === "AbortError" && prefetching) {
         shown.error = undefined;
       } else if (error instanceof DOMException && error.name === "AbortError") {
         shown.error = "Nothing was sent because sharing code with this model was not approved.";
@@ -193,6 +234,7 @@ export class ChangeSession {
       }
     } finally {
       shown.controller = undefined;
+      shown.prefetching = false;
       shown.detail = undefined;
       if (this.shown === shown) this.host.changed();
     }

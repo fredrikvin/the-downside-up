@@ -320,11 +320,22 @@ base commit against the working tree), the preview, if open, switches to a
 opens a closed preview, and clicking between the two sides or focusing the
 preview keeps the same comparison; a normal file or folder preview returns
 when another editor is shown. **Open Preview to the Side** and the editor
-title button work from either side of a diff, and in a diff they only look up
-a saved explanation, even with text selected.
+title button work from either side of a diff. A saved explanation is looked up
+first, even with text selected.
 
-Showing a diff, switching views, scrolling, editing, and a cache miss never
-call a provider. **Explain changes** is the request: it reads both versions
+With `downsideUp.prefetch.enabled` and existing sharing approval for the
+repository and Functions model, first showing a diff in the preview also
+preloads a missing comparison with background request priority. It never
+prompts for consent, needs no Overview model approval, reuses saved comparisons,
+and does not retry failed or cancelled attempts or regenerate outdated results.
+Enabling prefetch or granting consent can start a waiting comparison.
+Changing the shown diff, closing the preview, cancelling, disabling prefetch,
+or changing provider/exclusion settings cancels its background request.
+A queued request is also dropped if the diff was refreshed before it starts.
+Review mode retains its confirmed scope and disables this separate diff prefetch.
+Switching tabs within a comparison, scrolling, editing, refreshing, and a
+cache miss outside this opt-in path never call a provider.
+**Explain changes** is the explicit request: it reads both versions
 again (unsaved editor text stands in for the working file), resolving `HEAD`
 and the index to what they are at that moment rather than reusing the commit
 they named when the diff was shown, checks the
@@ -362,8 +373,19 @@ remain unmatched. Scopes name the source region and coverage; an unavailable
 chart says why instead of inventing a path. Visual text is rendered as text,
 and clicking a linked step, pseudocode line, or chart node reveals only the
 host-validated lines on that side. Switching tabs is local and makes no
-request. If visual data is invalid or exceeds its bounds, the textual
-comparison remains and the limitation is shown.
+request. Valid side views survive invalid operation or connection matching;
+unverified matches are omitted with a specific limitation, never inferred.
+A malformed visual scope does not discard other valid scopes. Unsafe source
+references still reject their scope, and aggregate safety limits still apply.
+If no valid scopes remain, the textual comparison remains and the specific
+validation reason is shown.
+
+Comparison generation stays on the Functions model. The prompt prefers one to
+three coherent changed regions, concise steps and charts, and compact JSON
+rather than exhaustive full-file diagrams, reducing output without another
+model request. Coverage limitations name what is not shown. Invalid JSON is
+still rejected; compact output does not guarantee a valid response, and no
+automatic repair call, retry, or model fallback is made for diff prefetch.
 
 An illustrative **Trace a case** remains planned in
 [Visual behavior comparisons](diff-flow-plan.md); it will not execute code or

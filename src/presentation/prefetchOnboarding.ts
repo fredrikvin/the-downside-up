@@ -11,7 +11,7 @@ export function prefetchOnboarding(state: vscode.Memento): () => Promise<void> {
     if (settings.inspect<boolean>("prefetch.enabled")?.globalValue !== undefined) return;
     await state.update(SEEN_KEY, true);
     const answer = await vscode.window.showInformationMessage(
-      "Enable background explanations? Downside Up can prepare explanations as you read, using your provider's quota or billing. It only runs in trusted workspaces after sharing is approved for the repository and model. You can turn it off in user settings.",
+      "Enable background explanations? Downside Up can prepare function explanations and Git diff comparisons as you read, using your provider's quota or billing. It only runs in trusted workspaces after sharing is approved for the repository and model. You can turn it off in user settings.",
       "Enable prefetch",
       "Not now"
     );
