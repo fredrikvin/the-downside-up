@@ -1,4 +1,30 @@
 import type { ComparisonPromptInput } from "../src/generation/provider";
+import type { ComparisonCatalogue, ComparisonFunctionSource } from "../src/core/types";
+
+const functionSource: ComparisonFunctionSource = {
+  name: "request", qualifiedName: "request", signature: "request()", fingerprint: "source",
+  startLine: 1, endLine: 9, startColumn: 0, endColumn: 1, nameLine: 1, nameColumn: 9
+};
+export const comparisonFunctionCatalogue: ComparisonCatalogue = {
+  version: 1, fingerprint: "catalogue", classified: true, limitations: [],
+  entries: [
+    { id: "added", category: "added", name: "added", kind: "function", modified: functionSource },
+    { id: "removed", category: "removed", name: "removed", kind: "function", original: functionSource },
+    { id: "changed", category: "changed", name: "request", kind: "function",
+      original: { ...functionSource, endLine: 7 }, modified: functionSource }
+  ]
+};
+
+export function classifiedComparisonResponse() {
+  const response = comparisonResponse();
+  return {
+    ...response,
+    added: [{ functionId: "added", summary: "Adds a helper." }],
+    removed: [{ functionId: "removed", summary: "Removed a helper; other callers may have used it." }],
+    changes: response.changes.map((change) => ({ ...change, functionId: "changed" })),
+    visualScopes: response.visualScopes.map((scope) => ({ ...scope, functionId: "changed" }))
+  };
+}
 
 export const comparisonInput: ComparisonPromptInput = {
   repositoryName: "sample",

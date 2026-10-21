@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.43.0
+
+- Organize native diff explanations into Added, Changed, Removed, and Other
+  changes. Classify exact snapshots locally, including signature-only changes
+  and nested functions, without guessing renames or ambiguous duplicates.
+  Incomplete discovery falls back to a clearly limited textual comparison.
+- Include short Added/Removed summaries in the single comparison request;
+  request normal function details only through each card's explicit Explain
+  action. Historical details use isolated snapshot context/caching without
+  current callers, dependencies, or repository overviews.
+- Reuse normal explanation tabs, linked-item masks, pseudocode layout and
+  highlighting; source items reveal their own side of the existing native
+  diff without opening a new file tab. Review/prefetch request counts remain
+  one comparison per file, with no background function-card details.
+- Validate required summary coverage and function-bounded evidence. Bump
+  comparison/function prompt versions and add catalogue version 1 without
+  changing repository cache schema 2 or saved consent. Recheck cancellation
+  and source freshness before the persistence commit point.
+
 ## 0.42.0
 
 - Highlight plain-language pseudocode locally in ordinary and paired-diff

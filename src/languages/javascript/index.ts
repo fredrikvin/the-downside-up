@@ -7,6 +7,7 @@ import { javascriptGuidance } from "./guidance";
 import { describeJavaScriptSource } from "./outline";
 import {
   findJavaScriptFunction,
+  javascriptComparisonFunctions,
   initializeJavaScriptParsersAt,
   JAVASCRIPT_EXTENSIONS,
   JAVASCRIPT_LANGUAGE_IDS,
@@ -26,6 +27,7 @@ export const javascriptSupport: LanguageSupport = {
   initialize: initializeJavaScriptParsersAt,
   findFunction: findJavaScriptFunction,
   listFunctions: listJavaScriptFunctions,
+  comparisonFunctions: javascriptComparisonFunctions,
   describeSource: describeJavaScriptSource,
   async textFingerprint(source, path) {
     const tokens = await withJavaScriptSyntaxTree(source, path, structuralTokens);

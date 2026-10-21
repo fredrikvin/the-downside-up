@@ -371,6 +371,7 @@ export interface ComparisonSpan {
 export interface ComparisonChangeDraft {
   /** Stable within this response; always assigned by the comparison response parser. */
   readonly id?: string;
+  readonly functionId?: string;
   readonly title: string;
   /** How the code behaved before; empty for added code. */
   readonly before: string;
@@ -455,6 +456,7 @@ export interface ComparisonVisualSide {
 /** Validated presentation data expanded locally from the compact paired model response. */
 export interface ComparisonVisualScope {
   readonly id: string;
+  readonly functionId?: string;
   readonly title: string;
   readonly original: ComparisonVisualSide;
   readonly modified: ComparisonVisualSide;
@@ -466,6 +468,8 @@ export interface ComparisonVisualScope {
 /** A model's explanation of one file's change, before the host has checked its line spans. */
 export interface FileComparisonDraft {
   readonly summary: string;
+  readonly added?: readonly ComparisonFunctionSummary[];
+  readonly removed?: readonly ComparisonFunctionSummary[];
   readonly changes: readonly ComparisonChangeDraft[];
   /** Invalid visual data is omitted while the textual comparison is retained. */
   readonly visualScopes?: readonly ComparisonVisualScope[];
@@ -493,6 +497,7 @@ export interface ComparisonSideRecord {
 }
 
 export interface ComparisonRecord {
+  readonly catalogue?: ComparisonCatalogue;
   readonly original: ComparisonSideRecord;
   readonly modified: ComparisonSideRecord;
   readonly comparison: FileComparison;
@@ -501,4 +506,40 @@ export interface ComparisonRecord {
   readonly model: string;
   readonly promptVersion: string;
   readonly savedAt: number;
+}
+
+export interface ComparisonFunctionSummary {
+  readonly functionId: string;
+  readonly summary: string;
+}
+
+/** Host-issued catalogue, saved with its summaries, never rebuilt against an old answer. */
+export interface ComparisonCatalogue {
+  readonly version: 1;
+  readonly fingerprint: string;
+  readonly classified: boolean;
+  readonly entries: readonly ComparisonCatalogueEntry[];
+  readonly limitations: readonly string[];
+}
+
+export interface ComparisonCatalogueEntry {
+  readonly id: string;
+  readonly category: "added" | "changed" | "removed";
+  readonly name: string;
+  readonly kind: string;
+  readonly original?: ComparisonFunctionSource;
+  readonly modified?: ComparisonFunctionSource;
+}
+
+export interface ComparisonFunctionSource {
+  readonly name: string;
+  readonly qualifiedName: string;
+  readonly signature: string;
+  readonly startLine: number;
+  readonly endLine: number;
+  readonly startColumn: number;
+  readonly endColumn: number;
+  readonly nameLine: number;
+  readonly nameColumn: number;
+  readonly fingerprint: string;
 }

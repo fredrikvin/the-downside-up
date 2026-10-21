@@ -2,6 +2,60 @@ import { describe, expect, it } from "vitest";
 import { MockProvider } from "../src/generation/mock";
 import { comparisonSchema, parseComparison } from "../src/generation/schema";
 import { comparisonBounds as bounds, comparisonScope as scope, comparisonResponse } from "./comparisonFixture";
+import { classifiedComparisonResponse, comparisonFunctionCatalogue as catalogue } from "./comparisonFixture";
+
+describe("host catalogue response validation", () => {
+  const checkedBounds = { ...bounds, catalogue };
+  it("requires exact added/removed summary coverage and retains Changed function ownership", () => {
+    const result = parseComparison(classifiedComparisonResponse(), checkedBounds);
+    expect(result.added).toEqual([{ functionId: "added", summary: "Adds a helper." }]);
+    expect(result.removed).toHaveLength(1);
+    expect(result.changes[0]?.functionId).toBe("changed");
+    expect(result.visualScopes?.[0]?.functionId).toBe("changed");
+  });
+  it.each(["missing", "duplicate", "unknown", "wrong-category", "empty", "long", "count"] as const)(
+    "rejects %s summaries without inventing missing evidence", (bad) => {
+      const response = classifiedComparisonResponse();
+      if (bad === "missing") response.added = [];
+      if (bad === "duplicate") response.added.push(response.added[0]!);
+      if (bad === "unknown") response.added[0]!.functionId = "unknown";
+      if (bad === "wrong-category") response.added[0]!.functionId = "removed";
+      if (bad === "empty") response.added[0]!.summary = " ";
+      if (bad === "long") response.added[0]!.summary = "x".repeat(601);
+      if (bad === "count") response.added = Array.from({ length: 101 }, () => response.added[0]!);
+      expect(() => parseComparison(response, checkedBounds)).toThrow();
+    });
+  it("rejects unknown or Added/Removed ids on Changed text and function-external evidence", () => {
+    const response = classifiedComparisonResponse();
+    response.changes[0]!.functionId = "added";
+    expect(() => parseComparison(response, checkedBounds)).toThrow("Changed function id");
+    response.changes[0]!.functionId = "changed";
+    response.changes[0]!.original.startLine = 1;
+    expect(() => parseComparison(response, checkedBounds)).toThrow("outside its function");
+  });
+  it("omits out-of-function, wrong-category and orphan visuals without losing independently valid text", () => {
+    for (const bad of ["span", "id", "orphan"]) {
+      const response = classifiedComparisonResponse();
+      if (bad === "span") response.visualScopes[0]!.original.operations[0]!.startLine = 1;
+      if (bad === "id") response.visualScopes[0]!.functionId = "removed";
+      if (bad === "orphan") response.changes[0]!.visualScopeId = "";
+      const parsed = parseComparison(response, checkedBounds);
+      expect(parsed.changes).toHaveLength(1);
+      expect(parsed.visualScopes).toBeUndefined();
+      expect(parsed.limitations.length).toBeGreaterThan(0);
+    }
+  });
+  it("allows no behavioral items for a signature-only change, while still requiring summaries", () => {
+    const response = classifiedComparisonResponse();
+    response.changes = [];
+    response.visualScopes = [];
+    expect(parseComparison(response, checkedBounds).changes).toEqual([]);
+  });
+  it("bounds aggregate text across summaries and visuals", () => {
+    const response = { ...classifiedComparisonResponse(), extraneous: "x".repeat(80_001) };
+    expect(() => parseComparison(response, checkedBounds)).toThrow("text budget");
+  });
+});
 
 describe("parseComparison", () => {
   const base = {

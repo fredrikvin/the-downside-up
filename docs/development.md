@@ -43,6 +43,33 @@ For a Tree-sitter grammar, also add its name to `esbuild.config.mjs`.
 Other languages use `src/languages/editor/` and VS Code document symbols
 and go-to-definition. Do not assume a language server is installed.
 
+Native diff classification uses `LanguageSupport.comparisonFunctions`, sharing
+the bundled languages' existing callable walks while adding completeness,
+language-owned matching identities, exact ranges, and comment-insensitive
+declaration fingerprints. `context/comparisonFunctions.ts` is language-neutral;
+it never guesses names, containers, or renames. An incomplete side disables
+categorical claims for both sides. The comparison record saves its own versioned
+catalogue beside the validated summaries; never attach saved summaries to newly
+discovered functions by array index.
+
+Added/Removed card actions belong to `ChangeSession`, use explicit scheduler
+priority, and cannot be reached from review/prefetch/render/cache misses.
+Historical explanation keys are snapshot-only; their context contains function
+source plus bounded same-snapshot preamble, not today's inventory or overview.
+Working additions reuse canonical explanations without incidental file summaries.
+`extension.ts` shares the ordinary ExplanationView builder and routes all item
+navigation through the existing native diff, not `showTextDocument`.
+
+`RepositoryCacheStore.update` accepts an optional asynchronous validation hook,
+run after writing the temporary file and immediately before atomic rename.
+Never read/update that store from its own validation hook (the repository write
+lock is held). Recheck exact snapshot signatures, policy/model/trust and request
+cancellation there. Rename is the commit point: test both pre-commit rejection
+and post-commit successful cancellation with deterministic gates, not sleeps.
+Comparison catalogue version 1 and prompt versions `downside-up-changes-6` /
+`downside-up-plain-10` invalidate changed records without migrating them or
+changing repository envelope schema 2/consent.
+
 ## Copilot development agents
 
 Repository-local profiles live in `.github/agents/`. These are development

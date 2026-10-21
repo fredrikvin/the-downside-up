@@ -227,6 +227,43 @@ export class MockProvider implements GenerationProvider {
         edges: [{ from: "start", to: "work", label: "" }, { from: "work", to: "end", label: "" }]
       };
     };
+    if (input.catalogue) {
+      const changed = input.catalogue.entries.filter((entry) => entry.category === "changed");
+      const summaries = (category: "added" | "removed") => input.catalogue!.entries.filter((entry) => entry.category === category)
+        .map((entry) => ({ functionId: entry.id, summary: `Mock summary of ${entry.name}; ${category === "removed" ? "historical dependencies are unknown" : "its behavior has not been interpreted"}.` }));
+      const scopedSide = (side: ComparisonPromptInput["original"], range: NonNullable<typeof changed[number]["original"]>) => {
+        const view = makeSide(side);
+        return { ...view, operations: view.operations.map((operation) => ({
+          ...operation,
+          startLine: range.startLine + 1,
+          endLine: operation.id === "work" || operation.id === "end" ? range.endLine + 1 : range.startLine + 1
+        })) };
+      };
+      const value = parseComparison({
+        summary: `Mock comparison of ${input.modified.path}; the change has not been interpreted.`,
+        added: summaries("added"), removed: summaries("removed"),
+        changes: changed.map((entry, index) => ({
+          id: `change-${index}`, functionId: entry.id, title: `Placeholder change in ${entry.name}`,
+          before: "Mock original behavior.", after: "Mock modified behavior.", when: "", flow: "",
+          original: { startLine: entry.original!.startLine + 1, endLine: entry.original!.endLine + 1 },
+          modified: { startLine: entry.modified!.startLine + 1, endLine: entry.modified!.endLine + 1 },
+          visualScopeId: `scope-${index}`
+        })),
+        visualScopes: changed.slice(0, 3).map((entry, index) => ({
+          id: `scope-${index}`, functionId: entry.id, title: `Placeholder behavior of ${entry.name}`,
+          original: scopedSide(input.original, entry.original!), modified: scopedSide(input.modified, entry.modified!),
+          operationMatches: ["start", "work", "end"].map((id) => ({ original: id, modified: id, meaning: "Placeholder operation", difference: "Not analyzed by mock mode." })),
+          edgeMatches: [0, 1].map((index) => ({ original: index, modified: index, meaning: "Placeholder sequence", difference: "Not analyzed by mock mode." }))
+        })),
+        outside: input.catalogue.classified ? "" : "Mock textual comparison; function regions were not classified.",
+        possibleEffects: [],
+        limitations: ["Deterministic mock placeholder; not a real explanation of the change."]
+      }, {
+        originalLines: lineCount(input.original), modifiedLines: lineCount(input.modified),
+        originalPresent: input.original.present, modifiedPresent: input.modified.present, catalogue: input.catalogue
+      });
+      return this.respond(input.original.source + "\0" + input.modified.source, value, signal);
+    }
     const bothSidesPresent = input.original.present && input.modified.present;
     const value = parseComparison({
       summary: `Mock comparison of ${input.modified.path}; the change has not been interpreted.`,

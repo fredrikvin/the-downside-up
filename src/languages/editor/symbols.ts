@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import { cacheKey, formatTolerantFingerprint } from "../../core/fingerprint";
 import type { FunctionTarget } from "../../core/types";
+import type { FunctionDiscovery } from "../support";
 
 /**
  * Whether a symbol has document-symbol ranges and children. Symbols returned
@@ -97,5 +98,19 @@ export async function findFunctionWithEditorTools(
     symbolId,
     structuralFingerprint: formatTolerantFingerprint(source),
     analysis: "vscode-symbols"
+  };
+}
+
+/** A revision must supply its own document; working-tree symbols are never historical evidence. */
+export async function editorComparisonFunctions(source: string, _path: string, document?: vscode.TextDocument): Promise<FunctionDiscovery> {
+  if (!document || document.getText() !== source) return { status: "unavailable", entries: [], limitations: [] };
+  const symbols = await vscode.commands.executeCommand<(vscode.DocumentSymbol | vscode.SymbolInformation)[] | undefined>(
+    "vscode.executeDocumentSymbolProvider", document.uri);
+  // Symbol providers do not attest completeness (including a successful empty response).
+  if (!symbols) return { status: "unavailable", entries: [], limitations: [] };
+  return {
+    status: "partial",
+    entries: [],
+    limitations: ["Editor symbol discovery does not guarantee a complete callable inventory; this comparison remains unclassified."]
   };
 }

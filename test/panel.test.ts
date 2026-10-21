@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { panelHtml, type ExplanationView, type PanelState, type Crumb, type ChangeView } from "../src/presentation/panel";
+import { panelHtml, type ExplanationView, type PanelState, type Crumb, type ChangeFunctionCardView, type ChangeView } from "../src/presentation/panel";
 import type { ComparisonVisualScope, Flowchart } from "../src/core/types";
 
 class TestElement {
@@ -583,6 +583,131 @@ describe("change view", () => {
       outside: "", possibleEffects: [], limitations: [], model: "m",
       visualScopes: [{ scope, originalLinks: { occurrence: "host-original" }, modifiedLinks: { occurrence: "host-modified" } }]
     }
+  });
+
+  const functionCard = (overrides: Partial<ChangeFunctionCardView> = {}): ChangeFunctionCardView => ({
+    id: "card-added", name: "sendRequest", kindLabel: "Function", summary: "Sends the request.",
+    canExplain: true, ...overrides
+  });
+
+  it("orders Added, Changed, Removed, and Other changes sections and omits empty sections", () => {
+    const { renderChange } = webviewHelpers();
+    const view = withVisual();
+    const result = {
+      ...view.result!,
+      added: [functionCard()],
+      removed: [functionCard({ id: "card-removed", name: "oldRequest", summary: "Sent the old request.", canExplain: false, note: "The source is unavailable." })],
+      changes: [
+        { ...view.result!.changes[0]!, functionName: "validate", title: "Validation", before: "Accepted empty input.", after: "Rejects empty input.", when: "When input is empty.", flow: "", links: [] },
+        { ...view.result!.changes[0]!, functionName: "Retry", title: "Retry", before: "", after: "Tries again.", when: "", flow: "", links: [] }
+      ],
+      outside: "Updates a setting.",
+      possibleEffects: ["More requests may succeed."]
+    };
+    const cards = renderChange({ ...view, result });
+    const nodes = cards.flatMap((card) => card.elements());
+    expect(nodes.filter((node) => node.tagName === "h2").map((node) => node.textContent)).toEqual([
+      "Added", "Changed", "Removed", "Other changes", "Possible consequences"
+    ]);
+    expect(nodes.filter((node) => node.className === "muted small" && node.textContent === "validate")).toHaveLength(1);
+    expect(nodes.filter((node) => node.className === "muted small" && node.textContent === "Retry")).toHaveLength(0);
+    expect(texts(cards)).toContain("The source is unavailable.");
+    expect(texts(cards)).toContain("Updates a setting.");
+
+    const legacy = renderChange({ ...view, result: { ...view.result!, outside: "" } });
+    expect(legacy.flatMap((card) => card.elements()).filter((node) => node.tagName === "h2").map((node) => node.textContent)).toEqual(["Changed"]);
+  });
+
+  it("renders added and removed function cards with text, explicit Explain actions, and host-owned navigation", () => {
+    const { renderChange, messages } = webviewHelpers();
+    const added = functionCard({
+      name: "<script>newFunction</script>", summary: "Adds <b>safe</b> behavior.",
+      link: { referenceId: "added-source", caption: "Modified lines 4–8" }
+    });
+    const removed = functionCard({
+      id: "card-removed", name: "oldFunction", summary: "Removes the old behavior.",
+      link: { referenceId: "removed-source", caption: "Original lines 12–15" },
+      canExplain: false, note: "This function cannot be explained."
+    });
+    const view = withVisual();
+    const nodes = renderChange({
+      ...view,
+      result: { ...view.result!, added: [added], removed: [removed], changes: [], outside: "" }
+    }).flatMap((node) => node.elements());
+    expect(nodes.find((node) => node.id === added.id)?.className).toContain("entry");
+    expect(nodes.find((node) => node.id === removed.id)?.className).toContain("entry");
+    expect(texts(nodes).join(" ")).toContain("<script>newFunction</script>");
+    expect(texts(nodes).join(" ")).toContain("Adds <b>safe</b> behavior.");
+    expect(texts(nodes)).toContain("Removes the old behavior.");
+    expect(texts(nodes)).toContain("This function cannot be explained.");
+    expect(nodes.some((node) => ["script", "b"].includes(node.tagName))).toBe(false);
+    expect(nodes.filter((node) => node.tagName === "button" && node.textContent === "Explain")).toHaveLength(1);
+    nodes.find((node) => node.className === "heading-name" && node.elements().some((part) => part.textContent === added.name))?.listeners.get("click")?.(event);
+    nodes.find((node) => node.tagName === "button" && node.textContent === "Explain")?.listeners.get("click")?.(event);
+    expect(messages).toEqual([
+      { type: "navigate", referenceId: "added-source" },
+      { type: "expand", entryId: added.id }
+    ]);
+  });
+
+  it("renders card explanations with the normal tabs and posts revealItem using the card id", () => {
+    const { renderChange, messages } = webviewHelpers();
+    const cardId = "explained-added";
+    const explanation: ExplanationView = {
+      entryId: "host-view-entry",
+      functionName: "ignored-name",
+      status: "current",
+      detail: "",
+      references: [],
+      limitations: [],
+      linked: { steps: [true], pseudocode: [true], nodes: [] },
+      itemLines: { steps: [10], pseudocode: [10], nodes: [] },
+      explanation: {
+        title: "Send a request", purpose: "Sends <b>text</b> safely.", inputs: [], result: "",
+        steps: [{ title: "Build the request", detail: "Keeps <script>alert(1)</script> as text.", startLine: 10, endLine: 10 }],
+        notes: [], role: "", edgeCases: "", languageNotes: "", limitations: [],
+        pseudocode: [{ text: 'return "<img>"', depth: 0, startLine: 10, endLine: 10 }],
+        flowchart: { nodes: [{ id: "send", kind: "action", label: "Send", startLine: 10, endLine: 10 }], edges: [] }
+      }
+    };
+    const view = withVisual();
+    const cards = renderChange({
+      ...view,
+      result: { ...view.result!, added: [functionCard({ id: cardId, explanation })], changes: [], outside: "" }
+    });
+    const nodes = cards.flatMap((node) => node.elements());
+    expect(nodes.find((node) => node.id === cardId + "-ai")).toBeDefined();
+    expect(nodes.filter((node) => node.attributes.get("role") === "tab" && node.closest(".entry")?.id === cardId).map((node) => node.textContent)).toEqual(["Steps", "Pseudocode", "Flowchart"]);
+    expect(texts(cards).join(" ")).toContain("Sends <b>text</b> safely.");
+    expect(texts(cards).join(" ")).toContain("Keeps <script>alert(1)</script> as text.");
+    expect(nodes.some((node) => ["script", "b", "img"].includes(node.tagName))).toBe(false);
+    const step = nodes.find((node) => node.className === "step linked")!;
+    step.listeners.get("keydown")?.({ ...event, key: "Enter", target: step });
+    expect(messages).toEqual([{ type: "revealItem", entryId: cardId, kind: "step", index: 0 }]);
+  });
+
+  it("keeps the comparison visible while an added card explanation is loading and removes stale card links", () => {
+    const { renderChange, messages } = webviewHelpers();
+    const loadingCard = functionCard({
+      explanation: {
+        entryId: "card-added", functionName: "sendRequest", status: "loading",
+        detail: "Waiting for a request slot", references: [], limitations: []
+      }
+    });
+    const view = withVisual();
+    const result = {
+      ...view.result!,
+      added: [loadingCard],
+      removed: [functionCard({ id: "card-removed", name: "oldRequest", link: { referenceId: "stale", caption: "Original lines 1–2" } })],
+      outside: "Still visible."
+    };
+    const nodes = renderChange({ ...view, status: "outdated", result }).flatMap((node) => node.elements());
+    expect(nodes.some((node) => node.className === "explanation-loading")).toBe(true);
+    expect(nodes.filter((node) => node.tagName === "h2").map((node) => node.textContent)).toContain("Added");
+    expect(nodes.filter((node) => node.tagName === "h2").map((node) => node.textContent)).toContain("Removed");
+    expect(texts(nodes)).toContain("Still visible.");
+    nodes.find((node) => node.className === "heading-name" && node.elements().some((part) => part.textContent === "oldRequest"))?.listeners.get("click")?.(event);
+    expect(messages).toEqual([]);
   });
 
   it("renders scoped paired steps, pseudocode, and flow connections using only host-owned side links", () => {

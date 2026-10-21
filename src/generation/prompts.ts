@@ -15,9 +15,9 @@ import type {
 /** Version of the repository overview and project map prompt; changing it rebuilds overviews and maps. */
 export const PROMPT_VERSION = "downside-up-3";
 /** Version of the function explanation and file summary prompts; changing it outdates saved explanations. */
-export const EXPLANATION_PROMPT_VERSION = "downside-up-plain-9";
+export const EXPLANATION_PROMPT_VERSION = "downside-up-plain-10";
 /** Version of the change explanation prompt; changing it outdates saved comparisons. */
-export const COMPARISON_PROMPT_VERSION = "downside-up-changes-5";
+export const COMPARISON_PROMPT_VERSION = "downside-up-changes-6";
 /** Version of the folder summary and flow prompts; changing it outdates saved folder summaries and flows. */
 export const FOLDER_PROMPT_VERSION = "downside-up-folders-1";
 
@@ -94,7 +94,7 @@ function guidanceText(guidance: string | undefined): string {
 
 export function explanationPrompt(input: ExplanationPromptInput): [string, string] {
   return [
-    `${plainSystem} Explain only the selected ${input.languageId} function.${guidanceText(input.guidance)} Fill the fields as follows.
+    `${plainSystem} Explain only the selected ${input.languageId} function.${input.overview ? "" : " This is an isolated snapshot: use only the supplied function and bounded same-snapshot context. Historical callers and cross-file dependencies were not resolved; do not substitute current repository knowledge."}${guidanceText(input.guidance)} Fill the fields as follows.
 title: a 2-5 word action phrase in sentence case starting with a verb, such as "Fetch a wearer".
 purpose: one sentence on what the function is for and what it works with.
 inputs: one entry per parameter the reader should know about, with a friendly label (such as "Organization ID"), the name in the code, and what it is used for; empty when there are none.
@@ -142,7 +142,8 @@ export function comparisonPrompt(input: ComparisonPromptInput): [string, string]
     ...(side.present ? { numberedSource: numberLines(side.source) } : { note: "The file does not exist on this side." })
   });
   return [
-    `${plainSystem} Explain what the change between two versions of one file does to behavior, for someone reviewing it. The original and modified sources are numbered separately and are exactly what a diff shows; compare only them. When their paths differ the file was moved or renamed; say so in the summary, and when the sources are identical, say that only the path changed and leave changes and visualScopes empty. Generate the paired visual data in this same response from both exact snapshots; never generate one side from or infer it from the other. Fill the fields as follows.
+    `${plainSystem} Explain what the change between two versions of one file does to behavior, for someone reviewing it. The original and modified sources are numbered separately and are exactly what a diff shows; compare only them. When their paths differ the file was moved or renamed; say so in the summary, and when the sources are identical, say that only the path changed and leave changes and visualScopes empty. Generate the paired visual data in this same response from both exact snapshots; never generate one side from or infer it from the other.
+The supplied function catalogue is authoritative HOST DATA, including categories, ids and ranges. Never infer renames or invent function ids. added and removed: exactly one {functionId,summary} for EVERY catalogue entry of that category, no duplicates or other ids. Added summaries briefly say what the function does. Removed summaries say what it did and what may have relied on it; dependencies elsewhere are only possible, never facts without supplied evidence. Do not provide paired before/after boilerplate for whole added or removed functions. Only Changed catalogue entries may receive changes and visualScopes, each carrying its functionId. Evidence spans must stay inside that function's corresponding side range (catalogue lines are zero-based; numbered source spans are one-based). Multiple behavioral changes can refer to one Changed function; none is acceptable when no behavioral difference is established. Describe changed enclosing functions without repeating a nested addition's summary. Pure comments/formatting are Other changes, never Changed. If catalogue.classified is false, keep added/removed empty, leave functionId empty, omit visualScopes, and describe unclassified textual edits in outside (Other changes), noting the discovery limitation. Fill the fields as follows.
 summary: one to three plain sentences on what the change does to the file's behavior, not on how the text differs.
 changes: one entry for each behavior change, most important first, at most 20. Skip pure formatting, renaming without behavior change, and comment-only edits (mention those in outside). Each has a short unique id (letters, digits, "_" or "-"), a short plain title naming the function or part; before: how the original behaved in a sentence or two, empty when the code is new; after: how the modified version behaves, empty when the code was removed; when: the conditions under which behavior differs, such as which inputs or states, or "always"; flow: effects on control flow when there are any, such as an added decision, a removed path, an earlier exit, reordered steps, or different failure handling, otherwise an empty string; original and modified: the startLine and endLine of the relevant code in each numbered source, or 0 and 0 when it has no lines on that side; visualScopeId: an id of a scope below when this change belongs to it, otherwise the empty string.
 visualScopes: bounded, coherent regions focused on the changed behavior, not a diagram of the whole file. Prefer one to three scopes; twelve is a hard ceiling, not a target. Related changes should share one scope where coherent; omit scopes for path-only, comment-only, or otherwise visual-empty edits. Prefer three to seven steps, six to twelve pseudocode lines, and six to ten chart nodes per present side; use more only when needed to preserve a material branch or exit. Each scope has id, title, original and modified side data, operationMatches and edgeMatches. Every id uses only letters, digits, underscores or hyphens, at most 40 characters.
@@ -162,6 +163,7 @@ Describe what the code does, never why its author changed it, and do not report 
       repository: input.repositoryName,
       language: input.languageId,
       repositoryPurpose: input.repositoryPurpose,
+      catalogue: input.catalogue,
       original: side(input.original),
       modified: side(input.modified)
     })

@@ -1,14 +1,17 @@
 import { execFileSync } from "node:child_process";
-import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import * as vscode from "vscode";
 import { MemoryRepositoryCacheStore } from "../src/cache/store";
 import { ChangeSession, type ChangeSessionHost } from "../src/changeSession";
 import { ExplanationService } from "../src/controller";
 import type { ComparisonPromptInput } from "../src/generation/provider";
 import { MockProvider } from "../src/generation/mock";
+import { javascriptSupport } from "../src/languages/javascript";
+
+beforeAll(() => javascriptSupport.initialize!(process.cwd()));
 
 let root = "";
 const git = (...args: string[]) => execFileSync("git", ["-C", root, ...args], { encoding: "utf8" }).trim();
@@ -32,9 +35,136 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   delete workspace.isTrusted;
   delete workspace.getWorkspaceFolder;
   await rm(root, { recursive: true, force: true });
+});
+
+async function cardSession() {
+  await writeFile(join(root, "functions.ts"), "export function removed() {\n return 'old';\n}\n");
+  git("add", "functions.ts"); git("commit", "-q", "-m", "original function");
+  await writeFile(join(root, "functions.ts"), "export function added() {\n return 'new';\n}\n");
+  vi.spyOn(vscode.workspace, "openTextDocument").mockImplementation((async (target: vscode.Uri) => {
+    const ref = target.scheme === "git" ? (JSON.parse(target.query) as { ref: string }).ref : undefined;
+    const text = target.scheme === "git" ? git("show", `${ref || ""}:functions.ts`) + "\n" : await readFile(target.fsPath, "utf8");
+    return {
+      uri: target, languageId: "typescript", getText: () => text, lineCount: text.split("\n").length,
+      lineAt: (line: number) => ({ text: text.split("\n")[line] ?? "" })
+    } as vscode.TextDocument;
+  }) as unknown as typeof vscode.workspace.openTextDocument);
+  const { changes, provider, service } = session();
+  await changes.show(headOf("functions.ts"), uri("file", "functions.ts"));
+  await changes.explain();
+  const view = () => changes.view(() => "card-link")!;
+  return { changes, provider, service, view };
+}
+
+describe("explicit change function cards", () => {
+  it("does not request details from showing, rendering, refreshing, prefetch or comparison generation", async () => {
+    const { changes, provider, view } = await cardSession();
+    expect(provider.requests).toBe(1);
+    expect(view().result?.added?.[0]?.name).toBe("added");
+    expect(view().result?.removed?.[0]?.name).toBe("removed");
+    expect(changes.cardStates()).toEqual([]);
+    view(); view(); await changes.refresh(); await changes.prefetch();
+    expect(provider.requests).toBe(1);
+    expect(changes.cardStates()).toEqual([]);
+    const id = view().result!.removed![0]!.id;
+    await changes.explainCard(id);
+    expect(provider.requests).toBe(2);
+    expect(changes.cardState(id)?.view.status).toBe("current");
+    expect(changes.cardState(id)?.value.target.source).toContain("'old'");
+    expect(changes.cardState(id)?.scope?.side.identity).toMatch(/^revision:/);
+    await changes.refresh();
+    expect(changes.cardState(id)?.view.status).toBe("current");
+    expect(provider.requests).toBe(2);
+  });
+
+  it("uses the normal cache for a working-side addition without a follow-up file-summary request", async () => {
+    const { changes, provider, service, view } = await cardSession();
+    const id = view().result!.added![0]!.id;
+    await changes.explainCard(id);
+    const state = changes.cardState(id)!;
+    expect(state.view.status).toBe("current");
+    expect(state.scope).toBeUndefined();
+    expect(await service.findCachedExplanation(root, state.value.target, state.value.document)).toBeDefined();
+    expect((await service.readCache(root)).fileSummaries).toBeUndefined();
+    const requests = provider.requests;
+    await changes.explainCard(id);
+    expect(provider.requests).toBe(requests);
+  });
+
+  it("rejects stale card ids after snapshot edits or switching away, with no extra requests", async () => {
+    const { changes, provider, view } = await cardSession();
+    const id = view().result!.removed![0]!.id;
+    await writeFile(join(root, "functions.ts"), "export function other() {}\n");
+    await changes.refresh();
+    await changes.explainCard(id);
+    expect(changes.hasCard(id)).toBe(false);
+    expect(provider.requests).toBe(1);
+    changes.clear();
+    await changes.explainCard(id);
+    expect(provider.requests).toBe(1);
+  });
+
+  it("refuses a document/snapshot mismatch without sending detail source", async () => {
+    const { changes, provider, view } = await cardSession();
+    vi.mocked(vscode.workspace.openTextDocument).mockResolvedValue({ getText: () => "wrong revision" } as vscode.TextDocument);
+    const id = view().result!.removed![0]!.id;
+    await changes.explainCard(id);
+    expect(provider.requests).toBe(1);
+    expect(view().result?.removed?.[0]).toMatchObject({ canExplain: false, note: expect.stringContaining("does not match") });
+  });
+
+  it("rejects a moving HEAD before card dispatch, without mistaking the new original for historical evidence", async () => {
+    const { changes, provider, view } = await cardSession();
+    const id = view().result!.removed![0]!.id;
+    git("add", "functions.ts"); git("commit", "-q", "-m", "HEAD moved");
+    await changes.explainCard(id);
+    expect(provider.requests).toBe(1);
+    expect(view().result?.removed?.[0]?.note).toContain("snapshot changed");
+  });
+
+  it("explains index-side additions in isolated snapshot mode, never from the working file", async () => {
+    const { changes, provider, service, view } = await cardSession();
+    git("add", "functions.ts");
+    await changes.show(headOf("functions.ts"), uri("git", "functions.ts", JSON.stringify({ path: join(root, "functions.ts"), ref: "" })));
+    await changes.explain();
+    const id = view().result!.added![0]!.id;
+    await writeFile(join(root, "functions.ts"), "export function workingOnly() {}\n");
+    await changes.explainCard(id);
+    expect(changes.cardState(id)?.view.status).toBe("current");
+    expect(changes.cardState(id)?.scope?.side.identity).toBe("index");
+    expect(changes.cardState(id)?.value.target.source).toContain("'new'");
+    expect((await service.readCache(root)).overview).toBeNull();
+    expect(provider.requests).toBe(3);
+  });
+
+  it.each(["cancel", "clear", "refresh"] as const)("deduplicates clicks and cancels card work on %s", async (action) => {
+    const { changes, provider, service, view } = await cardSession();
+    const id = view().result!.removed![0]!.id;
+    let entered!: () => void; let release!: () => void;
+    const started = new Promise<void>((resolve) => { entered = resolve; });
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const explain = provider.explainFunction.bind(provider);
+    vi.spyOn(provider, "explainFunction").mockImplementation(async (input, signal) => {
+      entered(); await gate; return explain(input, signal);
+    });
+    const pending = changes.explainCard(id);
+    await started;
+    await changes.explainCard(id);
+    expect(changes.busy).toBe(true);
+    if (action === "cancel") changes.cancelCard(id);
+    else if (action === "clear") changes.clear();
+    else {
+      await writeFile(join(root, "functions.ts"), "export function next() {}\n");
+      await changes.refresh();
+    }
+    release(); await pending;
+    expect(Object.keys((await service.readCache(root)).explanations)).toHaveLength(0);
+    if (action === "cancel") expect(changes.cardState(id)?.view.status).toBe("cancelled");
+  });
 });
 
 function session(onGenerate?: () => Promise<void>, options: Partial<Pick<ChangeSessionHost, "prefetch" | "schedule">> = {}) {
@@ -223,7 +353,10 @@ describe("the shown native diff", () => {
   });
 
   it("adds paired visual views with navigation ids checked against each exact side", async () => {
-    await writeFile(join(root, "a.txt"), "export const a = 2;\n");
+    await writeFile(join(root, "a.ts"), "export function a() {\n return 1;\n}\n");
+    git("add", "a.ts");
+    git("commit", "-q", "-m", "function");
+    await writeFile(join(root, "a.ts"), "export function a() {\n return 2;\n}\n");
     const opened: string[] = [];
     const { service } = session();
     const changes = new ChangeSession({
@@ -232,7 +365,7 @@ describe("the shown native diff", () => {
       schedule: (task) => task(),
       changed: () => undefined
     });
-    await changes.show(headOf("a.txt"), uri("file", "a.txt"));
+    await changes.show(headOf("a.ts"), uri("file", "a.ts"));
     await changes.explain();
 
     const callbacks = new Map<string, () => Promise<void>>();
@@ -251,14 +384,14 @@ describe("the shown native diff", () => {
     const reference = visual.originalLinks[occurrenceId];
     if (!reference) throw new Error("Expected a host-validated original-side link.");
     await callbacks.get(reference)?.();
-    expect(opened).toEqual(["original:git:1-2"]);
+    expect(opened).toEqual(["original:git:1-3"]);
     const modifiedStep = visual.scope.modified.steps[0];
     if (!modifiedStep) throw new Error("Expected a modified-side step.");
     expect(visual.modifiedLinks[modifiedStep.occurrenceId]).toBeTruthy();
     await callbacks.get(visual.modifiedLinks[modifiedStep.occurrenceId]!)?.();
-    expect(opened).toEqual(["original:git:1-2", "modified:file:1-2"]);
+    expect(opened).toEqual(["original:git:1-3", "modified:file:1-3"]);
 
-    await writeFile(join(root, "a.txt"), "export const a = 3;\n");
+    await writeFile(join(root, "a.ts"), "export function a() {\n return 3;\n}\n");
     await changes.refresh();
     expect(changes.view(() => "stale")?.result?.visualScopes?.[0]?.originalLinks).toEqual({});
   });

@@ -13,6 +13,8 @@ import {
 } from "../src/generation/schema";
 import type { ComparisonPromptInput, ExplanationPromptInput } from "../src/generation/provider";
 import { comparisonInput, comparisonResponse } from "./comparisonFixture";
+import { classifiedComparisonResponse, comparisonFunctionCatalogue } from "./comparisonFixture";
+import { MockProvider } from "../src/generation/mock";
 
 const overview: RepositoryOverview = {
   purpose: "Observed checkout flow.",
@@ -66,6 +68,28 @@ afterEach(() => {
 });
 
 describe("structured generation", () => {
+  it("sends the authoritative function catalogue and enforces summary coverage in one OpenAI request", async () => {
+    const input = { ...comparisonInput, catalogue: comparisonFunctionCatalogue };
+    const [system, user] = comparisonPrompt(input);
+    expect(JSON.parse(user).catalogue).toEqual(comparisonFunctionCatalogue);
+    expect(system).toContain("exactly one {functionId,summary}");
+    expect(system).toContain("untrusted data");
+    const invalid = classifiedComparisonResponse();
+    invalid.removed = [];
+    const fetch = vi.fn().mockResolvedValue(response({
+      status: "completed", output: [{ content: [{ type: "output_text", text: JSON.stringify(invalid) }] }]
+    }));
+    vi.stubGlobal("fetch", fetch);
+    await expect(new OpenAIProvider("test-model", "test-key").explainComparison(input)).rejects.toMatchObject({ code: "invalid-schema" });
+    expect(fetch).toHaveBeenCalledOnce();
+    const mock = new MockProvider();
+    const result = await mock.explainComparison(input);
+    expect(mock.requests).toBe(1);
+    expect(result.value.added?.map((entry) => entry.functionId)).toEqual(["added"]);
+    expect(result.value.removed?.map((entry) => entry.functionId)).toEqual(["removed"]);
+    expect(result.value.changes.map((entry) => entry.functionId)).toEqual(["changed"]);
+    expect(result.value.visualScopes?.every((scope) => scope.functionId === "changed")).toBe(true);
+  });
   it("asks for compact changed-region visuals without dropping material branches or exits", () => {
     const [system] = comparisonPrompt({
       repositoryName: "sample",

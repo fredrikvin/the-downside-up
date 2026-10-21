@@ -12,6 +12,7 @@ import {
 import type { ExplanationPromptInput } from "../src/generation/provider";
 import { LanguageModelError } from "./vscode";
 import { comparisonInput, comparisonResponse } from "./comparisonFixture";
+import { classifiedComparisonResponse, comparisonFunctionCatalogue } from "./comparisonFixture";
 
 const overview: RepositoryOverview = {
   purpose: "Observed checkout flow.",
@@ -183,6 +184,17 @@ describe("VS Code language model generation", () => {
       modified: { path: "sample.ts", label: "After", present: true, source: "retry(send)" }
     })).rejects.toMatchObject({ code: "incomplete-json", outputCharacters: output.length });
     expect(sendRequest).toHaveBeenCalledTimes(1);
+  });
+
+  it("requires host catalogue summary coverage without repair or a second language model request", async () => {
+    const response = classifiedComparisonResponse();
+    response.added[0]!.functionId = "removed";
+    const output = JSON.stringify(response);
+    const { provider, sendRequest } = fakeModel(async () => streamOf([output]));
+    await expect(provider.explainComparison({ ...comparisonInput, catalogue: comparisonFunctionCatalogue }))
+      .rejects.toMatchObject({ code: "invalid-schema" });
+    expect(sendRequest).toHaveBeenCalledOnce();
+    expect(sendRequest.mock.calls[0]![0][0]!.content).toContain('"catalogue"');
   });
 
   it("expands a compact paired comparison streamed in chunks with one request", async () => {

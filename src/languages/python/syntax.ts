@@ -4,6 +4,8 @@ import { cacheKey, fingerprint } from "../../core/fingerprint";
 import type { FunctionTarget } from "../../core/types";
 import type { FunctionSlice } from "../support";
 import { namedChildren, structuralTokens, treeSitterGrammar } from "../treeSitter";
+import { comparisonDiscovery, comparisonFunction } from "../treeSitter";
+import type { FunctionDiscovery } from "../support";
 
 const grammar = treeSitterGrammar("tree-sitter-python.wasm", "Python");
 
@@ -84,6 +86,13 @@ export async function listPythonFunctions(source: string): Promise<FunctionSlice
     startLine: entry.node.startPosition.row, endLine: entry.node.endPosition.row,
     fingerprint: fingerprint(structuralTokens(entry.node))
   })))) ?? [];
+}
+
+export async function pythonComparisonFunctions(source: string): Promise<FunctionDiscovery> {
+  return (await withPythonSyntaxTree(source, (root) => comparisonDiscovery(root, pythonFunctionNodes(root).map((entry) =>
+    comparisonFunction(entry.node, entry.name, entry.qualifiedName, entry.qualifiedName,
+      entry.method ? "method" : "function", pythonSignature(entry.node))
+  )))) ?? { status: "unavailable", entries: [], limitations: [] };
 }
 
 /** Only literal docstrings: f-strings and implicit expressions are not documentation. */

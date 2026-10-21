@@ -4,6 +4,8 @@ import type { TextDocument, Position, Range } from "vscode";
 import { cacheKey, fingerprint } from "../../core/fingerprint";
 import type { FunctionTarget } from "../../core/types";
 import { allChildren, pointToPosition, structuralTokens, treeSitterGrammar } from "../treeSitter";
+import { comparisonDiscovery, comparisonFunction, comparisonTokens } from "../treeSitter";
+import type { FunctionDiscovery } from "../support";
 
 const require = createRequire(__filename);
 const grammar = treeSitterGrammar("tree-sitter-rust.wasm", "Rust");
@@ -32,29 +34,41 @@ interface FoundFunction {
   readonly node: SyntaxNode;
   readonly name: SyntaxNode;
   readonly containers: string[];
+  readonly identityContainers: string[];
 }
 
 function findFunctions(root: SyntaxNode): FoundFunction[] {
   const found: FoundFunction[] = [];
-  const visit = (node: SyntaxNode, containers: string[]) => {
+  const visit = (node: SyntaxNode, containers: string[], identityContainers: string[]) => {
     const nextContainers = [...containers];
+    const nextIdentities = [...identityContainers];
     if (node.type === "trait_item" || node.type === "mod_item") {
       const containerName = child(node, "name")?.text;
-      if (containerName) nextContainers.push(containerName);
+      if (containerName) {
+        nextContainers.push(containerName);
+        nextIdentities.push(containerName);
+      }
     } else if (node.type === "impl_item") {
       // impl blocks have no name; identify methods by type (and trait) so
       // `Foo::new` and `Bar::new` in one file are distinct functions.
       const type = child(node, "type")?.text;
       const trait = child(node, "trait")?.text;
-      if (type) nextContainers.push(trait ? `<${type} as ${trait}>` : type);
+      if (type) {
+        nextContainers.push(trait ? `<${type} as ${trait}>` : type);
+        nextIdentities.push(JSON.stringify([comparisonTokens(child(node, "type")!), child(node, "trait") ? comparisonTokens(child(node, "trait")!) : ""]));
+      }
     }
     if (node.type === "function_item") {
       const name = child(node, "name");
-      if (name) found.push({ node, name, containers });
+      if (name) {
+        found.push({ node, name, containers, identityContainers });
+        nextContainers.push(name.text);
+        nextIdentities.push(name.text);
+      }
     }
-    for (const entry of nodeChildren(node)) visit(entry, nextContainers);
+    for (const entry of nodeChildren(node)) visit(entry, nextContainers, nextIdentities);
   };
-  visit(root, []);
+  visit(root, [], []);
   return found;
 }
 
@@ -127,6 +141,13 @@ export async function listRustFunctions(document: Pick<TextDocument, "getText">)
       fingerprint: fingerprint(rustStructuralTokens(node))
     }))
   )) ?? [];
+}
+
+export async function rustComparisonFunctions(source: string): Promise<FunctionDiscovery> {
+  return (await withRustSyntaxTree(source, (root) => comparisonDiscovery(root, findFunctions(root).map(({ node, name, containers, identityContainers }) =>
+    comparisonFunction(node, name, [...containers, name.text].join("::"), JSON.stringify([identityContainers, name.text]),
+      ["impl_item", "trait_item"].includes(node.parent?.parent?.type ?? "") ? "method" : "function", rustSignature(node))
+  )))) ?? { status: "unavailable", entries: [], limitations: [] };
 }
 
 export interface RustDeclarationSlice {

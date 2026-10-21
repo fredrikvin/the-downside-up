@@ -6,7 +6,7 @@ import {
 import { findRustDependencies } from "./dependencies";
 import { rustFileImports } from "./imports";
 import { describeRustSource } from "./outline";
-import { findRustDeclarations, findRustFunction, initializeRustParserAt, listRustFunctions, withRustSyntaxTree } from "./syntax";
+import { findRustDeclarations, findRustFunction, initializeRustParserAt, listRustFunctions, rustComparisonFunctions, withRustSyntaxTree } from "./syntax";
 import { fingerprint } from "../../core/fingerprint";
 import { namedChildren, structuralTokens } from "../treeSitter";
 
@@ -71,6 +71,7 @@ export const rustSupport: LanguageSupport = {
   initialize: initializeRustParserAt,
   findFunction: findRustFunction,
   listFunctions: (source) => listRustFunctions({ getText: () => source }),
+  comparisonFunctions: rustComparisonFunctions,
   describeSource: describeRustSource,
   async textFingerprint(source) {
     const tokens = await withRustSyntaxTree(source, structuralTokens);

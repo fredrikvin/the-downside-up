@@ -56,6 +56,67 @@ async function findFunctionTarget(document: vscode.TextDocument, position: vscod
   return javascriptSupport.findFunction(document, position);
 }
 
+/** A real Git original side: historical detail must not be resolved against today's file. */
+async function testSnapshotFunctionCards(api: DownsideUpTestApi, document: vscode.TextDocument): Promise<void> {
+  const root = await findRepositoryRoot(resolve(document.uri.fsPath, ".."));
+  const path = document.uri.fsPath;
+  const before = document.getText();
+  const replace = async (text: string) => {
+    const edit = new vscode.WorkspaceEdit();
+    edit.replace(document.uri, new vscode.Range(document.positionAt(0), document.positionAt(document.getText().length)), text);
+    await vscode.workspace.applyEdit(edit);
+    await document.save();
+  };
+  try {
+    await replace("export function addedOnly() {\n return 'modified-side';\n}\n");
+    const uri = vscode.Uri.file(path);
+    const originalUri = uri.with({ scheme: "git", query: JSON.stringify({ path, ref: "HEAD" }) });
+    const gitExtension = vscode.extensions.getExtension("vscode.git");
+    assert.ok(gitExtension);
+    const gitExports = await gitExtension.activate() as {
+      getAPI(version: number): { openRepository(root: vscode.Uri): Promise<unknown> };
+    };
+    await gitExports.getAPI(1).openRepository(vscode.Uri.file(root));
+    await vscode.commands.executeCommand("vscode.diff", originalUri, uri, "Function sections (test)");
+    await vscode.commands.executeCommand("downsideUp.showFileOverview");
+    await waitFor(async () => api.shownChange()?.fileName === "CartItem.tsx" ? true : undefined, "real Git function diff");
+    await api.explainChange();
+    const comparison = api.shownChange();
+    assert.equal(comparison?.status, "current");
+    assert.deepEqual(comparison.added.map((card) => card.name), ["addedOnly"]);
+    assert.deepEqual(comparison.removed.map((card) => card.name), ["CartItem"]);
+    assert.equal(comparison.added[0]?.explanation, undefined, "Comparison generation never generates Added details.");
+    assert.equal(comparison.removed[0]?.explanation, undefined, "Comparison generation never generates Removed details.");
+    const tabsBefore = vscode.window.tabGroups.all.flatMap((group) => group.tabs).length;
+    for (const [side, card, expected, firstLine] of [
+      ["modified", comparison.added[0]!, "modified-side", 0],
+      ["original", comparison.removed[0]!, "Remove", 9]
+    ] as const) {
+      await api.explainChangeFunction(card.id);
+      const current = api.shownChange()![side === "modified" ? "added" : "removed"][0]!;
+      assert.equal(current.explanation?.status, "current", current.explanation?.error);
+      assert.match(api.changeFunctionSource(card.id) ?? "", new RegExp(expected), "The selected side is the explanation source.");
+      if (side === "original") assert.ok(current.explanation?.limitations.some((text) => text.includes("Historical callers")));
+      await api.addFormat(card.name, "pseudocode");
+      await api.addFormat(card.name, "flowchart");
+      for (const kind of ["step", "pseudocode", "node"] as const) {
+        await api.revealStep(card.name, 0, kind);
+        const sideUri = side === "modified" ? uri : originalUri;
+        const editor = vscode.window.visibleTextEditors.find((editor) => editor.document.uri.toString() === sideUri.toString());
+        assert.ok(editor && !editor.selection.isEmpty, `${kind} selects source in the ${side} diff side.`);
+        assert.equal(editor.selection.start.line, firstLine);
+        assert.equal(api.stepHighlight()?.functionName, card.name, "The card's normal items highlight with their own entry id.");
+      }
+    }
+    assert.equal(vscode.window.tabGroups.all.flatMap((group) => group.tabs).length, tabsBefore,
+      "Card detail and source navigation do not open separate file tabs.");
+    assert.ok(vscode.window.tabGroups.all.some((group) => group.activeTab?.input instanceof vscode.TabInputTextDiff));
+    console.log("Downside Up integration tests: Added/Removed details and three formats reveal their exact native Git diff side.");
+  } finally {
+    await replace(before);
+  }
+}
+
 export async function run(): Promise<void> {
   console.log("Downside Up integration tests: activating extension.");
   const extension = vscode.extensions.getExtension("FredrikVinkvist.the-downside-up");
@@ -418,6 +479,7 @@ export async function run(): Promise<void> {
     }
     const repositoryRoot = await findRepositoryRoot(reactRoot);
     assert.equal(await api.commandRoot(), repositoryRoot, "Repository commands act on the shown diff's repository.");
+    await testSnapshotFunctionCards(api, cartItemDocument);
 
     // So they do while a side that is not a workspace file (here the empty stand-in of an added file) has focus.
     await vscode.commands.executeCommand("vscode.diff", badgeUri.with({ scheme: "downside-up-empty", query: "HEAD" }), badgeUri, "Added Badge (test)");

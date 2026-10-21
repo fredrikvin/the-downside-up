@@ -21,6 +21,8 @@ export interface LanguageSupport {
   findFunction(document: TextDocument, position: Position): Promise<FunctionTarget | undefined>;
   /** Every function in the file, for the repository's symbol outline; `path` is the file's path. */
   listFunctions?(source: string, path: string): Promise<FunctionSlice[]>;
+  /** Exact-snapshot callable inventory. Unlike a preview outline, failure is never an empty file. */
+  comparisonFunctions?(source: string, path: string, document?: TextDocument): Promise<FunctionDiscovery>;
   /** The local file description shown in the preview; editor symbols are used without it. */
   describeSource?(source: string, path: string): Promise<SourceDescription>;
   /**
@@ -81,6 +83,23 @@ export interface FunctionSlice {
   readonly startLine: number;
   readonly endLine: number;
   readonly fingerprint: string;
+}
+
+export interface ComparisonFunction extends FunctionSlice {
+  /** Language-owned identity without occurrence ordinals; never inferred by comparison code. */
+  readonly matchKey: string;
+  readonly kind: string;
+  readonly signatureFingerprint: string;
+  readonly startColumn: number;
+  readonly endColumn: number;
+  readonly nameLine: number;
+  readonly nameColumn: number;
+}
+
+export interface FunctionDiscovery {
+  readonly status: "complete" | "partial" | "unavailable";
+  readonly entries: readonly ComparisonFunction[];
+  readonly limitations: readonly string[];
 }
 
 export interface SourceDescription {

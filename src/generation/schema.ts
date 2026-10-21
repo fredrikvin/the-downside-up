@@ -1,5 +1,7 @@
 import type {
   ExplanationFormat,
+  ComparisonCatalogue,
+  ComparisonCatalogueEntry,
   ComparisonFlowchart,
   ComparisonFlowNode,
   ComparisonVisualScope,
@@ -180,6 +182,7 @@ const comparisonSideSchema = objectSchema(
 const comparisonVisualScopeSchema = objectSchema(
   {
     id: comparisonIdSchema,
+    functionId: string,
     title: string,
     original: comparisonSideSchema,
     modified: comparisonSideSchema,
@@ -198,16 +201,22 @@ const comparisonVisualScopeSchema = objectSchema(
       )
     }
   },
-  ["id", "title", "original", "modified", "operationMatches", "edgeMatches"]
+  ["id", "functionId", "title", "original", "modified", "operationMatches", "edgeMatches"]
 );
+const comparisonSummariesSchema = {
+  type: "array", maxItems: 100,
+  items: objectSchema({ functionId: comparisonIdSchema, summary: { type: "string", maxLength: 600 } }, ["functionId", "summary"])
+};
 export const comparisonSchema = objectSchema(
   {
     summary: string,
+    added: comparisonSummariesSchema,
+    removed: comparisonSummariesSchema,
     changes: {
       type: "array",
       items: objectSchema(
-        { id: comparisonIdSchema, title: string, before: string, after: string, when: string, flow: string, original: spanSchema, modified: spanSchema, visualScopeId: { type: "string", pattern: "^[A-Za-z0-9_-]{0,40}$", maxLength: 40 } },
-        ["id", "title", "before", "after", "when", "flow", "original", "modified", "visualScopeId"]
+        { id: comparisonIdSchema, functionId: string, title: string, before: string, after: string, when: string, flow: string, original: spanSchema, modified: spanSchema, visualScopeId: { type: "string", pattern: "^[A-Za-z0-9_-]{0,40}$", maxLength: 40 } },
+        ["id", "functionId", "title", "before", "after", "when", "flow", "original", "modified", "visualScopeId"]
       )
     },
     visualScopes: { type: "array", items: comparisonVisualScopeSchema },
@@ -215,7 +224,7 @@ export const comparisonSchema = objectSchema(
     possibleEffects: stringArray,
     limitations: stringArray
   },
-  ["summary", "changes", "visualScopes", "outside", "possibleEffects", "limitations"]
+  ["summary", "added", "removed", "changes", "visualScopes", "outside", "possibleEffects", "limitations"]
 );
 
 const flowNodeSchema = objectSchema(
@@ -645,6 +654,7 @@ const MAX_COMPARISON_TEXT = 48_000;
 const COMPARISON_ID = /^[A-Za-z0-9_-]{1,40}$/;
 
 interface ComparisonLineBounds {
+  readonly catalogue?: ComparisonCatalogue;
   readonly originalLines: number;
   readonly modifiedLines: number;
   readonly originalPresent: boolean;
@@ -857,6 +867,39 @@ function parseComparisonVisualScope(
 /** Keeps valid textual changes even when the optional paired visual representation is malformed. */
 export function parseComparison(value: unknown, bounds?: ComparisonLineBounds): FileComparisonDraft {
   const source = record(value);
+  const catalogue = bounds?.catalogue;
+  const byId = new Map(catalogue?.entries.map((entry) => [entry.id, entry]));
+  const summaries = (category: "added" | "removed") => {
+    const values = source[category];
+    if (!catalogue && values === undefined) return undefined;
+    if (!Array.isArray(values) || values.length > 100) throw new Error("Invalid function summary coverage.");
+    const seen = new Set<string>();
+    const parsed = values.map((value) => {
+      const item = record(value);
+      const id = item.functionId;
+      if (typeof id !== "string" || byId.get(id)?.category !== category || seen.has(id)) throw new Error("Invalid function summary id.");
+      const summary = readText(item, "summary", 600).trim();
+      if (!summary) throw new Error("Missing required function summary.");
+      seen.add(id);
+      return { functionId: id, summary };
+    });
+    if (catalogue?.entries.some((entry) => entry.category === category && !seen.has(entry.id))) throw new Error("Missing required function summary.");
+    return parsed;
+  };
+  const added = summaries("added");
+  const removed = summaries("removed");
+  if (catalogue && comparisonTextLength(source) > 80_000) throw new Error("Comparison response exceeds its text budget.");
+  const changedFunction = (id: unknown): ComparisonCatalogueEntry | undefined => {
+    if (!catalogue?.classified) {
+      if (catalogue && id !== "" && id !== undefined) throw new Error("Unclassified comparison references an unknown function id.");
+      return undefined;
+    }
+    const entry = typeof id === "string" ? byId.get(id) : undefined;
+    if (entry?.category !== "changed") throw new Error("Invalid Changed function id.");
+    return entry;
+  };
+  const within = (start: number, end: number, range: ComparisonCatalogueEntry["original"]) =>
+    start === 0 && end === 0 || Boolean(range && start >= range.startLine + 1 && end <= range.endLine + 1);
   const changes = Array.isArray(source.changes) ? source.changes.slice(0, 60) : [];
   const text = (item: Record<string, unknown>, key: string, max: number) =>
     typeof item[key] === "string" && (item[key] as string).length <= max ? (item[key] as string).trim() : "";
@@ -866,6 +909,7 @@ export function parseComparison(value: unknown, bounds?: ComparisonLineBounds): 
   const parsedChanges = changes.flatMap((change) => {
     if (typeof change !== "object" || change === null) return [];
     const item = change as Record<string, unknown>;
+    const fn = changedFunction(item.functionId);
     const id = item.id;
     if (!comparisonId(id) || seenChangeIds.has(id)) return [];
     const scope = item.visualScopeId;
@@ -877,6 +921,7 @@ export function parseComparison(value: unknown, bounds?: ComparisonLineBounds): 
     }
     const parsed = {
       id,
+      ...(fn ? { functionId: fn.id } : {}),
       title: text(item, "title", 200),
       before: text(item, "before", 1_200),
       after: text(item, "after", 1_200),
@@ -887,6 +932,8 @@ export function parseComparison(value: unknown, bounds?: ComparisonLineBounds): 
       ...(visualScopeId ? { visualScopeId } : {})
     };
     if (!parsed.title || (!parsed.before && !parsed.after)) return [];
+    if (fn && (!within(parsed.original.start, parsed.original.end, fn.original) ||
+        !within(parsed.modified.start, parsed.modified.end, fn.modified))) throw new Error("Change evidence is outside its function.");
     seenChangeIds.add(id);
     return [parsed];
   });
@@ -902,7 +949,19 @@ export function parseComparison(value: unknown, bounds?: ComparisonLineBounds): 
         let scope: ComparisonVisualScope;
         const scopeIssues: string[] = [];
         try {
+          const fn = changedFunction(record(rawScope).functionId);
+          if (catalogue && !fn) throw new Error("Unclassified comparisons have no function visuals.");
           scope = parseComparisonVisualScope(rawScope, bounds!, (reason) => scopeIssues.push(reason));
+          if (fn) {
+            if (scope.units.some((unit) => !within(unit.occurrence.startLine, unit.occurrence.endLine, fn[unit.side]))) {
+              throw new Error("Visual evidence is outside its function.");
+            }
+            scope = { ...scope, functionId: fn.id };
+            if (!parsedChanges.some((change) => change.visualScopeId === scope.id && change.functionId === fn.id)) return [];
+            if (parsedChanges.some((change) => change.visualScopeId === scope.id && change.functionId !== fn.id)) {
+              throw new Error("Visual scope belongs to a different function.");
+            }
+          }
         } catch (error) {
           if (!(error instanceof Error)) throw error;
           visualIssues.push(`Visual scope ${index + 1} was omitted: ${error.message}`);
@@ -947,6 +1006,8 @@ export function parseComparison(value: unknown, bounds?: ComparisonLineBounds): 
   }
   return {
     summary: readText(source, "summary", 800).trim(),
+    ...(added ? { added } : {}),
+    ...(removed ? { removed } : {}),
     changes: parsedChanges,
     ...(visualScopes?.length ? { visualScopes } : {}),
     outside: optionalText(source, "outside", 1_200),

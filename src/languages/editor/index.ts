@@ -1,6 +1,6 @@
 import type { LanguageSupport } from "../support";
 import { findEditorDependencies } from "./dependencies";
-import { findFunctionWithEditorTools } from "./symbols";
+import { editorComparisonFunctions, findFunctionWithEditorTools } from "./symbols";
 
 /**
  * The fallback for languages without bundled analysis: functions come from
@@ -12,5 +12,6 @@ export const editorSupport: LanguageSupport = {
   languageIds: [],
   fileExtensions: [],
   findFunction: findFunctionWithEditorTools,
+  comparisonFunctions: editorComparisonFunctions,
   findDependencies: findEditorDependencies
 };

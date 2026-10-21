@@ -370,12 +370,54 @@ cancelled or the repository cache cleared before the result is saved, the
 result is discarded. A failed attempt keeps any earlier result visible and
 offers to try again.
 
-The model returns a summary, a list of changes with before and after
-behavior, when it differs, and its effect on flow, line spans that are
-checked against the real line counts of each side (an invalid span drops the
-link, never the explanation), text outside functions, possible consequences,
-and limits. It uses the Functions model and needs no function discovery, so it
-works for any text file. Everything renders as text; evidence links go
+The result follows the summary with **Added**, **Changed**, **Removed**, and
+**Other changes** sections. The host classifies functions from the exact
+snapshots using language-owned discovery and identities, including nested
+functions. Changed includes executable declaration/signature-only changes;
+comments and formatting alone do not count. A function rename, move to a
+different container, or unresolved duplicate is removed+added; there is no
+heuristic rename or nearest-line matching. Overload declarations belong to
+their implementation, not separate Explain cards. SQL routines can be function
+cards; schema objects and queries remain Other changes. Inventories are bounded
+to 500 functions per side and 100 classified entries per comparison. Missing,
+incomplete, erroneous, unsupported, or over-budget discovery produces no
+Added/Removed cards and a clear unclassified textual fallback under Other
+changes/existing items. Valid empty inventories remain distinguishable from
+parser failure. Editor symbol providers do not guarantee complete snapshot
+discovery and currently use that fallback.
+
+Added cards have a short summary of what the function does; Removed cards say
+what it did and what may have depended on it, without asserting unseen callers.
+The same single Functions-model comparison request supplies every required
+Added/Removed summary and all Changed behavioral items and paired visuals.
+The model cannot invent categories or navigation targets: summaries must cover
+exactly the host-issued ids; unknown, duplicate, wrong-category or missing ids
+fail without repair requests. Changed evidence and visuals stay inside their
+referenced function's side ranges. Orphan or independently invalid visuals
+are omitted with a limitation while valid text survives.
+
+**Explain** on an Added/Removed card is a separate explicit request for its
+normal Steps/Pseudocode/Flowchart explanation. Rendering, navigation, review,
+diff prefetch, and cache misses never request those details. A working-tree
+addition reuses the normal function cache and context/consent pipeline; it may
+prime/review project context (with separate Overview-model approval) but never
+starts a file-summary request from the card. Historical details (Removed or an
+Added function on a revision/index side) use only that side's function source
+and at most 4096 characters of its same-file preamble. They do not scan current
+callers/dependencies, prime an overview, or summarize a file. Their explanation
+states that historical callers and cross-file dependencies were not resolved.
+Snapshot details have isolated keys bound to exact side text, identity, path,
+function occurrence, provider/model and prompt/settings; they cannot appear as
+ordinary working-file cache hits or hovers. Missing-format generation is also
+explicit. The revision document must match the authorized snapshot before
+targets or source ranges can be used; unavailable/mismatched documents disable
+detail actions with a notice.
+
+Changed items retain before/after behavior, when it differs, and its effect on
+flow. Other changes covers non-function edits and explicitly unclassified
+regions. Possible consequences and limitations stay separate. Textual comparison
+still works for any eligible text file when function classification is unavailable.
+Everything renders as text; evidence links go
 through host-validated ids and reveal the lines in the visible original or
 modified side of the diff without moving the comparison. This is a
 description of what changed, not an automated correctness or security
@@ -421,12 +463,26 @@ matches and zero-based edge matches, never navigation targets. Missing-file
 presence comes from the snapshots, not model output. Each side allows at most
 30 operations, still capped at 24 chart nodes and 40 edges, with the existing
 whole-response budgets checked after expansion.
-This remains one model request for both exact snapshots and all three views.
+This remains one comparison request per file for both exact snapshots, all
+Added/Removed summaries, and the Changed functions' three paired views.
+Uncached card details are separate explicit requests (one each, plus any
+needed normal working-source overview priming/review); missing formats add
+one request each. Review confirmation counts only file comparisons and never
+silently expands to those function requests.
 Coverage limitations name what is not shown. Invalid JSON is still rejected;
 the compact contract does not guarantee a valid response, and no automatic
 repair call, retry, or model fallback is made for diff prefetch.
 The comparison prompt version is bumped for this contract; old comparison
 records are not migrated or reused under the new version.
+
+The comparison prompt is `downside-up-changes-6`, with catalogue version 1;
+function explanations/file summaries use `downside-up-plain-10` for the
+source-context contract. These invalidate only their own record lookups.
+The repository cache envelope remains schema version 2, preserving consent.
+Function/format/comparison writes check cancellation and freshness again after
+queued writes and immediately before issuing atomic rename, the persistence
+commit point. Cancellation before that point prevents saving; cancellation
+after commit does not turn a saved result into an unsaved failure.
 
 An illustrative **Trace a case** remains planned in
 [Visual behavior comparisons](diff-flow-plan.md); it will not execute code or
@@ -1351,15 +1407,16 @@ webview's content-security policy.
 ## Limitations and verification status
 
 - The change view explains only local `git:` and `file:` diffs, one file at a
-  time, with no cross-file story and no before/after flowchart; it does not
+  time, with no cross-file story; it does not
   check the model's claims about behavior, so its consequences are things to
   verify. Changes to the index or working tree made outside the editor are
   noticed only when the window regains focus, the diff is shown again, or VS
   Code updates the diff's open Git document. Git URI forms are read as the
   built-in Git extension produces them; unit tests read such URIs against a
   real temporary repository (including `HEAD` moving before and during a
-  request), but the extension-host tests use `file:` diffs and the empty
-  stand-in document, not the Git extension's own diffs.
+  request). Extension-host tests also use the Git extension's real `git:`
+  original and working modified documents: Added and Removed details, all
+  three formats' native-side source selection, and no extra file tabs.
 - GitHub Copilot's server-side content exclusion is not visible to the
   extension and is not applied to its requests; only `.gitignore`,
   `.copilotignore`, VS Code exclusions, the built-in path rules, and the

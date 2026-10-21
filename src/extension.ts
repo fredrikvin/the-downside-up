@@ -82,6 +82,7 @@ import { bundledLanguageFor, initializeLanguage } from "./languages/registry";
 import {
   ExplanationPanel,
   type Crumb,
+  type ChangeFunctionCardView,
   type FolderView,
   type ExplanationView,
   type PanelAction,
@@ -329,7 +330,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
   };
 
   /** Reveals lines of one side of the shown diff, clamped to that document. */
-  const revealChangeLines = async (uri: vscode.Uri, startLine: number, endLine: number, side: "original" | "modified"): Promise<void> => {
+  const revealChangeLines = async (uri: vscode.Uri, startLine: number, endLine: number, side: "original" | "modified"): Promise<vscode.TextEditor> => {
     const group = vscode.window.tabGroups.all.find((candidate) => {
       const input = candidate.activeTab?.input;
       return input instanceof vscode.TabInputTextDiff && sameUri(input[side], uri) && change.shows(input.original, input.modified);
@@ -382,11 +383,13 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     const range = new vscode.Range(first, 0, final, document.lineAt(final).text.length);
     editor.selection = new vscode.Selection(range.start, range.end);
     editor.revealRange(range, vscode.TextEditorRevealType.InCenterIfOutsideViewport);
+    return editor;
   };
 
   const change = new ChangeSession({
     get service() { return service; },
-    reveal: revealChangeLines,
+    reveal: async (...args) => { await revealChangeLines(...args); },
+    explanationView: (state, id) => explanationView(state, id),
     schedule: (task, priority = "explicit") => scheduler.schedule(priority, task),
     prefetch: {
       enabled: () => prefetchSettings().enabled && !reviewSession,
@@ -638,7 +641,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
   }
 
   /** Document lines of each step, pseudocode line, and flowchart node, checked against the function as it is now. */
-  const currentItemRanges = (state: FunctionAi): ItemRanges | undefined => {
+  const currentItemRanges = (state: Pick<FunctionAi, "view" | "value">): ItemRanges | undefined => {
     const explanation = state.view.explanation;
     if (state.view.status !== "current" || !explanation) return undefined;
     const { target } = state.value;
@@ -681,16 +684,30 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
   let lastStepHighlight: { functionName: string; steps: number[]; pseudocode: number[]; nodes: number[] } | undefined;
 
   /** Highlights the items of the innermost explained function at the editor's cursor or selection. Local only. */
-  const syncStepHighlight = (selection?: vscode.Selection, reveal = false): void => {
-    if (!panel || !preview) return;
+  const syncStepHighlight = (selection?: vscode.Selection, reveal = false, sourceEditor?: vscode.TextEditor): void => {
+    if (!panel || (!preview && !change.active)) return;
     lastStepHighlight = undefined;
-    const editor = vscode.window.visibleTextEditors.find((candidate) => sameUri(candidate.document.uri, preview!.document.uri));
+    const editor = sourceEditor ?? (change.active ? vscode.window.activeTextEditor
+      : vscode.window.visibleTextEditors.find((candidate) => sameUri(candidate.document.uri, preview!.document.uri)));
     const current = selection ?? editor?.selection;
     if (!current) {
       panel.highlightSteps(undefined, NO_ITEMS, reveal);
       return;
     }
     const line = current.active.line;
+    if (change.active) {
+      const card = change.cardStates().filter((card) => card.view.status === "current" &&
+        editor && sameUri(card.value.document.uri, editor.document.uri) && card.value.target.range.contains(current.active))
+        .sort((a, b) => (a.value.target.range.end.line - a.value.target.range.start.line) - (b.value.target.range.end.line - b.value.target.range.start.line))[0];
+      const ranges = card && currentItemRanges(card);
+      if (!card || !ranges) { panel.highlightSteps(undefined, NO_ITEMS, reveal); return; }
+      const at = (list: Array<StepRange | undefined>) => current.start.line === current.end.line
+        ? innermostAt(list, current.active.line) : stepsAt(list, current.start.line, current.end.line);
+      const items = { steps: at(ranges.steps), pseudocode: at(ranges.pseudocode), nodes: at(ranges.nodes) };
+      lastStepHighlight = { functionName: card.view.functionName, ...items };
+      panel.highlightSteps(card.key, items, reveal);
+      return;
+    }
     const match = previewStates()
       .filter(({ state }) => state.value.target.range.start.line <= line && state.value.target.range.end.line >= line)
       .sort((left, right) =>
@@ -720,6 +737,22 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
 
   /** Selects an item's lines in the editor; the lines come from the host's own check, never the model alone. */
   const revealItem = async (entryId: string, kind: LinkedKind, index: number): Promise<void> => {
+    const card = change.cardState(entryId);
+    if (card) {
+      await card.validate();
+      const ranges = currentItemRanges(card);
+      const range = ranges?.[kind === "step" ? "steps" : kind === "pseudocode" ? "pseudocode" : "nodes"][index];
+      if (!range) return;
+      clearReveal();
+      suppressEditorSyncUntil = Date.now() + 800;
+      const editor = await revealChangeLines(card.value.document.uri, range.start + 1, range.end + 1, card.side);
+      await card.validate();
+      editor.setDecorations(revealDecoration, [new vscode.Range(range.start, 0, range.end, 0)]);
+      revealed = { uri: card.value.document.uri.toString(), caret: editor.selection.active, entryId, kind, index,
+        start: range.start, end: range.end, editor };
+      syncStepHighlight(editor.selection, false, editor);
+      return;
+    }
     const state = existingStateForEntry(entryId);
     const ranges = state ? currentItemRanges(state) : undefined;
     const range = ranges?.[kind === "step" ? "steps" : kind === "pseudocode" ? "pseudocode" : "nodes"][index];
@@ -758,21 +791,25 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
 
   /** Generates one missing view for a current saved explanation, on the reader's request. */
   const addFormat = async (entryId: string, format: ExplanationFormat): Promise<void> => {
+    if (change.hasCard(entryId)) { await change.explainCard(entryId, format); return; }
     const state = existingStateForEntry(entryId);
-    if (!state || !state.result || state.loadingFormat || state.view.status !== "current") return;
+    if (!state || !state.result || state.controller || state.loadingFormat || state.view.status !== "current") return;
+    const controller = new AbortController();
+    state.controller = controller;
     state.loadingFormat = format;
     state.formatError = undefined;
     const epoch = state.epoch;
     render();
     try {
       const result = await scheduler.schedule("explicit", () =>
-        service.addExplanationFormat(state.value.root, state.value.target, state.value.document, format)
+        service.addExplanationFormat(state.value.root, state.value.target, state.value.document, format, controller.signal)
       );
       if (state.epoch !== epoch || !functions.has(state.key)) return;
       applyResult(state, result);
     } catch (error) {
       if (state.epoch === epoch) state.formatError = errorMessage(error);
     } finally {
+      if (state.controller === controller) state.controller = undefined;
       state.loadingFormat = undefined;
       render();
     }
@@ -835,6 +872,32 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     };
   };
 
+  /** Ordinary entries and diff cards use identical host-validated item links and layout. */
+  const explanationView = (
+    state: Pick<FunctionAi, "view" | "value" | "loadingFormat" | "formatError">, entryId: string
+  ): ExplanationView => {
+    const ranges = currentItemRanges(state);
+    return {
+      ...state.view,
+      references: state.view.references.map((reference) => ({ ...reference, id: `${entryId}:${reference.id}` })),
+      entryId,
+      ...(ranges ? {
+        linked: { steps: ranges.steps.map(Boolean), pseudocode: ranges.pseudocode.map(Boolean), nodes: ranges.nodes.map(Boolean) },
+        itemLines: {
+          steps: ranges.steps.map((range) => range?.start ?? -1),
+          pseudocode: ranges.pseudocode.map((range) => range?.start ?? -1),
+          nodes: ranges.nodes.map((range) => range?.start ?? -1)
+        }
+      } : {}),
+      ...(ranges && state.view.explanation?.pseudocode ? {
+        pseudocodeLayout: pseudocodeLayout(ranges.pseudocode, state.view.explanation.pseudocode.map((line) => line.depth),
+          (line) => line >= 0 && line < state.value.document.lineCount ? state.value.document.lineAt(line).text : "")
+      } : {}),
+      ...(state.loadingFormat ? { loadingFormat: state.loadingFormat } : {}),
+      ...(state.formatError ? { formatError: state.formatError } : {})
+    };
+  };
+
   const render = (): void => {
     if (!panel) return;
     const descriptor = describeProvider();
@@ -842,34 +905,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     const explanations: ExplanationView[] = [];
     for (const { state, entry } of previewStates()) {
       const result = state.result;
-      const references = state.view.references.map((reference) => ({ ...reference, id: `${entry.id}:${reference.id}` }));
-      const ranges = currentItemRanges(state);
-      explanations.push({
-        ...state.view,
-        references,
-        entryId: entry.id,
-        ...(ranges
-          ? {
-              linked: { steps: ranges.steps.map(Boolean), pseudocode: ranges.pseudocode.map(Boolean), nodes: ranges.nodes.map(Boolean) },
-              itemLines: {
-                steps: ranges.steps.map((range) => range?.start ?? -1),
-                pseudocode: ranges.pseudocode.map((range) => range?.start ?? -1),
-                nodes: ranges.nodes.map((range) => range?.start ?? -1)
-              }
-            }
-          : {}),
-        ...(ranges && state.view.explanation?.pseudocode
-          ? {
-              pseudocodeLayout: pseudocodeLayout(
-                ranges.pseudocode,
-                state.view.explanation.pseudocode.map((line) => line.depth),
-                (line) => line >= 0 && line < state.value.document.lineCount ? state.value.document.lineAt(line).text : ""
-              )
-            }
-          : {}),
-        ...(state.loadingFormat ? { loadingFormat: state.loadingFormat } : {}),
-        ...(state.formatError ? { formatError: state.formatError } : {})
-      });
+      explanations.push(explanationView(state, entry.id));
       if (!result) continue;
       for (const reference of result.context.sourceReferences) {
         const uri = result.context.referenceUris.get(reference.id);
@@ -1676,7 +1712,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
         ...(result.provider.kind === "mock" ? [MOCK_LIMITATION] : [])
       ])]
     };
-    repositoryContext = { root: state.value.root, overview: result.overview };
+    if (result.overview) repositoryContext = { root: state.value.root, overview: result.overview };
     installRootWatcher(state.value.root);
   };
 
@@ -2848,6 +2884,10 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
         await panel?.navigate(action.referenceId);
         return;
       case "expand": {
+        if (change.hasCard(action.entryId)) {
+          if (await ensureLanguageModelSelected()) await change.explainCard(action.entryId);
+          return;
+        }
         const state = await resolveEntryState(action.entryId);
         if (state) await openExplanation(state);
         return;
@@ -2947,11 +2987,16 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
         return;
       }
       case "regenerate": {
+        if (change.hasCard(action.entryId)) {
+          if (await ensureLanguageModelSelected()) await change.explainCard(action.entryId);
+          return;
+        }
         const state = await resolveEntryState(action.entryId);
         if (state) await generate(state);
         return;
       }
       case "cancelEntry":
+        if (change.hasCard(action.entryId)) { change.cancelCard(action.entryId); return; }
         existingStateForEntry(action.entryId)?.controller?.abort();
         return;
       case "cancel":
@@ -3431,6 +3476,10 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     if (revealed && (event.textEditor.document.uri.toString() !== revealed.uri || !moved?.isEmpty || !moved.active.isEqual(revealed.caret))) {
       clearReveal();
     }
+    if (panel?.panel.visible && change.active && change.involves(event.textEditor.document.uri)) {
+      syncStepHighlight(moved, !revealed, event.textEditor);
+      return;
+    }
     if (!panel?.panel.visible || !preview || !sameUri(event.textEditor.document.uri, preview.document.uri)) return;
     const selection = event.selections[0];
     if (!selection) return;
@@ -3454,6 +3503,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
   const onConfigChange = vscode.workspace.onDidChangeConfiguration((event) => {
     if (change.active && ["downsideUp.provider", "downsideUp.languageModel", "downsideUp.openai", "downsideUp.exclusion"].some((key) => event.affectsConfiguration(key))) {
       change.stopPrefetch();
+      change.invalidateCards();
       void change.refresh().catch(() => undefined);
     }
     if (["downsideUp.provider", "downsideUp.languageModel", "downsideUp.openai", "downsideUp.projectMap"].some((key) => event.affectsConfiguration(key))) {
@@ -3579,10 +3629,18 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     revealStep: async (functionName: string, step: number, kind: LinkedKind = "step") => {
       const found = previewStates().find(({ state }) => state.view.functionName === functionName);
       if (found) await revealItem(found.entry.id, kind, step);
+      else {
+        const card = change.cardStates().find((card) => card.view.functionName === functionName);
+        if (card) await revealItem(card.key, kind, step);
+      }
     },
     addFormat: async (functionName: string, format: ExplanationFormat) => {
       const found = previewStates().find(({ state }) => state.view.functionName === functionName);
       if (found) await addFormat(found.entry.id, format);
+      else {
+        const card = change.cardStates().find((card) => card.view.functionName === functionName);
+        if (card) await addFormat(card.key, format);
+      }
     },
     explanationOf: (functionName: string) =>
       previewStates().find(({ state }) => state.view.functionName === functionName)?.state.view.explanation,
@@ -3592,9 +3650,13 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       : undefined,
     shownChange: () => {
       const view = change.view(() => "test-link");
-      return view ? { fileName: view.fileName, facts: view.facts, status: view.status, explained: Boolean(view.result), links: view.result?.changes.reduce((sum, item) => sum + item.links.length, 0) ?? 0 } : undefined;
+      return view ? { fileName: view.fileName, facts: view.facts, status: view.status, explained: Boolean(view.result),
+        added: view.result?.added ?? [], removed: view.result?.removed ?? [],
+        links: view.result?.changes.reduce((sum, item) => sum + item.links.length, 0) ?? 0 } : undefined;
     },
     explainChange: () => change.explain(),
+    explainChangeFunction: (entryId: string) => handlePanelAction({ type: "expand", entryId }),
+    changeFunctionSource: (entryId: string) => change.cardState(entryId)?.value.target.source,
     revealChange: async (side: "original" | "modified") => {
       const handlers = new Map<string, () => Promise<void>>();
       const view = change.view((open) => {
@@ -3682,7 +3744,10 @@ export interface DownsideUpTestApi {
   reviewChanges(base: string): Promise<number>;
   reviewItems(): Array<{ path: string; change: string; status: string }>;
   /** The native diff shown in the preview, or undefined. */
-  shownChange(): { fileName: string; facts: string; status: string; explained: boolean; links: number } | undefined;
+  shownChange(): { fileName: string; facts: string; status: string; explained: boolean; links: number;
+    added: readonly ChangeFunctionCardView[]; removed: readonly ChangeFunctionCardView[] } | undefined;
+  explainChangeFunction(entryId: string): Promise<void>;
+  changeFunctionSource(entryId: string): string | undefined;
   revealChange(side: "original" | "modified"): Promise<void>;
   explainChange(): Promise<void>;
   stopReview(): void;

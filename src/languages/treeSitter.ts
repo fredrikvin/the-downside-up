@@ -3,6 +3,8 @@ import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { Language, Parser, type Node as SyntaxNode } from "web-tree-sitter";
 import type { Position } from "vscode";
+import { fingerprint } from "../core/fingerprint";
+import type { ComparisonFunction, FunctionDiscovery } from "./support";
 
 const require = createRequire(__filename);
 let runtimePromise: Promise<void> | undefined;
@@ -78,6 +80,39 @@ export function structuralTokens(node: SyntaxNode): string {
   }
   if (node.childCount === 0) return `${node.type}:${node.text.length}:${node.text};`;
   return `${node.type}[${allChildren(node).map((entry) => structuralTokens(entry)).join("")}]`;
+}
+
+/** Comparison-only: documentation/comments are not executable declaration changes. */
+export function comparisonTokens(node: SyntaxNode, omitId?: number): string {
+  if (node.id === omitId) return "";
+  if (node.type.includes("comment")) return "";
+  if (!node.type.trim() && !node.text.trim()) return "";
+  if (node.type.endsWith("_literal") || node.childCount === 0) return `${node.type}:${node.text.length}:${node.text};`;
+  return `${node.type}[${allChildren(node).map((child) => comparisonTokens(child, omitId)).join("")}]`;
+}
+
+/** Shared range/validation mechanics; callable identities and walks remain language-owned. */
+export function comparisonFunction(
+  node: SyntaxNode, name: SyntaxNode, qualifiedName: string, matchKey: string, kind: string, signature: string
+): ComparisonFunction {
+  const body = node.childForFieldName("body");
+  const signatureTokens = allChildren(node).filter((child) => child !== body && child.id !== body?.id).map((child) => comparisonTokens(child)).join("");
+  return {
+    name: name.text, qualifiedName, matchKey, kind, signature, source: node.text,
+    startLine: node.startPosition.row, endLine: node.endPosition.row,
+    startColumn: node.startPosition.column, endColumn: node.endPosition.column,
+    nameLine: name.startPosition.row, nameColumn: name.startPosition.column,
+    fingerprint: fingerprint(comparisonTokens(node)), signatureFingerprint: fingerprint(signatureTokens)
+  };
+}
+
+export function comparisonDiscovery(root: SyntaxNode, entries: ComparisonFunction[]): FunctionDiscovery {
+  return {
+    status: root.hasError || entries.length > 500 ? "partial" : "complete",
+    entries: entries.slice(0, 500),
+    limitations: root.hasError ? ["Function discovery is incomplete because the snapshot contains syntax errors."]
+      : entries.length > 500 ? ["Function discovery exceeded the 500-function limit."] : []
+  };
 }
 
 /**

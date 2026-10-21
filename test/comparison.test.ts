@@ -2,7 +2,9 @@ import { execFileSync } from "node:child_process";
 import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { comparisonCatalogue } from "../src/context/comparisonFunctions";
+import { javascriptSupport } from "../src/languages/javascript";
 import {
   baseComparisonRef,
   changedFilesSince,
@@ -17,6 +19,7 @@ let root = "";
 const git = (...args: string[]) => execFileSync("git", ["-C", root, ...args], { encoding: "utf8" }).trim();
 const gitUri = (path: string, ref: string) => ({ scheme: "git", fsPath: join(root, path), query: JSON.stringify({ path: join(root, path), ref }) });
 const fileUri = (path: string) => ({ scheme: "file", fsPath: join(root, path), query: "" });
+beforeAll(() => javascriptSupport.initialize!(process.cwd()));
 
 beforeEach(async () => {
   root = await realpath(await mkdtemp(join(tmpdir(), "dsu-comparison-")));
@@ -40,6 +43,24 @@ const refOf = async (original: ReturnType<typeof gitUri>, modified: ReturnType<t
 };
 
 describe("native diff identity", () => {
+  it("classifies commit-to-commit snapshots independently of today's file, and index snapshots independently of unsaved text", async () => {
+    await writeFile(join(root, "functions.ts"), "export function old() {}\n");
+    git("add", "."); git("commit", "-q", "-m", "old function");
+    const original = git("rev-parse", "HEAD");
+    await writeFile(join(root, "functions.ts"), "export function next() {}\n");
+    git("add", "."); git("commit", "-q", "-m", "next function");
+    const modified = git("rev-parse", "HEAD");
+    await writeFile(join(root, "functions.ts"), "export function today() {}\n");
+    const committed = await readComparison(await refOf(gitUri("functions.ts", original), gitUri("functions.ts", modified)));
+    expect((await comparisonCatalogue(committed)).entries.map((entry) => [entry.name, entry.category]))
+      .toEqual([["old", "removed"], ["next", "added"]]);
+    git("add", "functions.ts");
+    const staged = await readComparison(await refOf(gitUri("functions.ts", "HEAD"), gitUri("functions.ts", "")), {
+      buffers: new Map([[join(root, "functions.ts"), "export function unsaved() {}\n"]])
+    });
+    expect((await comparisonCatalogue(staged)).entries.map((entry) => [entry.name, entry.category]))
+      .toEqual([["next", "removed"], ["today", "added"]]);
+  });
   it("separates unstaged changes (index against working tree) from staged ones (HEAD against index)", async () => {
     await writeFile(join(root, "a.txt"), "export const a = 2;\n");
     const unstaged = await refOf(gitUri("a.txt", ""), fileUri("a.txt"));

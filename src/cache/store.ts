@@ -29,11 +29,15 @@ function parseCache(raw: string): RepositoryCache {
 export interface RepositoryCacheStore {
   read(root: string): Promise<RepositoryCache>;
   write(root: string, value: RepositoryCache): Promise<void>;
-  /** Aborts before commit; a committed update resolves even if its signal is subsequently aborted. */
+  /**
+   * Aborts before commit; a committed update resolves even if subsequently aborted.
+   * `validate` runs under the write lock immediately before commit; it must not read/update this store.
+   */
   update(
     root: string,
     updater: (current: RepositoryCache) => RepositoryCache,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    validate?: () => Promise<void>
   ): Promise<RepositoryCache>;
   clear(root: string): Promise<void>;
 }
@@ -71,12 +75,13 @@ export class FileRepositoryCacheStore implements RepositoryCacheStore {
     return this.readFile(file);
   }
 
-  protected async persist(file: string, value: RepositoryCache, signal?: AbortSignal): Promise<void> {
+  protected async persist(file: string, value: RepositoryCache, signal?: AbortSignal, validate?: () => Promise<void>): Promise<void> {
     assertNotCancelled(signal);
     await mkdir(dirname(file), { recursive: true });
     const temporary = `${file}.${process.pid}.${Date.now()}.tmp`;
     try {
       await writeFile(temporary, JSON.stringify(value), { mode: 0o600 });
+      await validate?.();
       assertNotCancelled(signal);
       // Rename cannot be cancelled: once issued, its outcome determines whether the update committed.
       await rename(temporary, file);
@@ -89,7 +94,8 @@ export class FileRepositoryCacheStore implements RepositoryCacheStore {
   async update(
     root: string,
     updater: (current: RepositoryCache) => RepositoryCache,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    validate?: () => Promise<void>
   ): Promise<RepositoryCache> {
     const file = this.fileFor(root);
     const previous = this.writes.get(file) ?? Promise.resolve();
@@ -97,7 +103,7 @@ export class FileRepositoryCacheStore implements RepositoryCacheStore {
       assertNotCancelled(signal);
       const next = updater(await this.readFile(file));
       assertNotCancelled(signal);
-      await this.persist(file, next, signal);
+      await this.persist(file, next, signal, validate);
       return next;
     });
     this.writes.set(file, write);
@@ -138,12 +144,14 @@ export class MemoryRepositoryCacheStore implements RepositoryCacheStore {
   async update(
     root: string,
     updater: (current: RepositoryCache) => RepositoryCache,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    validate?: () => Promise<void>
   ): Promise<RepositoryCache> {
     const previous = this.locks.get(root) ?? Promise.resolve();
-    const operation = previous.then(() => {
+    const operation = previous.then(async () => {
       assertNotCancelled(signal);
       const next = updater(structuredClone(this.values.get(root) ?? emptyRepositoryCache()));
+      await validate?.();
       assertNotCancelled(signal);
       this.values.set(root, structuredClone(next));
       return structuredClone(next);

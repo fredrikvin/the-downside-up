@@ -1,4 +1,4 @@
-import { basename, extname, relative, sep } from "node:path";
+import { basename, extname, relative, resolve, sep } from "node:path";
 import * as vscode from "vscode";
 import { inputsMatch, explanationCacheKey } from "./cache/freshness";
 import type { RepositoryCacheStore } from "./cache/store";
@@ -31,6 +31,7 @@ import type {
   Usage
 } from "./core/types";
 import { comparisonProblem, describeIdentity, type ComparisonSnapshot, type SideSnapshot } from "./context/comparison";
+import { comparisonCatalogue } from "./context/comparisonFunctions";
 import { gatherInventory, sharingExclusion, type RepositoryInventory } from "./context/inventory";
 import { checkedProjectMap, outlineText } from "./context/projectMap";
 import {
@@ -110,7 +111,7 @@ export interface ExplanationProgress {
 
 export interface ExplanationResult {
   readonly explanation: FunctionExplanation;
-  readonly overview: RepositoryOverview;
+  readonly overview?: RepositoryOverview;
   readonly context: FunctionContext;
   readonly provider: ProviderDescriptor;
   readonly usage?: Usage;
@@ -118,6 +119,13 @@ export interface ExplanationResult {
   readonly stale: boolean;
   /** The explanation was made with an earlier version of the repository overview. */
   readonly earlierOverview?: boolean;
+}
+
+/** Isolated historical file context; callers must re-resolve moving refs and compare exact text. */
+export interface SnapshotExplanationSource {
+  readonly side: SideSnapshot;
+  readonly occurrenceId: string;
+  readonly validate: () => Promise<void>;
 }
 
 export interface ExplanationServiceOptions {
@@ -172,6 +180,7 @@ const sideRecord = (side: SideSnapshot): ComparisonSideRecord => ({ path: side.p
 
 /** A saved comparison, current or not. */
 export interface SavedComparison {
+  readonly catalogue?: import("./core/types").ComparisonCatalogue;
   readonly comparison: FileComparison;
   /** False when either side's text changed since the comparison was made. */
   readonly current: boolean;
@@ -526,7 +535,8 @@ export class ExplanationService {
     target: FunctionTarget,
     document: vscode.TextDocument,
     signal?: AbortSignal,
-    onProgress?: (progress: ExplanationProgress) => void
+    onProgress?: (progress: ExplanationProgress) => void,
+    validateSource?: () => Promise<void>
   ): Promise<ExplanationResult> {
     const descriptor = this.options.describeProvider();
     const requestId = JSON.stringify([
@@ -534,11 +544,12 @@ export class ExplanationService {
       target.symbolId,
       target.structuralFingerprint,
       descriptor.kind,
-      descriptor.modelId
+      descriptor.modelId,
+      validateSource ? fingerprint(document.getText()) : "working"
     ]);
     const existing = this.inFlight.get(requestId);
     if (existing) return existing;
-    const request = this.explainFresh(root, target, document, descriptor, signal, onProgress);
+    const request = this.explainFresh(root, target, document, descriptor, signal, onProgress, validateSource);
     this.inFlight.set(requestId, request);
     try {
       return await request;
@@ -553,7 +564,8 @@ export class ExplanationService {
     document: vscode.TextDocument,
     descriptor: ProviderDescriptor,
     signal?: AbortSignal,
-    onProgress?: (progress: ExplanationProgress) => void
+    onProgress?: (progress: ExplanationProgress) => void,
+    validateSource?: () => Promise<void>
   ): Promise<ExplanationResult> {
     const startingFence = this.fence(root);
     const sourceAtStart = document.getText();
@@ -561,6 +573,7 @@ export class ExplanationService {
       onProgress?.({ stage, detail, ...(usage ? { usage } : {}) });
     progress("checking", "Checking source, repository context, and local cache.");
     assertNotCancelled(signal);
+    await validateSource?.();
     if (this.fence(root) !== startingFence) throw new Error("The repository cache was cleared.");
     const exclusion = await sharingExclusion(root, target.uri.fsPath);
     if (exclusion) {
@@ -587,7 +600,16 @@ export class ExplanationService {
         authorized.add(id);
       }
       assertNotCancelled(signal);
-      return call(await this.options.createProvider(using));
+      await validateSource?.();
+      const current = this.options.describeProvider();
+      if (vscode.workspace.isTrusted === false || current.kind !== descriptor.kind || current.modelId !== descriptor.modelId ||
+          await sharingExclusion(root, target.uri.fsPath)) {
+        throw new Error("Source sharing policy or model changed before dispatch; nothing was sent.");
+      }
+      const provider = await this.options.createProvider(using);
+      assertNotCancelled(signal);
+      await validateSource?.();
+      return call(provider);
     };
     const providerCallForRequest = <T>(bytes: number, call: (provider: GenerationProvider) => Promise<GenerationResult<T>>) =>
       providerCallFor(descriptor, bytes, call);
@@ -704,6 +726,7 @@ export class ExplanationService {
     // Step lines come from the model, so they are checked against the source before they are saved.
     const explanation = normalizeStepLines(generated.value, target.source);
     assertNotCancelled(signal);
+    await validateSource?.();
 
     progress("checking", "Rechecking source and tracked inputs before saving.");
     const latestInventory = await gatherInventory(root, inventory.snapshot);
@@ -740,6 +763,20 @@ export class ExplanationService {
       savedAt: Date.now()
     };
     progress("saving", "Persisting explanation and its source fingerprints.");
+    const validateCommit = async () => {
+      assertNotCancelled(signal);
+      await validateSource?.();
+      const current = this.options.describeProvider();
+      const inventoryNow = await gatherInventory(root, inventory.snapshot);
+      const targetNow = await this.refreshedTarget(target, document, sourceAtStart);
+      const contextNow = targetNow && await this.functionContext(targetNow, document, inventoryNow);
+      if (vscode.workspace.isTrusted === false || current.kind !== descriptor.kind || current.modelId !== descriptor.modelId ||
+          this.fence(root) !== startingFence || await sharingExclusion(root, target.uri.fsPath) ||
+          !contextNow || !inputsMatch(context.inputs, contextNow.inputs) ||
+          context.inputs.some((input) => !Object.hasOwn(inventoryNow.snapshot, input.path))) {
+        throw new Error("Source or repository context changed before persistence; the explanation was not saved.");
+      }
+    };
     await this.options.store.update(root, (current) => {
       if (this.fence(root) !== startingFence) return current;
       return {
@@ -749,7 +786,7 @@ export class ExplanationService {
           [key]: entry
         }
       };
-    });
+    }, signal, validateCommit);
     if (this.fence(root) !== startingFence) {
       throw new Error("The cache was cleared while generation was active; the result was discarded.");
     }
@@ -917,9 +954,11 @@ export class ExplanationService {
     target: FunctionTarget,
     document: vscode.TextDocument,
     format: ExplanationFormat,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    validateSource?: () => Promise<void>
   ): Promise<ExplanationResult> {
     const startingFence = this.fence(root);
+    await validateSource?.();
     const sourceAtStart = document.getText();
     const descriptor = this.options.describeProvider();
     const exclusion = await sharingExclusion(root, target.uri.fsPath);
@@ -944,9 +983,13 @@ export class ExplanationService {
     if (descriptor.kind !== "mock" && !(await this.options.authorizeExternalData(root, descriptor, requestBytes, signal))) {
       throw new DOMException("External code sharing was not authorized.", "AbortError");
     }
-    const generated = await (await this.options.createProvider(descriptor)).explainFormat(input, signal);
+    const provider = await this.options.createProvider(descriptor);
+    await validateSource?.();
+    assertNotCancelled(signal);
+    const generated = await provider.explainFormat(input, signal);
     assertNotCancelled(signal);
     const added = normalizeStepLines(generated.value, target.source);
+    await validateSource?.();
     const latestTarget = await this.refreshedTarget(target, document, sourceAtStart);
     const latest = latestTarget && await this.findCachedExplanation(root, latestTarget, document);
     if (!latest || await sharingExclusion(root, target.uri.fsPath) ||
@@ -961,6 +1004,19 @@ export class ExplanationService {
       EXPLANATION_PROMPT_VERSION
     );
     const explanation: FunctionExplanation = { ...latest.explanation, ...added };
+    const validateCommit = async () => {
+      assertNotCancelled(signal);
+      await validateSource?.();
+      const current = this.options.describeProvider();
+      const inventoryNow = await gatherInventory(root);
+      const targetNow = await this.refreshedTarget(target, document, sourceAtStart);
+      const contextNow = targetNow && await this.functionContext(targetNow, document, inventoryNow);
+      if (vscode.workspace.isTrusted === false || current.kind !== descriptor.kind || current.modelId !== descriptor.modelId ||
+          this.fence(root) !== startingFence || await sharingExclusion(root, target.uri.fsPath) ||
+          !contextNow || !inputsMatch(saved.context.inputs, contextNow.inputs)) {
+        throw new Error("The function changed before persistence; the view was not saved.");
+      }
+    };
     await this.options.store.update(root, (current) => {
       const record = current.explanations[key];
       if (!record || this.fence(root) !== startingFence) return current;
@@ -968,8 +1024,130 @@ export class ExplanationService {
         ...record, explanation, model: descriptor.modelId,
         formatUsage: { ...record.formatUsage, [format]: generated.usage }
       } } };
-    });
+    }, signal, validateCommit);
     return { ...latest, explanation, usage: generated.usage, cached: false };
+  }
+
+  /** Snapshot cache entries are namespaced and can never satisfy working-file lookup, hover, or prefetch. */
+  private snapshotKey(target: FunctionTarget, scope: SnapshotExplanationSource, descriptor: ProviderDescriptor): string {
+    return cacheKey(["snapshot-context-1", scope.side.path, scope.side.identity, scope.side.fingerprint,
+      scope.occurrenceId, target.symbolId, descriptor.kind, descriptor.modelId, EXPLANATION_PROMPT_VERSION, EXPLANATION_SETTINGS]);
+  }
+
+  private async snapshotContext(target: FunctionTarget, scope: SnapshotExplanationSource): Promise<FunctionContext> {
+    const language = languageFor({ languageId: target.languageId, path: scope.side.path });
+    const preamble = (await language.preamble?.(scope.side.text, scope.side.path) ?? "").slice(0, 4096);
+    return {
+      text: preamble ? `Same-snapshot preamble (bounded to 4096 characters):\n${preamble}` : "",
+      inputs: [{ path: scope.side.path, description: `Isolated snapshot ${scope.side.identity}`, fingerprint: scope.side.fingerprint, depth: 0 }],
+      sourceReferences: [], referenceUris: new Map(),
+      limitations: ["Historical callers and cross-file dependencies were not resolved; only the selected snapshot's function and bounded same-file preamble are used."]
+    };
+  }
+
+  async findSnapshotExplanation(
+    root: string, target: FunctionTarget, scope: SnapshotExplanationSource
+  ): Promise<ExplanationResult | undefined> {
+    await scope.validate();
+    const descriptor = this.options.describeProvider();
+    const key = this.snapshotKey(target, scope, descriptor);
+    const record = (await this.options.store.read(root)).explanations[key];
+    if (!record || record.promptVersion !== EXPLANATION_PROMPT_VERSION) return undefined;
+    return {
+      explanation: record.explanation, context: await this.snapshotContext(target, scope), provider: descriptor,
+      cached: true, stale: false
+    };
+  }
+
+  /** One explicit historical detail/format request; no overview, current dependencies, or file summary. */
+  async explainSnapshot(
+    root: string, target: FunctionTarget, scope: SnapshotExplanationSource,
+    signal?: AbortSignal, format?: ExplanationFormat
+  ): Promise<ExplanationResult> {
+    const requestId = JSON.stringify([root, "snapshot", this.snapshotKey(target, scope, this.options.describeProvider()), format ?? "explanation"]);
+    const pending = this.inFlight.get(requestId);
+    if (pending) return pending;
+    const request = this.explainSnapshotFresh(root, target, scope, signal, format);
+    this.inFlight.set(requestId, request);
+    try {
+      return await request;
+    } finally {
+      if (this.inFlight.get(requestId) === request) this.inFlight.delete(requestId);
+    }
+  }
+
+  private async explainSnapshotFresh(
+    root: string, target: FunctionTarget, scope: SnapshotExplanationSource,
+    signal?: AbortSignal, format?: ExplanationFormat
+  ): Promise<ExplanationResult> {
+    const descriptor = this.options.describeProvider();
+    const startingFence = this.fence(root);
+    const key = this.snapshotKey(target, scope, descriptor);
+    const validate = async () => {
+      assertNotCancelled(signal);
+      const latest = this.options.describeProvider();
+      if (vscode.workspace.isTrusted === false || this.fence(root) !== startingFence ||
+          latest.kind !== descriptor.kind || latest.modelId !== descriptor.modelId ||
+          await sharingExclusion(root, resolve(root, scope.side.path)) ||
+          await (await currentPolicy()).repositoryRestriction(root)) {
+        throw new Error("The snapshot, sharing policy, or model changed; the explanation was not saved.");
+      }
+      await scope.validate();
+      assertNotCancelled(signal);
+    };
+    await validate();
+    const saved = await this.findSnapshotExplanation(root, target, scope);
+    if (format && !saved) throw new Error("Regenerate the snapshot explanation before adding a format.");
+    if (format && saved?.explanation[format]) return saved;
+    if (!format && saved) return saved;
+    const context = await this.snapshotContext(target, scope);
+    const guidance = await languageFor({ languageId: target.languageId, path: scope.side.path }).explanationGuidance?.({
+      path: scope.side.path, text: scope.side.text, line: target.range.start.line,
+      name: target.name, qualifiedName: target.qualifiedName
+    });
+    const common = {
+      repositoryName: basename(root), languageId: target.languageId, functionName: target.qualifiedName,
+      signature: target.signature, source: target.source, ...(guidance ? { guidance } : {})
+    };
+    const explanationInput: ExplanationPromptInput = {
+      ...common, relatedContext: context.text, limitations: context.limitations,
+      formats: this.options.explanationFormats?.() ?? []
+    };
+    const formatInput: FormatPromptInput | undefined = format ? {
+      ...common, format, stepTitles: saved!.explanation.steps.map((step) => step.title)
+    } : undefined;
+    const [system, user] = formatInput ? formatPrompt(formatInput) : explanationPrompt(explanationInput);
+    const bytes = Buffer.byteLength(system + user, "utf8");
+    if (bytes > this.maxRequestBytes()) throw tooLarge("snapshot explanation", bytes, this.maxRequestBytes());
+    if (descriptor.kind !== "mock" && !(await this.options.authorizeExternalData(root, descriptor, bytes, signal))) {
+      throw new DOMException("External code sharing was not authorized.", "AbortError");
+    }
+    await validate();
+    const provider = await this.options.createProvider(descriptor);
+    await validate();
+    const generated = formatInput ? await provider.explainFormat(formatInput, signal)
+      : await provider.explainFunction(explanationInput, signal);
+    await validate();
+    const content = normalizeStepLines(generated.value, target.source);
+    const explanation = {
+      ...(saved?.explanation ?? {}), ...content,
+      limitations: [...new Set([...(saved?.explanation.limitations ?? []), ...((content as Partial<FunctionExplanation>).limitations ?? []), ...context.limitations])]
+    } as FunctionExplanation;
+    await this.options.store.update(root, (cache) => {
+      const previous = cache.explanations[key];
+      const record: ExplanationRecord = {
+        key, symbolId: `snapshot:${scope.occurrenceId}`, languageId: target.languageId, path: scope.side.path,
+        qualifiedName: target.qualifiedName, signature: target.signature, explanation,
+        inputs: context.inputs, overviewVersion: "snapshot-context-1",
+        explanationConfig: fingerprint(EXPLANATION_SETTINGS), promptVersion: EXPLANATION_PROMPT_VERSION,
+        provider: descriptor.kind, model: descriptor.modelId, savedAt: Date.now(),
+        usage: format ? previous?.usage : generated.usage,
+        ...(format ? { formatUsage: { ...previous?.formatUsage, [format]: generated.usage } } : {})
+      };
+      return { ...cache, explanations: { ...cache.explanations, [key]: record } };
+    }, signal, validate);
+    // Persistence rename is the commit point. Do not recheck cancellation after a committed write.
+    return { explanation, context, provider: descriptor, usage: generated.usage, cached: false, stale: false };
   }
 
   /** Cache-only lookup of the AI summary of a file; `current` is false when the file changed since. */
@@ -1217,7 +1395,7 @@ export class ExplanationService {
   /** Cache-only lookup of a saved comparison for exactly these two sides; never generates. */
   async findComparison(snapshot: ComparisonSnapshot): Promise<SavedComparison | undefined> {
     const record = (await this.options.store.read(snapshot.root)).comparisons?.[comparisonKey(snapshot, this.options.describeProvider())];
-    return record ? savedComparison(record, snapshot) : undefined;
+    return record?.promptVersion === COMPARISON_PROMPT_VERSION && record.catalogue?.version === 1 ? savedComparison(record, snapshot) : undefined;
   }
 
   /**
@@ -1253,6 +1431,7 @@ export class ExplanationService {
       languageId: bundledLanguageIdForPath(path) ?? (extname(path).slice(1) || "text"),
       original: side(snapshot.original),
       modified: side(snapshot.modified),
+      catalogue: await comparisonCatalogue(snapshot),
       ...(repositoryPurpose ? { repositoryPurpose } : {})
     };
     const [system, user] = comparisonPrompt(input);
@@ -1262,17 +1441,26 @@ export class ExplanationService {
     if (descriptor.kind !== "mock" && !(await this.options.authorizeExternalData(root, descriptor, requestBytes, signal))) {
       throw new DOMException("External code sharing was not authorized.", "AbortError");
     }
-    const generated = await (await this.options.createProvider(descriptor)).explainComparison(input, signal);
+    const validate = async () => {
+      const latest = await reread();
+      assertNotCancelled(signal);
+      const current = this.options.describeProvider();
+      if (vscode.workspace.isTrusted === false || current.kind !== descriptor.kind || current.modelId !== descriptor.modelId ||
+          this.fence(root) !== startingFence || comparisonProblem(latest) ||
+          JSON.stringify(latest) !== JSON.stringify(snapshot) ||
+          await sharingExclusion(root, resolve(root, snapshot.original.path)) || await sharingExclusion(root, resolve(root, snapshot.modified.path))) {
+        throw new Error("The files changed while the change was being explained, so the result was discarded.");
+      }
+    };
+    await validate();
+    const provider = await this.options.createProvider(descriptor);
+    await validate();
+    const generated = await provider.explainComparison(input, signal);
     assertNotCancelled(signal);
-    const latest = await reread();
-    assertNotCancelled(signal);
-    if (this.fence(root) !== startingFence ||
-        latest.original.fingerprint !== snapshot.original.fingerprint || latest.original.identity !== snapshot.original.identity ||
-        latest.modified.fingerprint !== snapshot.modified.fingerprint || latest.modified.identity !== snapshot.modified.identity) {
-      throw new Error("The files changed while the change was being explained, so the result was discarded.");
-    }
+    await validate();
     const comparison: FileComparison = {
       ...generated.value,
+      limitations: [...new Set([...generated.value.limitations, ...input.catalogue!.limitations])],
       changes: generated.value.changes.map((change) => ({
         ...change,
         original: checkedSpan(change.original, snapshot.original),
@@ -1280,6 +1468,7 @@ export class ExplanationService {
       }))
     };
     const record: ComparisonRecord = {
+      catalogue: input.catalogue,
       original: sideRecord(snapshot.original),
       modified: sideRecord(snapshot.modified),
       comparison,
@@ -1295,7 +1484,7 @@ export class ExplanationService {
       if (this.fence(root) !== startingFence || signal?.aborted) return current;
       saved = true;
       return { ...current, comparisons: { ...current.comparisons, [comparisonKey(snapshot, descriptor)]: record } };
-    }, signal);
+    }, signal, validate);
     if (!saved) {
       assertNotCancelled(signal);
       throw new Error("The files changed while the change was being explained, so the result was discarded.");
@@ -1316,6 +1505,7 @@ export class ExplanationService {
 function savedComparison(record: ComparisonRecord, snapshot: ComparisonSnapshot): SavedComparison {
   return {
     comparison: record.comparison,
+    catalogue: record.catalogue,
     current: record.original.fingerprint === snapshot.original.fingerprint && record.modified.fingerprint === snapshot.modified.fingerprint,
     savedAt: record.savedAt,
     model: record.model,

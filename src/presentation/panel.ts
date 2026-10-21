@@ -152,11 +152,39 @@ export interface ChangeLinkView {
   readonly caption: string;
 }
 
+/** A function only one version has: what it does (or did), with its full explanation on request. */
+export interface ChangeFunctionCardView {
+  /**
+   * Host-issued id: the card's element id, and the `entryId` of its expand,
+   * regenerate, cancelEntry, addFormat, and revealItem messages.
+   */
+  readonly id: string;
+  readonly name: string;
+  /** For example "Function" or "Method". */
+  readonly kindLabel: string;
+  /** The comparison's short summary of what it does (added) or did (removed). */
+  readonly summary: string;
+  /** Its lines in its own side of the diff; left out while the comparison is outdated. */
+  readonly link?: ChangeLinkView;
+  /** Whether Explain may be offered; when false, `note` says why. */
+  readonly canExplain: boolean;
+  readonly note?: string;
+  /** The normal function explanation, once saved or requested; absent until then. */
+  readonly explanation?: ExplanationView;
+}
+
 /** What a diff's saved explanation says; all text, rendered as text. */
 export interface ChangeResultView {
   readonly summary: string;
+  /** Functions only the modified version has. */
+  readonly added?: readonly ChangeFunctionCardView[];
+  /** Functions only the original version has. */
+  readonly removed?: readonly ChangeFunctionCardView[];
+  /** Behavioral changes to functions both versions have. */
   readonly changes: ReadonlyArray<{
     readonly visualScopeId?: string;
+    /** The changed function's name, when the change belongs to one. */
+    readonly functionName?: string;
     readonly title: string;
     readonly before: string;
     readonly after: string;
@@ -170,6 +198,7 @@ export interface ChangeResultView {
     readonly originalLinks: Readonly<Record<string, string>>;
     readonly modifiedLinks: Readonly<Record<string, string>>;
   }>;
+  /** Changes outside any function ("Other changes"). */
   readonly outside: string;
   readonly possibleEffects: readonly string[];
   readonly limitations: readonly string[];
@@ -2060,11 +2089,56 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
       inline(summary, result.summary);
       summary.title = "AI-generated explanation of this change";
       parts.push(summary);
-      if (result.changes.length) parts.push(el("h2", "folder-heading", "What changed"));
+      const outdated = Boolean(result.outdated || change.status === "outdated");
+      const renderFunctionCards = (heading, cards) => {
+        if (!cards || !cards.length) return;
+        parts.push(el("h2", "folder-heading", heading));
+        for (const card of cards) {
+          const entry = el("section", "entry depth-0 kind-function");
+          entry.id = card.id;
+          const title = el("h3");
+          title.append(el("span", "kind", card.kindLabel));
+          if (card.link && !outdated) {
+            const name = action("", () => post({ type: "navigate", referenceId: card.link.referenceId }), "heading-name");
+            name.title = "Go to source: " + card.name;
+            name.append(el("code", "", card.name));
+            title.append(name);
+          } else {
+            title.append(el("code", "heading-name", card.name));
+          }
+          entry.append(title, inline(el("p", "line-item"), card.summary));
+          if (card.explanation) {
+            const explanationOutdated = outdated || card.explanation.status === "outdated";
+            const view = {
+              ...card.explanation,
+              entryId: card.id,
+              functionName: card.name,
+              references: explanationOutdated ? [] : card.explanation.references,
+              linked: explanationOutdated ? undefined : card.explanation.linked
+            };
+            const ai = el("div", "ai-section");
+            ai.setAttribute("aria-label", "AI explanation of " + card.name);
+            ai.append(renderAiBody(view));
+            entry.append(ai);
+          } else if (card.canExplain) {
+            const explain = el("button", "explain", "Explain");
+            explain.type = "button";
+            explain.setAttribute("aria-label", "Explain " + card.name + " with AI");
+            explain.addEventListener("click", () => post({ type: "expand", entryId: card.id }));
+            entry.append(explain);
+          } else if (card.note) {
+            entry.append(el("p", "muted small", card.note));
+          }
+          parts.push(entry);
+        }
+      };
+      renderFunctionCards("Added", result.added);
+      if (result.changes.length) parts.push(el("h2", "folder-heading", "Changed"));
       const visualScopes = result.visualScopes || [];
       const usedScopes = new Set();
       for (const [index, item] of result.changes.entries()) {
         const section = el("section", "change-item");
+        if (item.functionName && item.functionName !== item.title) section.append(el("p", "muted small", item.functionName));
         section.append(inline(el("h3"), item.title));
         if (item.links.length) {
           const links = el("div", "change-links");
@@ -2094,7 +2168,8 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
         section.append(renderComparisonVisual(visual, change, result.outdated || change.status === "outdated", JSON.stringify([change.key, visual.scope.id])));
         parts.push(section);
       }
-      if (result.outside) parts.push(el("h2", "folder-heading", "Outside functions"), inline(el("p"), result.outside));
+      renderFunctionCards("Removed", result.removed);
+      if (result.outside) parts.push(el("h2", "folder-heading", "Other changes"), inline(el("p"), result.outside));
       if (result.possibleEffects.length) {
         parts.push(el("h2", "folder-heading", "Possible consequences"), el("p", "muted small", "Not shown by this code; things worth checking."));
         const list = el("ul");

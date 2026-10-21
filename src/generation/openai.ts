@@ -105,7 +105,8 @@ export class OpenAIProvider implements GenerationProvider {
       originalLines: lineCount(input.original),
       modifiedLines: lineCount(input.modified),
       originalPresent: input.original.present,
-      modifiedPresent: input.modified.present
+      modifiedPresent: input.modified.present,
+      catalogue: input.catalogue
     }), signal, MAX_COMPARISON_OUTPUT_TOKENS);
   }
 

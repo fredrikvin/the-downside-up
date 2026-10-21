@@ -42,9 +42,16 @@ and billing.
   folder from the Explorer, or navigate the breadcrumbs. Project maps show
   parts and connections; folder pages offer summaries and main flows.
 - **Understand a change.** With the preview open, show a Git diff in VS Code
-  and click **Explain changes** to compare the behavior on both sides in
-  plain-language steps, pseudocode, and flowcharts, alongside the summary and
-  before/after explanation. These use the same underlined tabs and subtle
+  and click **Explain changes**. The result groups functions into **Added**,
+  **Changed**, and **Removed**, followed by **Other changes** for non-function
+  edits. Added and Removed functions get a short summary and an **Explain**
+  button; only that explicit action requests their normal Steps, Pseudocode,
+  and Flowchart detail. Changed functions retain before/after/when/flow items
+  and paired visuals. Signature-only changes count; pure comments and
+  formatting do not. Renames, container moves, and ambiguous duplicates are
+  removed+added, without guessed rename detection. Incomplete discovery falls
+  back to an explicitly unclassified textual comparison, without Added/Removed
+  cards. The views use the same underlined tabs and subtle
   background highlights as normal files; pseudocode rows have no link styling.
   Flowchart highlights follow the node's shape with a slightly larger halo.
   Click a visual item to focus and select its source lines in the matching
@@ -52,12 +59,22 @@ and billing.
   With **Prefetch** enabled and sharing already approved, the comparison
   preloads automatically when the preview shows the diff. Otherwise,
   **Explain changes** sends both versions of that one file.
-  All three views come from one compact paired response. Failed responses
+  All comparison summaries and Changed visuals come from **one request per
+  file**. Review and diff prefetch never request card details. Each uncached
+  detail is a separate request; a working-side addition can first prime/review
+  project context with the separately consented Overview model, but does not
+  request an incidental file summary. Removed functions and revision/index-side
+  additions use only their own snapshot's function and bounded same-file
+  preamble, with a limitation: historical callers and cross-file dependencies
+  are not resolved. They never use today's repository overview or dependencies.
+  Missing formats require their own explicit **Generate** request.
+  Failed responses
   report incomplete JSON, malformed JSON, or schema validation errors without
   exposing source text or silently retrying.
 - **Prepare a review.** Run **Downside Up: Review Changes…**, select a
   comparison, and confirm the number of changed files to explain; each opens in
-  VS Code's native diff.
+  VS Code's native diff. The confirmed count remains one comparison per file;
+  Added/Removed details are not included or generated in the background.
 - **Choose models by role.** **Functions** handles explanations and file
   summaries. **Project overview** handles repository context, architecture
   maps, folder summaries, and flows.

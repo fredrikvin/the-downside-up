@@ -2,9 +2,9 @@ import { UNRESOLVED_DEPENDENCIES, type LanguageSupport } from "../support";
 import { goFileImports } from "./imports";
 import { findGoDependencies } from "./dependencies";
 import { describeGoSource } from "./outline";
-import { findGoFunction, initializeGoParserAt, listGoFunctions, withGoSyntaxTree } from "./syntax";
+import { findGoFunction, goComparisonFunctions, initializeGoParserAt, listGoFunctions, withGoSyntaxTree } from "./syntax";
 import { fingerprint } from "../../core/fingerprint";
-import { structuralTokens } from "../treeSitter";
+import { namedChildren, structuralTokens } from "../treeSitter";
 
 export const goSupport: LanguageSupport = {
   name: "Go",
@@ -13,6 +13,12 @@ export const goSupport: LanguageSupport = {
   initialize: initializeGoParserAt,
   findFunction: findGoFunction,
   listFunctions: (source) => listGoFunctions({ getText: () => source }),
+  comparisonFunctions: goComparisonFunctions,
+  async preamble(source) {
+    return (await withGoSyntaxTree(source, (root) => namedChildren(root)
+      .filter((node) => node.type === "package_clause" || node.type === "import_declaration")
+      .map((node) => node.text).join("\n"))) ?? "";
+  },
   describeSource: describeGoSource,
   async textFingerprint(source) {
     const tokens = await withGoSyntaxTree(source, structuralTokens);

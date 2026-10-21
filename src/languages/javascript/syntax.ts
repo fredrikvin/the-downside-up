@@ -5,6 +5,8 @@ import { cacheKey, fingerprint } from "../../core/fingerprint";
 import type { FunctionTarget } from "../../core/types";
 import type { FunctionSlice } from "../support";
 import { namedChildren, structuralTokens, treeSitterGrammar } from "../treeSitter";
+import { comparisonDiscovery, comparisonFunction, comparisonTokens } from "../treeSitter";
+import type { FunctionDiscovery } from "../support";
 
 // `.ts` files need the TypeScript grammar: in TSX, `<T>(x) => x` and `<T>value` read as JSX.
 const typescriptGrammar = treeSitterGrammar("tree-sitter-typescript.wasm", "TypeScript");
@@ -262,6 +264,29 @@ export async function listJavaScriptFunctions(source: string, path: string): Pro
     fingerprint: fingerprint(structuralTokens(entry.node)),
     kind: entry.kind
   })))) ?? [];
+}
+
+export async function javascriptComparisonFunctions(source: string, path: string): Promise<FunctionDiscovery> {
+  return (await withJavaScriptSyntaxTree(source, path, (root) => comparisonDiscovery(root,
+    javascriptFunctionNodes(root).filter((entry) => Boolean(field(entry.fn, "body"))).map((entry) => {
+      const base = comparisonFunction(entry.node, entry.name ?? entry.fn, entry.qualifiedName,
+        JSON.stringify([entry.containers, entry.simpleName, entry.kind === "method" ? "method" : "function"]),
+        entry.kind, javascriptSignature(entry));
+      // Overload declarations belong to the implementation, not to separate Explain cards.
+      const overloads: string[] = [];
+      let previous = entry.node.previousNamedSibling;
+      while (previous) {
+        if (previous.type.includes("comment")) { previous = previous.previousNamedSibling; continue; }
+        const declaration = field(previous, "declaration") ?? previous;
+        if (!["function_signature", "method_signature", "abstract_method_signature"].includes(declaration.type) ||
+            field(declaration, "name")?.text !== entry.simpleName) break;
+        overloads.unshift(comparisonTokens(declaration));
+        previous = previous.previousNamedSibling;
+      }
+      return { ...base, name: entry.simpleName,
+        fingerprint: fingerprint(JSON.stringify([base.fingerprint, overloads])),
+        signatureFingerprint: fingerprint(JSON.stringify([comparisonTokens(entry.node, field(entry.fn, "body")?.id), overloads])) };
+    })))) ?? { status: "unavailable", entries: [], limitations: [] };
 }
 
 /** Converts a Tree-sitter point to a VS Code position; both count columns in UTF-16 code units. */

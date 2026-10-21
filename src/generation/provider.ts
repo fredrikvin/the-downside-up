@@ -1,5 +1,6 @@
 import type {
   ExplanationFormat,
+  ComparisonCatalogue,
   FileComparisonDraft,
   FileSummary,
   FolderSummary,
@@ -31,7 +32,7 @@ export interface ExplanationPromptInput {
   readonly functionName: string;
   readonly signature: string;
   readonly source: string;
-  readonly overview: RepositoryOverview;
+  readonly overview?: RepositoryOverview;
   readonly relatedContext: string;
   readonly limitations: readonly string[];
   /** Extra views to include besides the steps. */
@@ -79,6 +80,7 @@ export interface ComparisonPromptInput {
   readonly original: ComparisonSidePromptInput;
   readonly modified: ComparisonSidePromptInput;
   readonly repositoryPurpose?: string;
+  readonly catalogue?: ComparisonCatalogue;
 }
 
 /** One file or subfolder of a folder being summarized; names and summaries only, never code. */

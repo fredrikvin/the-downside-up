@@ -2,7 +2,8 @@ import type { LanguageSupport } from "../support";
 import { findSqlDependencies } from "./dependencies";
 import { sqlFingerprint } from "./lexer";
 import { describeSqlSource } from "./outline";
-import { findSqlFunction, listSqlFunctions, sqlDefinitions, sqlPreamble } from "./syntax";
+import { findSqlFunction, listSqlFunctions, sqlDefinitions, sqlPreamble, sqlStatements } from "./syntax";
+import { lexSql, sqlPosition, word } from "./lexer";
 
 export const sqlSupport: LanguageSupport = {
   name: "SQL",
@@ -10,6 +11,31 @@ export const sqlSupport: LanguageSupport = {
   fileExtensions: [".sql"],
   findFunction: findSqlFunction,
   listFunctions: listSqlFunctions,
+  async comparisonFunctions(source) {
+    const definitions = sqlDefinitions(source).filter((entry) => ["function", "procedure", "trigger"].includes(entry.kind));
+    const knownStarts = new Set(definitions.map((entry) => entry.start));
+    const incomplete = lexSql(source).some((token) => !token.closed) ||
+      definitions.some((entry) => entry.body.length === 0) ||
+      sqlStatements(source).some((tokens) => word(tokens[0], "create") &&
+        tokens.slice(1, 24).some((token) => ["function", "procedure", "trigger"].some((kind) => word(token, kind))) &&
+        !knownStarts.has(tokens[0]!.start));
+    return {
+      status: incomplete || definitions.length > 500 ? "partial" : "complete",
+      entries: definitions.slice(0, 500).map((entry) => {
+        const start = sqlPosition(source, entry.start);
+        const end = sqlPosition(source, entry.end);
+        const name = sqlPosition(source, entry.name.start);
+        return {
+          name: entry.name.name, qualifiedName: entry.qualifiedName, kind: entry.kind,
+          matchKey: JSON.stringify([entry.kind, entry.name.parts]), signature: entry.signature,
+          signatureFingerprint: sqlFingerprint(entry.signature), source: entry.source,
+          fingerprint: sqlFingerprint(entry.source), startLine: start.line, endLine: end.line,
+          startColumn: start.character, endColumn: end.character, nameLine: name.line, nameColumn: name.character
+        };
+      }),
+      limitations: incomplete ? ["SQL routine discovery is incomplete for this snapshot."] : []
+    };
+  },
   describeSource: describeSqlSource,
   textFingerprint: async (source) => sqlFingerprint(source),
   preamble: async (source) => sqlPreamble(source),

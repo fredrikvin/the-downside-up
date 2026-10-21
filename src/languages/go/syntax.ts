@@ -4,6 +4,8 @@ import type { Position, TextDocument } from "vscode";
 import { cacheKey, fingerprint } from "../../core/fingerprint";
 import type { FunctionTarget } from "../../core/types";
 import { namedChildren, pointToPosition, structuralTokens, treeSitterGrammar } from "../treeSitter";
+import { comparisonDiscovery, comparisonFunction } from "../treeSitter";
+import type { FunctionDiscovery } from "../support";
 
 const require = createRequire(__filename);
 const grammar = treeSitterGrammar("tree-sitter-go.wasm", "Go");
@@ -126,4 +128,11 @@ export async function listGoFunctions(document: Pick<TextDocument, "getText">): 
       fingerprint: fingerprint(structuralTokens(node))
     }))
   )) ?? [];
+}
+
+export async function goComparisonFunctions(source: string): Promise<FunctionDiscovery> {
+  return (await withGoSyntaxTree(source, (root) => comparisonDiscovery(root, goFunctionNodes(root).map(({ node, name, qualifiedName }) =>
+    comparisonFunction(node, name, qualifiedName, JSON.stringify([goReceiverType(node) ?? "", name.text]),
+      node.type === "method_declaration" ? "method" : "function", goSignature(node))
+  )))) ?? { status: "unavailable", entries: [], limitations: [] };
 }
