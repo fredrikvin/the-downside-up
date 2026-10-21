@@ -368,7 +368,6 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
     .comparison-sides { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; }
     .comparison-side { min-width: 0; }
     .comparison-side h4 { margin: 8px 0; }
-    .comparison-correspondence { border-top: 1px solid var(--separator); margin-top: 12px; padding-top: 8px; }
     @media (max-width: 600px) { .comparison-sides { grid-template-columns: minmax(0, 1fr); } }
     .notice { margin: 8px 0 0; font-size: .9em; white-space: pre-line; }
     .notice.error, .error { color: var(--vscode-errorForeground); }
@@ -1918,13 +1917,6 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
         const links = side === "original" ? view.originalLinks : view.modifiedLinks;
         return !outdated && links && Object.prototype.hasOwnProperty.call(links, occurrenceId) ? links[occurrenceId] : undefined;
       }
-      function sourceLabel(text, side, occurrenceId) {
-        const referenceId = sourceReference(side, occurrenceId);
-        if (!referenceId) return el("span", "", text);
-        const link = action(text, () => post({ type: "navigate", referenceId }));
-        link.setAttribute("aria-label", text + "; reveal in " + (side === "original" ? change.originalLabel : change.modifiedLabel));
-        return link;
-      }
       function drawSide(sideName, format) {
         const side = scope[sideName];
         const column = el("section", "comparison-side");
@@ -2025,39 +2017,6 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
       const chosen = comparisonTabChoices.get(choiceKey);
       select(formats.some((item) => item[0] === chosen) ? chosen : "steps");
       section.append(tabs, pane);
-      if (scope.unitCorrespondences.length || scope.edgeCorrespondences.length) {
-        const correspondence = el("details", "comparison-correspondence");
-        correspondence.append(el("summary", "", "Suggested correspondences"));
-        correspondence.append(el("p", "muted small", "AI-generated matches, including unchanged operations and flows; not proof of equivalent behavior."));
-        for (const match of scope.unitCorrespondences) {
-          const original = scope.units.find((unit) => unit.id === match.originalUnitId && unit.side === "original");
-          const modified = scope.units.find((unit) => unit.id === match.modifiedUnitId && unit.side === "modified");
-          if (!original || !modified) continue;
-          const row = el("div");
-          const labels = el("p");
-          labels.append(sourceLabel(original.label, "original", original.occurrence.id), document.createTextNode(" ↔ "), sourceLabel(modified.label, "modified", modified.occurrence.id));
-          row.append(labels);
-          if (match.meaning) row.append(el("p", "", "Meaning: " + match.meaning));
-          if (match.difference) row.append(el("p", "", "Difference: " + match.difference));
-          correspondence.append(row);
-        }
-        for (const match of scope.edgeCorrespondences) {
-          function edgeLabel(side, id) {
-            const edge = side.flowchart.edges.find((item) => item.id === id);
-            if (!edge) return undefined;
-            const from = side.flowchart.nodes.find((node) => node.id === edge.from);
-            const to = side.flowchart.nodes.find((node) => node.id === edge.to);
-            return from && to ? from.label + " → " + to.label + (edge.label ? ": " + edge.label : "") : undefined;
-          }
-          const original = edgeLabel(scope.original, match.originalEdgeId);
-          const modified = edgeLabel(scope.modified, match.modifiedEdgeId);
-          if (!original || !modified) continue;
-          correspondence.append(el("p", "", "Flow: " + original + " ↔ " + modified));
-          if (match.meaning) correspondence.append(el("p", "", "Meaning: " + match.meaning));
-          if (match.difference) correspondence.append(el("p", "", "Difference: " + match.difference));
-        }
-        section.append(correspondence);
-      }
       return section;
     }
 

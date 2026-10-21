@@ -428,9 +428,8 @@ When a comparison includes a visual scope, its change card also offers
 versions together. Each side has its own ordered explanation and control-flow
 chart from the exact numbered source; the model supplies explicit operation
 and edge correspondences, so similar labels alone do not imply a match.
-These suggested matches include unchanged operations and flows; they are
-available in a collapsed **Suggested correspondences** disclosure rather than
-listed as additional changes.
+These suggested matches include unchanged operations and flows. They remain
+internal comparison data and are not rendered in the preview.
 The tabs, numbered steps, and unnumbered, indented pseudocode share the
 normal-file styles. Linked rows retain ordinary text styling, with a subtle
 background highlight on hover or keyboard focus rather than link colours
