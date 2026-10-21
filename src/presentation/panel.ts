@@ -2026,8 +2026,9 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
       select(formats.some((item) => item[0] === chosen) ? chosen : "steps");
       section.append(tabs, pane);
       if (scope.unitCorrespondences.length || scope.edgeCorrespondences.length) {
-        const correspondence = el("div", "comparison-correspondence");
-        correspondence.append(el("p", "muted small", "Suggested correspondences · AI-generated, not proof of equivalent behavior."));
+        const correspondence = el("details", "comparison-correspondence");
+        correspondence.append(el("summary", "", "Suggested correspondences"));
+        correspondence.append(el("p", "muted small", "AI-generated matches, including unchanged operations and flows; not proof of equivalent behavior."));
         for (const match of scope.unitCorrespondences) {
           const original = scope.units.find((unit) => unit.id === match.originalUnitId && unit.side === "original");
           const modified = scope.units.find((unit) => unit.id === match.modifiedUnitId && unit.side === "modified");

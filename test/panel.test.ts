@@ -722,6 +722,11 @@ describe("change view", () => {
     expect(visibleTexts()).toContain("Coverage: Selected routine only");
     expect(elements().some((node) => node.tagName === "script" || node.tagName === "b")).toBe(false);
     expect(elements().find((node) => node.className === "comparison-visual")).toBeDefined();
+    const correspondences = elements().find((node) => node.className === "comparison-correspondence")!;
+    expect(correspondences.tagName).toBe("details");
+    expect(correspondences.attributes.has("open")).toBe(false);
+    expect(correspondences.children[0]).toMatchObject({ tagName: "summary", textContent: "Suggested correspondences" });
+    expect(texts([correspondences]).join(" ")).toContain("including unchanged operations and flows");
     expect(elements().find((node) => node.attributes.get("role") === "tablist")?.attributes.get("aria-label")).toBe("Paired <b>routine</b> comparison views");
     expect(elements().find((node) => node.textContent === "Steps")?.attributes.get("aria-selected")).toBe("true");
     expect(elements().filter((node) => node.attributes.get("role") === "tab").every((node) => node.className === "tab")).toBe(true);
