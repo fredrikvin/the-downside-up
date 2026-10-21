@@ -467,6 +467,13 @@ describe("preview webview document", () => {
     }
     choice.listeners.get("keydown")?.({ target: choice, key: "Enter", preventDefault() {}, stopPropagation() {} });
     expect(messages).toEqual([{ type: "revealItem", entryId: "f", kind: "node", index: 1 }]);
+    // Pressing a node focuses it without the scroll a default focus would cause, and leaves its container alone.
+    let prevented = 0;
+    const press = { target: choice, button: 0, preventDefault() { prevented++; }, stopPropagation() {} };
+    nodes[0]!.listeners.get("mousedown")?.(press);
+    expect([prevented, nodes[0]!.focused]).toEqual([0, false]);
+    choice.listeners.get("mousedown")?.(press);
+    expect([prevented, choice.focused]).toEqual([1, true]);
   });
 
   it("retains a source-selected node when the flowchart is drawn after its highlight arrives", () => {

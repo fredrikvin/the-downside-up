@@ -847,6 +847,14 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
         post({ type: "revealItem", entryId: view.entryId, kind, index });
       };
       item.addEventListener("click", (clicked) => reveal(clicked.target));
+      if (attribute === "node") {
+        // Focusing a clicked node would scroll a tall node into view, moving the preview the reader is using.
+        item.addEventListener("mousedown", (pressed) => {
+          if (pressed.button !== 0 || (pressed.target && pressed.target.closest && pressed.target.closest("[data-node]") !== item)) return;
+          pressed.preventDefault();
+          item.focus({ preventScroll: true });
+        });
+      }
       item.addEventListener("keydown", (pressed) => {
         const name = pressed["key"];
         if (pressed.target !== item) return;
@@ -1026,6 +1034,8 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
      */
     function renderFlowchart(chart, view, links) {
       const scroll = el("div", "flow-scroll");
+      // The chart is fitted to this box, so a focus or reveal must never scroll inside it.
+      scroll.addEventListener("scroll", () => { scroll.scrollTop = 0; scroll.scrollLeft = 0; });
       const levels = [];
       const decisions = [];
       let rowLimit = Infinity;
@@ -2307,9 +2317,9 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
         if (visible) return;
         ignoreScrollUntil = performance.now() + 200;
         const centered = item && rect.height < window.innerHeight - inset;
-        target.scrollIntoView({ block: centered ? "center" : "start" });
-        // A tall item would start under the sticky heading.
-        if (item && !centered) window.scrollBy(0, -inset);
+        // Only the page scrolls; scrollIntoView would also shift a flowchart within its fitted box.
+        // A tall item starts below the sticky heading.
+        window.scrollBy(0, centered ? rect.top + rect.height / 2 - (inset + window.innerHeight) / 2 : rect.top - (item ? inset : 0));
       });
     }
 
