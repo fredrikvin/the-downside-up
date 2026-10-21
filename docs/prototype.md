@@ -91,6 +91,17 @@ because VS Code would also mark every other line with the same text; the
 clicked item stays highlighted until the cursor moves. Pseudocode is laid out
 from the code it describes: each linked line takes the indentation of its
 source line, and a blank line appears where the code has one.
+Ordinary and paired-diff pseudocode share a small local lexer that highlights
+control words (such as if, otherwise, for each, and return), quoted strings,
+numbers, boolean/null literals, operators, and backticked code names.
+Unrecognized prose stays plain text; this is a readability aid, not a parser
+or a claim that pseudocode is executable. Colours distinguish light, dark,
+and high-contrast themes, and control words are also bold. Only host-created
+spans/code elements are used, with token content assigned as text; generated
+HTML is never parsed. No external highlighting library, network resource,
+prompt change, cache invalidation, or additional request is needed, so saved
+explanations gain highlighting too. Existing source links and indentation
+are preserved.
 
 `downsideUp.explanations.formats` adds two views of "What happens", both enabled by default,
 shown as tabs beside the steps (`downsideUp.explanations.initialFormat` picks
@@ -117,7 +128,14 @@ anything other than a show node, in itself, in a cycle, or more than 3 levels
 deep is drawn at the top level instead, and an edge between nodes at
 different nesting levels is dropped, since each level is drawn as its own
 flow. The panel draws the
-flowchart itself from HTML boxes and SVG lines, with every label set as text:
+flowchart itself from HTML nodes and SVG shapes/lines, with every label set as text.
+Decisions (including if/loop tests marked as decisions) use diamonds,
+start/end nodes remain rounded, and actions remain boxes. A diamond sizes
+itself around its unrotated label and any source caption; connectors meet its
+top, right, bottom, or left vertex, and focus/selection follows the diamond
+border. The same renderer covers ordinary, nested, project, and paired-diff
+flows, including saved charts, without regeneration.
+In the layout,
 the main path runs downward in the first column, an early exit sits to the
 right of the node it leaves from, and edges that loop back are routed up the
 left side, so loops and exits never cross. Room for loops is reserved only when

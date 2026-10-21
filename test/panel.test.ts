@@ -53,7 +53,7 @@ function webviewHelpers() {
     if (!elements.has(id)) elements.set(id, new TestElement("button"));
     return elements.get(id)!;
   };
-  const helpers = new Function("acquireVsCodeApi", "document", "window", "requestAnimationFrame", script + "\nreturn { layoutFlow, downwardPath, renderEntry, renderAiBody, missingFormat, renderHeader, renderCrumbs, renderActivity, renderPageActions, renderChange, setFormats: (formats) => { state = { formats }; } };")(
+  const helpers = new Function("acquireVsCodeApi", "document", "window", "requestAnimationFrame", script + "\nreturn { layoutFlow, downwardPath, renderPseudocode, renderFlowchart, renderEntry, renderAiBody, missingFormat, renderHeader, renderCrumbs, renderActivity, renderPageActions, renderChange, setFormats: (formats) => { state = { formats }; } };")(
     () => ({ getState: () => ({}), postMessage: (message: unknown) => messages.push(message) }),
     {
       getElementById: element,
@@ -66,6 +66,8 @@ function webviewHelpers() {
   ) as {
     layoutFlow(chart: Flowchart, limit?: number): { rows: Flowchart["nodes"][]; back: Set<Flowchart["edges"][number]> };
     downwardPath(points: Array<{ x: number; y: number }>): string;
+    renderPseudocode(lines: NonNullable<NonNullable<ExplanationView["explanation"]>["pseudocode"]>, view: ExplanationView): TestElement;
+    renderFlowchart(chart: Flowchart, view: Pick<ExplanationView, "entryId">, links?: Array<{ target: string; caption: string } | null>): TestElement;
     renderEntry(entry: Record<string, unknown>, views: Map<string, ExplanationView>): TestElement;
     renderAiBody(view: ExplanationView): TestElement;
     missingFormat(view: ExplanationView, format: string): TestElement;
@@ -213,6 +215,7 @@ describe("preview webview document", () => {
     const html = panelHtml("n");
     expect(html).toContain("const offsetForLine = (function offsetForLine(");
     expect(html).toContain("const lineForOffset = (function lineForOffset(");
+    expect(html).toContain("const pseudocodeTokens = (function pseudocodeTokens(");
   });
 
   it("has a webview script that parses", () => {
@@ -355,6 +358,71 @@ describe("preview webview document", () => {
     expect(downwardPath([{ x: 0, y: 0 }, { x: 10, y: 8 }])).toBe("M0,0 V2 C0,4 10,4 10,6 V8");
   });
 
+  it("highlights ordinary pseudocode as text without losing indentation, anchors or keyboard navigation", () => {
+    const { renderPseudocode, messages } = webviewHelpers();
+    const text = 'if `ready` and retries < 3: return "<script>unsafe</script>"';
+    const view: ExplanationView = {
+      entryId: "f", functionName: "run", status: "current", detail: "", references: [], limitations: [],
+      linked: { steps: [], pseudocode: [true], nodes: [] },
+      itemLines: { steps: [], pseudocode: [12], nodes: [] },
+      pseudocodeLayout: [{ level: 2, gap: true }]
+    };
+    const block = renderPseudocode([{ text, depth: 0, startLine: 1, endLine: 1 }], view);
+    const row = block.elements().find((node) => node.className.includes("pseudo-line"))!;
+    expect(row.className).toContain("gap");
+    expect(row.style.paddingLeft).toBe("74px");
+    expect(row.dataset.line).toBe("12");
+    expect(row.elements().filter((node) => node.className === "pseudo-token-keyword").map((node) => node.textContent)).toEqual(["if", "and", "return"]);
+    expect(row.elements().find((node) => node.tagName === "code")?.textContent).toBe("ready");
+    expect(row.elements().find((node) => node.className === "pseudo-token-string")?.textContent).toBe('"<script>unsafe</script>"');
+    expect(row.elements().some((node) => node.tagName === "script")).toBe(false);
+    expect(messages).toEqual([]);
+    const event = { key: "Enter", target: row, preventDefault() {}, stopPropagation() {} };
+    row.listeners.get("keydown")?.(event);
+    expect(messages).toEqual([{ type: "revealItem", entryId: "f", kind: "pseudocode", index: 0 }]);
+    const html = panelHtml("n");
+    expect(html).toContain(".vscode-light .pseudo-code");
+    expect(html).toContain(".vscode-high-contrast .pseudo-code");
+  });
+
+  it("draws decision diamonds around labels and source captions, including nested charts and loop edges", () => {
+    const { renderFlowchart, messages, flushFrames } = webviewHelpers();
+    const chart: Flowchart = {
+      nodes: [
+        { id: "start", kind: "start", label: "Start", startLine: 0, endLine: 0 },
+        { id: "decision", kind: "decision", label: "More work?", startLine: 1, endLine: 1 },
+        { id: "show", kind: "show", label: "Results", startLine: 2, endLine: 2 },
+        { id: "nested", kind: "decision", parent: "show", label: "<b>Visible?</b>", startLine: 2, endLine: 2 }
+      ],
+      edges: [
+        { from: "start", to: "decision", label: "" },
+        { from: "decision", to: "show", label: "no" },
+        { from: "decision", to: "decision", label: "yes" }
+      ]
+    };
+    const graph = renderFlowchart(chart, { entryId: "f" }, [null, { target: "host", caption: "Source lines 1-2" }, null, null]);
+    flushFrames();
+    const decisions = graph.elements().filter((node) => node.className.startsWith("flow-node kind-decision"));
+    expect(decisions).toHaveLength(2);
+    for (const decision of decisions) {
+      expect(decision.style.width).toBe("640px");
+      expect(decision.style.height).toBe("400px");
+      const shape = decision.elements().find((node) => node.tagName === "svg")!;
+      expect(shape.attributes.get("aria-hidden")).toBe("true");
+      expect(shape.attributes.get("preserveAspectRatio")).toBe("none");
+      expect(shape.elements().find((node) => node.tagName === "polygon")?.attributes.get("points")).toBe("50,0 100,50 50,100 0,50");
+    }
+    const linked = decisions.find((node) => node.dataset.flowLink === "1")!;
+    const content = linked.elements().find((node) => node.className === "decision-content")!;
+    expect(content.elements().find((node) => node.className === "flow-ref")?.textContent).toBe("Source lines 1-2");
+    expect(linked.attributes.get("aria-label")).toBe("Decision: More work?; Source lines 1-2");
+    expect(graph.elements().some((node) => node.tagName === "b")).toBe(false);
+    expect(graph.elements().filter((node) => node.attributes.get("class") === "flow-edge")).toHaveLength(3);
+    expect(messages).toEqual([]);
+    linked.listeners.get("click")?.({ preventDefault() {}, stopPropagation() {} });
+    expect(messages).toEqual([{ type: "navigate", referenceId: "host" }]);
+  });
+
   it("shows Explain only for an unexplained entry and renders prefetched loading inline", () => {
     const { renderEntry, messages } = webviewHelpers();
     const entry = {
@@ -453,7 +521,7 @@ describe("change view", () => {
     const { renderChange, messages, flushFrames } = webviewHelpers();
     const cards = renderChange(withVisual());
     const elements = () => cards.flatMap((card) => card.elements());
-    const click = (text: string) => elements().find((node) => node.textContent === text)?.listeners.get("click")?.(event);
+    const click = (text: string) => elements().find((node) => node.listeners.has("click") && (node.textContent === text || node.children.includes(text)))?.listeners.get("click")?.(event);
     const visibleTexts = () => texts(cards).join(" ");
     expect(visibleTexts()).toContain("Before step <script>alert(1)</script>");
     expect(visibleTexts()).toContain("After step <script>alert(1)</script>");
@@ -500,6 +568,34 @@ describe("change view", () => {
     const html = panelHtml("n");
     expect(html).toContain('grid-template-columns: minmax(0, 1fr) minmax(0, 1fr)');
     expect(html).toContain('@media (max-width: 600px) { .comparison-sides { grid-template-columns: minmax(0, 1fr); } }');
+  });
+
+  it("uses the same highlighting and diamonds on both diff sides, retaining only current host links", () => {
+    const original = visualScope();
+    const withDecision = (side: ComparisonVisualScope["original"]): ComparisonVisualScope["original"] => ({
+      ...side,
+      pseudocode: [{ ...side.pseudocode[0]!, text: 'if `ready`: return "<b>yes</b>"' }],
+      flowchart: { ...side.flowchart, nodes: [{ ...side.flowchart.nodes[0]!, kind: "decision", label: "Ready?" }, side.flowchart.nodes[1]!] }
+    });
+    const scope = { ...original, original: withDecision(original.original), modified: withDecision(original.modified) };
+    for (const status of ["current", "outdated"] as const) {
+      const { renderChange, messages, flushFrames } = webviewHelpers();
+      const cards = renderChange({ ...withVisual(scope), status });
+      const elements = () => cards.flatMap((card) => card.elements());
+      elements().find((node) => node.textContent === "Pseudocode")?.listeners.get("click")?.(event);
+      const highlighted = elements().filter((node) => node.className.includes("pseudo-code"));
+      expect(highlighted).toHaveLength(2);
+      expect(highlighted.every((node) => node.elements().some((part) => part.className === "pseudo-token-keyword" && part.textContent === "if"))).toBe(true);
+      expect(elements().some((node) => node.tagName === "b")).toBe(false);
+      expect(highlighted.every((node) => node.tagName === (status === "current" ? "a" : "span"))).toBe(true);
+      expect(messages).toEqual([]);
+      highlighted[0]!.listeners.get("keydown")?.({ ...event, key: "Enter" });
+      expect(messages.splice(0)).toEqual(status === "current" ? [{ type: "navigate", referenceId: "host-original" }] : []);
+      elements().find((node) => node.textContent === "Flowchart")?.listeners.get("click")?.(event);
+      flushFrames();
+      expect(elements().filter((node) => node.tagName === "polygon")).toHaveLength(2);
+      expect(messages).toEqual([]);
+    }
   });
 
   it("keeps comparison tabs local, keyboard accessible, and independent of other change cards", () => {

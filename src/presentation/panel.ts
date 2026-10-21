@@ -6,6 +6,7 @@ import type { FileOverview } from "../context/fileOverview";
 import type { CachedUsage } from "../cache/usage";
 import { lineForOffset, monotonicAnchors, offsetForLine } from "./scrollSync";
 import { structureLayout } from "./structureLayout";
+import { pseudocodeTokens } from "./pseudocode";
 
 export type ExplanationStatus = "loading" | "current" | "outdated" | "cancelled" | "failed";
 
@@ -419,6 +420,22 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
     .pseudo-line.gap { margin-top: 1.1em; }
     .pseudo-line.linked { cursor: pointer; }
     .pseudo-line.linked:hover { background: var(--vscode-list-hoverBackground, rgba(128, 128, 128, .12)); }
+    .pseudo-code {
+      --pseudo-keyword: #c586c0; --pseudo-string: #ce9178; --pseudo-number: #b5cea8; --pseudo-name: #9cdcfe;
+      color: var(--vscode-editor-foreground);
+    }
+    .vscode-light .pseudo-code, .vscode-high-contrast-light .pseudo-code {
+      --pseudo-keyword: #af00db; --pseudo-string: #a31515; --pseudo-number: #098658; --pseudo-name: #001080;
+    }
+    .vscode-high-contrast .pseudo-code, .vscode-high-contrast-light .pseudo-code {
+      --pseudo-keyword: var(--vscode-textLink-foreground); --pseudo-string: var(--vscode-editor-foreground);
+      --pseudo-number: var(--vscode-editor-foreground); --pseudo-name: var(--vscode-textLink-foreground);
+    }
+    .pseudo-token-keyword, .pseudo-token-literal { color: var(--pseudo-keyword); font-weight: 600; }
+    .pseudo-token-string { color: var(--pseudo-string); }
+    .pseudo-token-number { color: var(--pseudo-number); }
+    .pseudo-code .pseudo-token-name { color: var(--pseudo-name); font: inherit; background: none; padding: 0; }
+    .pseudo-token-operator { font-weight: 600; }
     .crumbs { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; margin: 0 0 6px; }
     .crumb { display: inline-flex; align-items: center; gap: 4px; padding: 2px 5px; border: 1px solid transparent; border-radius: 4px; max-width: 100%; box-sizing: border-box; min-width: 0; }
     .crumb-name { overflow-wrap: anywhere; min-width: 0; }
@@ -475,7 +492,16 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
     }
     .flow-node.kind-start, .flow-node.kind-end { border-radius: 999px; }
     .flow-node.kind-end { border-style: dashed; }
-    .flow-node.kind-decision { border: 2px solid var(--vscode-charts-yellow, #c9a000); }
+    .flow-node.kind-decision {
+      display: flex; align-items: center; justify-content: center;
+      max-width: none; padding: 0; border: 0; border-radius: 0; background: none;
+    }
+    .decision-content { position: relative; width: max-content; max-width: 140px; padding: 6px 10px; overflow-wrap: anywhere; }
+    .decision-shape { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; }
+    .decision-shape polygon {
+      fill: var(--vscode-editorWidget-background, var(--vscode-editor-background));
+      stroke: var(--vscode-charts-yellow, #c9a000); stroke-width: 2;
+    }
     /* What a function returns to be shown on screen, drawn like a small window. */
     .flow-node.kind-show {
       --show: var(--vscode-charts-blue, #3794ff);
@@ -494,6 +520,9 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
     .flow-node.linked { cursor: pointer; }
     .flow-node.linked:hover { border-color: var(--vscode-focusBorder); }
     .flow-node.active { outline: 2px solid var(--vscode-textLink-foreground, #3794ff); outline-offset: 2px; }
+    .flow-node.kind-decision:is(.active, :focus-visible) { outline: none; }
+    .flow-node.kind-decision.linked:hover .decision-shape polygon,
+    .flow-node.kind-decision:is(.active, :focus-visible) .decision-shape polygon { stroke: var(--vscode-focusBorder); stroke-width: 3; }
     .flow-edges { position: absolute; left: 0; top: 0; pointer-events: none; overflow: visible; z-index: 0; }
     .flow-edge { fill: none; stroke: var(--vscode-descriptionForeground, #888); stroke-width: 1.3; }
     .flow-arrow { fill: var(--vscode-descriptionForeground, #888); }
@@ -554,6 +583,7 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
     const lineForOffset = (${lineForOffset.toString()});
     const monotonicAnchors = (${monotonicAnchors.toString()});
     const structureLayout = (${structureLayout.toString()});
+    const pseudocodeTokens = (${pseudocodeTokens.toString()});
     const vscode = acquireVsCodeApi();
     const byId = (id) => document.getElementById(id);
     let activityStarted;
@@ -627,6 +657,15 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
         if (!part) return;
         parent.append(index % 2 === 1 ? el("code", "", part) : document.createTextNode(part));
       });
+      return parent;
+    }
+    function highlightPseudocode(parent, text) {
+      parent.classList.add("pseudo-code");
+      for (const token of pseudocodeTokens(text)) {
+        if (!token.kind) parent.append(document.createTextNode(token.text));
+        else parent.append(el(token.kind === "name" ? "code" : "span", "pseudo-token-" + token.kind,
+          token.kind === "name" ? token.text.slice(1, -1) : token.text));
+      }
       return parent;
     }
     function post(message) { vscode.postMessage(message); }
@@ -855,7 +894,7 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
         row.style.paddingLeft = (26 + level * 24) + "px";
         row.style.textIndent = "-20px";
         linkItem(row, view, "pseudocode", index, "pseudo");
-        inline(row, line.text);
+        highlightPseudocode(row, line.text);
         block.append(row);
       });
       return block;
@@ -993,6 +1032,7 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
     function renderFlowchart(chart, view, links) {
       const scroll = el("div", "flow-scroll");
       const levels = [];
+      const decisions = [];
       let rowLimit = Infinity;
       const build = (parentId) => {
         const nodes = chart.nodes.filter((node) => (node.parent || "") === parentId);
@@ -1010,16 +1050,32 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
           const tall = row.some(holds);
           row.forEach((node, columnIndex) => {
             const container = holds(node);
+            const index = chart.nodes.indexOf(node);
             const box = el("div", "flow-node kind-" + node.kind + (container ? " holds" : ""));
+            let content = box;
             if (container) box.append(el("div", "flow-node-label", node.label), build(node.id));
-            else box.textContent = node.label;
+            else if (node.kind === "decision") {
+              const shape = document.createElementNS(SVG, "svg");
+              shape.setAttribute("class", "decision-shape");
+              shape.setAttribute("viewBox", "0 0 100 100");
+              shape.setAttribute("preserveAspectRatio", "none");
+              shape.setAttribute("aria-hidden", "true");
+              shape.setAttribute("focusable", "false");
+              const diamond = document.createElementNS(SVG, "polygon");
+              diamond.setAttribute("points", "50,0 100,50 50,100 0,50");
+              diamond.setAttribute("vector-effect", "non-scaling-stroke");
+              shape.append(diamond);
+              content = el("div", "decision-content", node.label);
+              box.append(shape, content);
+              box.setAttribute("aria-label", "Decision: " + node.label + (links && links[index] ? "; " + links[index].caption : ""));
+            } else box.textContent = node.label;
             box.style.gridRow = String(rowIndex + 1);
             box.style.gridColumn = String(columnIndex + 1);
             if (tall) box.style.alignSelf = "start";
-            const index = chart.nodes.indexOf(node);
-            if (links) linkFlowNode(box, links[index]);
+            if (links) linkFlowNode(box, links[index], content);
             else linkItem(box, view, "node", index, "node");
             boxes.set(node.id, box);
+            if (node.kind === "decision") decisions.push({ box, content });
             level.append(box);
           });
         });
@@ -1109,9 +1165,15 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
         rowLimit = Infinity;
         do {
           levels.length = 0;
+          decisions.length = 0;
           flow = build("");
           flow.style.position = "absolute";
           scroll.replaceChildren(flow);
+          // The central half of a diamond is a safe rectangle for its label and source caption.
+          for (const { box, content } of decisions) {
+            box.style.width = content.offsetWidth * 2 + "px";
+            box.style.height = content.offsetHeight * 2 + "px";
+          }
           if (flow.offsetWidth <= scroll.clientWidth || rowLimit === 1) break;
           const widest = Math.max(1, ...levels.flatMap((level) => [...level.boxes.values()].map((box) => Number(box.style.gridColumn))));
           rowLimit = rowLimit === Infinity
@@ -1581,9 +1643,9 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
     }
 
     /** Makes a project flow's node open the code its step points to, and names that place under its label. */
-    function linkFlowNode(box, link) {
+    function linkFlowNode(box, link, content = box) {
       if (!link) return;
-      box.append(el("div", "flow-ref", link.caption));
+      content.append(el("div", "flow-ref", link.caption));
       box.classList.add("linked");
       box.tabIndex = 0;
       box.title = "Open " + link.caption;
@@ -1811,11 +1873,12 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
       if ((!state || !state.formats || state.formats.pseudocode !== false) && (scope.original.pseudocode.length || scope.modified.pseudocode.length)) formats.push(["pseudocode", "Pseudocode"]);
       if ((!state || !state.formats || state.formats.flowchart !== false) && (scope.original.flowchart.nodes.length || scope.modified.flowchart.nodes.length)) formats.push(["flowchart", "Flowchart"]);
       const buttons = [];
-      function sourceLabel(text, side, occurrenceId) {
+      function sourceLabel(text, side, occurrenceId, pseudocode = false) {
         const links = side === "original" ? view.originalLinks : view.modifiedLinks;
         const referenceId = !outdated && links && Object.prototype.hasOwnProperty.call(links, occurrenceId) ? links[occurrenceId] : undefined;
-        if (!referenceId) return el("span", "", text);
-        const link = action(text, () => post({ type: "navigate", referenceId }));
+        if (!referenceId) return pseudocode ? highlightPseudocode(el("span"), text) : el("span", "", text);
+        const link = action(pseudocode ? "" : text, () => post({ type: "navigate", referenceId }));
+        if (pseudocode) highlightPseudocode(link, text);
         link.setAttribute("aria-label", text + "; reveal in " + (side === "original" ? change.originalLabel : change.modifiedLabel));
         return link;
       }
@@ -1862,7 +1925,7 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
         for (const item of items) {
           const row = el("li");
           if (Number.isFinite(item.depth)) row.setAttribute("style", "margin-left: " + Math.max(0, Math.min(12, item.depth)) + "em");
-          row.append(sourceLabel(item.text, sideName, item.occurrenceId));
+          row.append(sourceLabel(item.text, sideName, item.occurrenceId, format === "pseudocode"));
           if (item.detail) row.append(el("p", "muted small", item.detail));
           list.append(row);
         }

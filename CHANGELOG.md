@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.42.0
+
+- Highlight plain-language pseudocode locally in ordinary and paired-diff
+  views, with light/dark/high-contrast colours for control words, literals,
+  numbers, and code names. Keep generated content text-only and preserve
+  source navigation and indentation; no extra dependency or AI request.
+- Draw flowchart decisions as diamonds sized around their labels and source
+  captions, including nested and paired charts. Retain rounded start/end nodes,
+  source links, responsive layout, and connectors at the diamond vertices.
+  Both display changes apply to saved results without regeneration.
+
 ## 0.41.1
 
 - Simplify paired comparison responses: define each operation and source span

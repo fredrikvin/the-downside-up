@@ -29,7 +29,11 @@ and billing.
 
 - **Explain functions.** Read purpose, inputs, results, and steps in plain
   language. Pseudocode and flowcharts are enabled by default; **More detail**
-  adds edge cases, language notes, and related code.
+  adds edge cases, language notes, and related code. Pseudocode highlights
+  control words, quoted values, numbers, and backticked code names without
+  changing its plain-language wording. Flowcharts use diamonds for decisions
+  and rounded start/end nodes. Both improvements also apply to saved results
+  and paired diff views, locally without extra AI requests.
 - **Stay beside the source.** Editor and preview scroll together. Steps
   highlight their source lines, and saved explanations reappear when you
   return to a file. Click a function's name to navigate to its source;
