@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.41.1
+
+- Simplify paired comparison responses: define each operation and source span
+  once, then construct the Steps, Pseudocode, and Flowchart presentation objects
+  locally. Keep both snapshots and all formats in one request, with explicit
+  source ordering, control-flow edges, and cross-side matches.
+- Distinguish incomplete-looking JSON, malformed JSON, and schema failures
+  with content-free diagnostics and the received character count. Do not
+  introduce automatic repair requests, retries, or model fallbacks.
+
 ## 0.39.2
 
 - Remove the repeated help footer from all preview pages. Contextual notices,

@@ -11,6 +11,7 @@ import {
 } from "../src/generation/languageModel";
 import type { ExplanationPromptInput } from "../src/generation/provider";
 import { LanguageModelError } from "./vscode";
+import { comparisonInput, comparisonResponse } from "./comparisonFixture";
 
 const overview: RepositoryOverview = {
   purpose: "Observed checkout flow.",
@@ -173,14 +174,26 @@ describe("VS Code language model generation", () => {
   });
 
   it("rejects an incomplete comparison without repairing it or making another model call", async () => {
-    const { provider, sendRequest } = fakeModel(async () => streamOf(['{"summary":"Adds a retry","visualScopes":[']));
+    const output = '{"summary":"Adds a retry","visualScopes":[';
+    const { provider, sendRequest } = fakeModel(async () => streamOf([output]));
     await expect(provider.explainComparison({
       repositoryName: "sample",
       languageId: "typescript",
       original: { path: "sample.ts", label: "Before", present: true, source: "send()" },
       modified: { path: "sample.ts", label: "After", present: true, source: "retry(send)" }
-    })).rejects.toThrow(/did not return valid JSON/);
+    })).rejects.toMatchObject({ code: "incomplete-json", outputCharacters: output.length });
     expect(sendRequest).toHaveBeenCalledTimes(1);
+  });
+
+  it("expands a compact paired comparison streamed in chunks with one request", async () => {
+    const output = JSON.stringify(comparisonResponse());
+    const { provider, sendRequest } = fakeModel(async () => streamOf([output.slice(0, 100), output.slice(100)]));
+    const result = await provider.explainComparison(comparisonInput);
+    expect(sendRequest).toHaveBeenCalledOnce();
+    expect(result.value.visualScopes?.[0]?.original.flowchart.nodes).toHaveLength(2);
+    expect(result.value.visualScopes?.[0]?.modified.steps[0]).toMatchObject({ startLine: 3, endLine: 6 });
+    expect(result.value.limitations).toEqual([]);
+    expect(sendRequest.mock.calls[0]![0][0]!.content).not.toContain('"occurrenceId"');
   });
 
   it("maps permission, quota, and availability failures to actionable messages", async () => {

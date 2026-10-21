@@ -8,6 +8,7 @@ import type {
   RepositoryPriming
 } from "../core/types";
 import { estimateTokens } from "../core/fingerprint";
+import { parseModelResponse } from "./jsonResponse";
 import {
   explanationSchemaFor,
   formatSchemaFor,
@@ -213,15 +214,9 @@ export class OpenAIProvider implements GenerationProvider {
     const output = content.find((entry) => entry.type === "output_text")?.text;
     if (!output) throw new Error("OpenAI returned no structured output.");
 
-    let decoded: unknown;
-    try {
-      decoded = JSON.parse(output) as unknown;
-    } catch {
-      throw new Error("OpenAI returned malformed structured output.");
-    }
     const usage = body.usage;
     return {
-      value: parse(decoded),
+      value: parseModelResponse(output, "OpenAI", parse),
       provider: "openai",
       usage: usage?.input_tokens !== undefined && usage.output_tokens !== undefined
         ? {

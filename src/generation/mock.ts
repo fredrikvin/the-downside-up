@@ -1,4 +1,5 @@
 import { estimateTokens } from "../core/fingerprint";
+import { parseComparison } from "./schema";
 import type {
   ExplanationFormat,
   FileComparisonDraft,
@@ -196,57 +197,38 @@ export class MockProvider implements GenerationProvider {
     input: ComparisonPromptInput,
     signal?: AbortSignal
   ): Promise<GenerationResult<FileComparisonDraft>> {
-    const makeSide = (side: ComparisonPromptInput["original"], name: "original" | "modified") => {
+    const lineCount = (side: ComparisonPromptInput["original"]) =>
+      side.present ? side.source.split(/\r\n|\r|\n/).length : 0;
+    const makeSide = (side: ComparisonPromptInput["original"]) => {
       if (!side.present) {
         return {
-          presence: "absent" as const,
           region: "",
           coverage: "This file does not exist on this side.",
           flowchartStatus: "not-applicable" as const,
           flowchartReason: "There is no source on this side.",
           steps: [],
           pseudocode: [],
-          flowchart: { nodes: [], edges: [] }
+          operations: [],
+          edges: []
         };
       }
-      const occurrenceId = `mock-${name}-operation`;
-      const lineCount = side.source.split(/\r\n|\r|\n/).length;
-      const occurrence = { id: occurrenceId, startLine: 1, endLine: Math.max(1, lineCount) };
       return {
-        presence: "present" as const,
         region: "The whole file (placeholder only).",
         coverage: "Mock mode does not interpret behavior; the view is illustrative placeholder data.",
         flowchartStatus: "available" as const,
         flowchartReason: "",
-        steps: [{ id: `mock-${name}-step`, text: "Placeholder operation", detail: "Mock output is not source analysis.", occurrenceId, startLine: 1, endLine: Math.max(1, lineCount) }],
-        pseudocode: [{ id: `mock-${name}-pseudo`, text: "perform the placeholder operation", detail: "", depth: 0, occurrenceId, startLine: 1, endLine: Math.max(1, lineCount) }],
-        flowchart: {
-          nodes: [
-            { id: `mock-${name}-start`, kind: "start" as const, label: "Start", occurrenceId },
-            { id: `mock-${name}-operation-node`, kind: "action" as const, label: "Placeholder operation", occurrenceId },
-            { id: `mock-${name}-end`, kind: "end" as const, label: "Finish", occurrenceId }
-          ],
-          edges: [
-            { id: `mock-${name}-edge-1`, from: `mock-${name}-start`, to: `mock-${name}-operation-node`, label: "" },
-            { id: `mock-${name}-edge-2`, from: `mock-${name}-operation-node`, to: `mock-${name}-end`, label: "" }
-          ]
-        }
+        steps: [{ operation: "work", text: "Placeholder operation", detail: "Mock output is not source analysis." }],
+        pseudocode: [{ operation: "work", text: "perform the placeholder operation", depth: 0 }],
+        operations: [
+          { id: "start", kind: "start", label: "Start", startLine: 1, endLine: 1 },
+          { id: "work", kind: "action", label: "Placeholder operation", startLine: 1, endLine: lineCount(side) },
+          { id: "end", kind: "end", label: "Finish", startLine: lineCount(side), endLine: lineCount(side) }
+        ],
+        edges: [{ from: "start", to: "work", label: "" }, { from: "work", to: "end", label: "" }]
       };
     };
-    const original = makeSide(input.original, "original");
-    const modified = makeSide(input.modified, "modified");
-    const units = [
-      ...(input.original.present ? [{ id: "mock-before", label: "Placeholder operation", side: "original" as const, occurrence: { id: "mock-original-operation", startLine: 1, endLine: Math.max(1, input.original.source.split(/\r\n|\r|\n/).length) } }] : []),
-      ...(input.modified.present ? [{ id: "mock-after", label: "Placeholder operation", side: "modified" as const, occurrence: { id: "mock-modified-operation", startLine: 1, endLine: Math.max(1, input.modified.source.split(/\r\n|\r|\n/).length) } }] : [])
-    ];
     const bothSidesPresent = input.original.present && input.modified.present;
-    const edgeCorrespondences = bothSidesPresent
-      ? [
-          { originalEdgeId: "mock-original-edge-1", modifiedEdgeId: "mock-modified-edge-1", meaning: "Placeholder sequence", difference: "Not analyzed by mock mode." },
-          { originalEdgeId: "mock-original-edge-2", modifiedEdgeId: "mock-modified-edge-2", meaning: "Placeholder sequence", difference: "Not analyzed by mock mode." }
-        ]
-      : [];
-    return this.respond(input.original.source + "\0" + input.modified.source, {
+    const value = parseComparison({
       summary: `Mock comparison of ${input.modified.path}; the change has not been interpreted.`,
       changes: [{
         id: "mock-change",
@@ -255,25 +237,30 @@ export class MockProvider implements GenerationProvider {
         after: input.modified.present ? "Mock mode does not interpret the modified behavior." : "",
         when: "",
         flow: "",
-        original: input.original.present ? { start: 1, end: Math.max(1, input.original.source.split(/\r\n|\r|\n/).length) } : { start: 0, end: 0 },
-        modified: input.modified.present ? { start: 1, end: Math.max(1, input.modified.source.split(/\r\n|\r|\n/).length) } : { start: 0, end: 0 },
+        original: { startLine: input.original.present ? 1 : 0, endLine: lineCount(input.original) },
+        modified: { startLine: input.modified.present ? 1 : 0, endLine: lineCount(input.modified) },
         visualScopeId: "mock-scope"
       }],
       visualScopes: [{
         id: "mock-scope",
         title: "Placeholder behavior",
-        original,
-        modified,
-        units,
-        unitCorrespondences: bothSidesPresent
-          ? [{ originalUnitId: "mock-before", modifiedUnitId: "mock-after", meaning: "Placeholder operation", difference: "Not analyzed by mock mode." }]
+        original: makeSide(input.original),
+        modified: makeSide(input.modified),
+        operationMatches: bothSidesPresent
+          ? ["start", "work", "end"].map((id) => ({ original: id, modified: id, meaning: "Placeholder operation", difference: "Not analyzed by mock mode." }))
           : [],
-        edgeCorrespondences
+        edgeMatches: bothSidesPresent
+          ? [0, 1].map((index) => ({ original: index, modified: index, meaning: "Placeholder sequence", difference: "Not analyzed by mock mode." }))
+          : [],
       }],
       outside: "",
       possibleEffects: [],
       limitations: ["Deterministic mock placeholder; not a real explanation of the change."]
-    }, signal);
+    }, {
+      originalLines: lineCount(input.original), modifiedLines: lineCount(input.modified),
+      originalPresent: input.original.present, modifiedPresent: input.modified.present
+    });
+    return this.respond(input.original.source + "\0" + input.modified.source, value, signal);
   }
 
   summarizeFolder(

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { MockProvider } from "../src/generation/mock";
-import { parseComparison } from "../src/generation/schema";
+import { comparisonSchema, parseComparison } from "../src/generation/schema";
+import { comparisonBounds as bounds, comparisonScope as scope, comparisonResponse } from "./comparisonFixture";
 
 describe("parseComparison", () => {
   const base = {
@@ -9,65 +10,6 @@ describe("parseComparison", () => {
     possibleEffects: ["More load"],
     limitations: []
   };
-  const bounds = { originalLines: 8, modifiedLines: 10, originalPresent: true, modifiedPresent: true };
-
-  function scope() {
-    const side = (name: "original" | "modified", endLine: number) => ({
-      presence: "present",
-      region: "request handling",
-      coverage: "The changed request path only.",
-      flowchartStatus: "available",
-      flowchartReason: "",
-      steps: [{
-        id: `${name}-step`,
-        text: "Send the request",
-        detail: "",
-        depth: 0,
-        occurrenceId: `${name}-occurrence`,
-        startLine: 2,
-        endLine
-      }],
-      pseudocode: [{
-        id: `${name}-pseudo`,
-        text: "send the request",
-        detail: "",
-        depth: 0,
-        occurrenceId: `${name}-occurrence`,
-        startLine: 2,
-        endLine
-      }],
-      flowchart: {
-        nodes: [
-          { id: `${name}-start`, kind: "start", label: "Start", occurrenceId: `${name}-start-occurrence` },
-          { id: `${name}-work`, kind: "action", label: "Send request", occurrenceId: `${name}-occurrence` }
-        ],
-        edges: [{ id: `${name}-edge`, from: `${name}-start`, to: `${name}-work`, label: "" }]
-      }
-    });
-    return {
-      id: "request",
-      title: "Request behavior",
-      original: side("original", 4),
-      modified: side("modified", 6),
-      units: [
-        { id: "before-start", label: "Start", side: "original", occurrence: { id: "original-start-occurrence", startLine: 2, endLine: 4 } },
-        { id: "before-request", label: "Send request", side: "original", occurrence: { id: "original-occurrence", startLine: 2, endLine: 4 } },
-        { id: "after-start", label: "Start", side: "modified", occurrence: { id: "modified-start-occurrence", startLine: 2, endLine: 6 } },
-        { id: "after-request", label: "Send request", side: "modified", occurrence: { id: "modified-occurrence", startLine: 2, endLine: 6 } }
-      ],
-      unitCorrespondences: [
-        { originalUnitId: "before-start", modifiedUnitId: "after-start", meaning: "Entry point", difference: "" },
-        { originalUnitId: "before-request", modifiedUnitId: "after-request", meaning: "Same request operation", difference: "The modified operation retries." }
-      ],
-      edgeCorrespondences: [{
-        originalEdgeId: "original-edge",
-        modifiedEdgeId: "modified-edge",
-        meaning: "Entry into the request",
-        difference: "The transition is preserved."
-      }]
-    };
-  }
-
   function change(overrides: Record<string, unknown> = {}) {
     return {
       id: "retry",
@@ -82,6 +24,116 @@ describe("parseComparison", () => {
       ...overrides
     };
   }
+
+  it("expands one operation table into linked views with host-owned side-specific ids", () => {
+    const wire = comparisonResponse();
+    const parsed = parseComparison(wire, bounds);
+    const visual = parsed.visualScopes![0]!;
+    const before = visual.units.find((unit) => unit.side === "original" && unit.label === "Send request")!;
+    const after = visual.units.find((unit) => unit.side === "modified" && unit.label === "Send request")!;
+    expect(before.id).not.toBe(after.id);
+    expect(visual.original.steps[0]).toMatchObject({ occurrenceId: before.occurrence.id, startLine: 3, endLine: 4 });
+    expect(visual.original.pseudocode[0]).toMatchObject({ occurrenceId: before.occurrence.id, startLine: 3, endLine: 4, depth: 0 });
+    expect(visual.original.flowchart.nodes[1]).toMatchObject({ id: before.id, occurrenceId: before.occurrence.id });
+    expect(visual.modified.steps[0]).toMatchObject({ occurrenceId: after.occurrence.id, startLine: 3, endLine: 6 });
+    expect(visual.edgeCorrespondences[0]).toMatchObject({
+      originalEdgeId: visual.original.flowchart.edges[0]!.id,
+      modifiedEdgeId: visual.modified.flowchart.edges[0]!.id
+    });
+    expect(JSON.stringify(wire).length).toBeLessThan(JSON.stringify(parsed).length * 0.8);
+    const schema = JSON.stringify(comparisonSchema);
+    expect(schema).toContain('"operations"');
+    expect(schema).not.toMatch(/"occurrenceId"|"units"|"nodes"|"originalUnitId"/);
+  });
+
+  it("preserves explicit source ordering, indentation and loop edges independently", () => {
+    const wire = comparisonResponse();
+    const side = wire.visualScopes[0]!.original;
+    side.operations.push({ id: "finish", label: "Finish", kind: "end", startLine: 6, endLine: 6 });
+    side.pseudocode.push({ operation: "finish", text: "finish after the loop", depth: 1 });
+    side.edges.push({ from: "send", to: "start", label: "retry" }, { from: "send", to: "finish", label: "done" });
+    const parsed = parseComparison(wire, bounds).visualScopes![0]!;
+    expect(parsed.original.pseudocode.map((line) => [line.text, line.startLine, line.depth])).toEqual([
+      ["send the request", 3, 0], ["finish after the loop", 6, 1]
+    ]);
+    expect(parsed.original.flowchart.edges[1]).toMatchObject({
+      from: parsed.original.flowchart.nodes[1]!.id, to: parsed.original.flowchart.nodes[0]!.id, label: "retry"
+    });
+  });
+
+  it("never infers matching from equal operation ids or labels", () => {
+    const wire = comparisonResponse();
+    wire.visualScopes[0]!.operationMatches = [];
+    wire.visualScopes[0]!.edgeMatches = [];
+    const parsed = parseComparison(wire, bounds);
+    expect(parsed.visualScopes?.[0]?.unitCorrespondences).toEqual([]);
+    expect(parsed.visualScopes?.[0]?.edgeCorrespondences).toEqual([]);
+    expect(parsed.limitations).toEqual([]);
+  });
+
+  it.each(["duplicate", "edge", "depth", "span", "kind"] as const)("rejects unsafe %s data rather than guessing", (bad) => {
+    const wire = comparisonResponse();
+    const side = wire.visualScopes[0]!.original;
+    if (bad === "duplicate") side.operations[1]!.id = "start";
+    if (bad === "edge") side.edges[0]!.to = "missing";
+    if (bad === "depth") side.pseudocode[0]!.depth = 5;
+    if (bad === "span") side.operations[0]!.startLine = 0;
+    if (bad === "kind") side.operations[0]!.kind = "unknown";
+    const parsed = parseComparison(wire, bounds);
+    expect(parsed.visualScopes).toBeUndefined();
+    expect(parsed.limitations.join(" ")).toContain("was omitted");
+  });
+
+  it("retains steps for an unavailable chart without inventing nodes", () => {
+    const wire = comparisonResponse();
+    const side = wire.visualScopes[0]!.original;
+    side.flowchartStatus = "unavailable";
+    side.flowchartReason = "The source has incomplete control flow.";
+    side.operations.forEach((operation) => { operation.kind = "none"; });
+    side.edges = [];
+    wire.visualScopes[0]!.edgeMatches = [];
+    const parsed = parseComparison(wire, bounds);
+    expect(parsed.visualScopes?.[0]?.original.steps).toHaveLength(1);
+    expect(parsed.visualScopes?.[0]?.original.flowchart).toEqual({ nodes: [], edges: [] });
+  });
+
+  it("rejects out-of-range edge matches without losing either graph", () => {
+    const wire = comparisonResponse();
+    wire.visualScopes[0]!.edgeMatches[0]!.modified = 1;
+    const parsed = parseComparison(wire, bounds);
+    expect(parsed.visualScopes?.[0]?.edgeCorrespondences).toEqual([]);
+    expect(parsed.visualScopes?.[0]?.modified.flowchart.edges).toHaveLength(1);
+    expect(parsed.limitations.join(" ")).toContain("unknown edge");
+  });
+
+  it("enforces the total expanded visual text budget", () => {
+    const wire = comparisonResponse();
+    wire.visualScopes = Array.from({ length: 12 }, (_, index) => {
+      const visual = scope();
+      visual.id = `scope-${index}`;
+      visual.original.steps = Array.from({ length: 40 }, () => ({ operation: "send", text: "Send", detail: "x".repeat(500) }));
+      return visual;
+    });
+    const parsed = parseComparison(wire, bounds);
+    expect(parsed.visualScopes).toBeUndefined();
+    expect(parsed.limitations.join(" ")).toContain("total budget");
+  });
+
+  it("enforces the per-side chart budget even when operations fit their own bound", () => {
+    const wire = comparisonResponse();
+    wire.visualScopes[0]!.original.operations.push(...Array.from({ length: 23 }, (_, index) => ({
+      id: `extra-${index}`, kind: "action", label: "Operation", startLine: 3, endLine: 4
+    })));
+    const parsed = parseComparison(wire, bounds);
+    expect(parsed.visualScopes).toBeUndefined();
+    expect(parsed.limitations.join(" ")).toContain("per-side limit");
+  });
+
+  it("rejects any operation on an absent snapshot side", () => {
+    const parsed = parseComparison(comparisonResponse(), { ...bounds, originalPresent: false, originalLines: 0 });
+    expect(parsed.visualScopes).toBeUndefined();
+    expect(parsed.limitations.join(" ")).toContain("was omitted");
+  });
 
   it("keeps valid textual changes and drops those without a title or behavior", () => {
     const parsed = parseComparison({
@@ -107,7 +159,7 @@ describe("parseComparison", () => {
 
   it("retains textual content and adds an explicit limitation when visual spans exceed that side", () => {
     const visual = scope();
-    visual.modified.steps[0]!.endLine = 11;
+    visual.modified.operations[1]!.endLine = 11;
     const parsed = parseComparison({ ...base, changes: [change()], visualScopes: [visual] }, bounds);
     expect(parsed.changes).toHaveLength(1);
     expect(parsed.visualScopes).toBeUndefined();
@@ -116,22 +168,17 @@ describe("parseComparison", () => {
 
   it("rejects non-one-to-one matching without losing valid side views", () => {
     const visual = scope();
-    visual.units.push({
-      id: "after-request-copy",
-      label: "Retry request",
-      side: "modified",
-      occurrence: { id: "modified-occurrence-copy", startLine: 5, endLine: 6 }
-    });
-    visual.unitCorrespondences.push({
-      originalUnitId: "before-request",
-      modifiedUnitId: "after-request-copy",
+    visual.modified.operations.push({ id: "copy", label: "Retry request", kind: "action", startLine: 5, endLine: 6 });
+    visual.operationMatches.push({
+      original: "send",
+      modified: "copy",
       meaning: "Another match",
       difference: ""
     });
     const parsed = parseComparison({ ...base, changes: [change()], visualScopes: [visual] }, bounds);
     expect(parsed.changes).toHaveLength(1);
     expect(parsed.visualScopes).toHaveLength(1);
-    expect(parsed.visualScopes?.[0]?.original.flowchart).toEqual(visual.original.flowchart);
+    expect(parsed.visualScopes?.[0]?.original.flowchart.nodes).toHaveLength(2);
     expect(parsed.visualScopes?.[0]?.unitCorrespondences).toEqual([]);
     expect(parsed.visualScopes?.[0]?.edgeCorrespondences).toEqual([]);
     expect(parsed.limitations.join(" ")).toContain("Unit correspondences must be one-to-one");
@@ -139,19 +186,19 @@ describe("parseComparison", () => {
 
   it("requires matched edges to connect explicitly corresponding operations", () => {
     const visual = scope();
-    visual.modified.flowchart.edges[0]!.from = "modified-work";
-    visual.modified.flowchart.edges[0]!.to = "modified-start";
+    visual.modified.edges[0]!.from = "send";
+    visual.modified.edges[0]!.to = "start";
     const parsed = parseComparison({ ...base, changes: [change()], visualScopes: [visual] }, bounds);
     expect(parsed.visualScopes).toHaveLength(1);
     expect(parsed.visualScopes?.[0]?.edgeCorrespondences).toEqual([]);
-    expect(parsed.visualScopes?.[0]?.unitCorrespondences).toEqual(visual.unitCorrespondences);
+    expect(parsed.visualScopes?.[0]?.unitCorrespondences).toHaveLength(2);
     expect(parsed.limitations.join(" ")).toContain("Corresponding edges do not connect corresponding operations");
     expect(parsed.changes).toHaveLength(1);
   });
 
   it("checks side membership and absent-side emptiness", () => {
     const visual = scope();
-    visual.original.flowchart.nodes[0]!.occurrenceId = "modified-occurrence";
+    visual.original.operations[1]!.id = "original-send";
     const parsed = parseComparison({ ...base, changes: [change()], visualScopes: [visual] }, bounds);
     expect(parsed.visualScopes).toBeUndefined();
     expect(parsed.changes).toHaveLength(1);
@@ -159,16 +206,15 @@ describe("parseComparison", () => {
 
   it("represents an added file with an explicit empty original side", () => {
     const visual = scope();
-    visual.original.presence = "absent";
     visual.original.region = "";
     visual.original.flowchartStatus = "not-applicable";
     visual.original.flowchartReason = "The file did not exist before.";
     visual.original.steps = [];
     visual.original.pseudocode = [];
-    visual.original.flowchart = { nodes: [], edges: [] };
-    visual.units = visual.units.filter((unit) => unit.side === "modified");
-    visual.unitCorrespondences = [];
-    visual.edgeCorrespondences = [];
+    visual.original.operations = [];
+    visual.original.edges = [];
+    visual.operationMatches = [];
+    visual.edgeMatches = [];
     const parsed = parseComparison({
       ...base,
       changes: [change({ original: { startLine: 0, endLine: 0 } })],
@@ -183,20 +229,11 @@ describe("parseComparison", () => {
 
   it("enforces the whole-response chart budget", () => {
     const largeScope = scope();
-    largeScope.original.flowchart.nodes = Array.from({ length: 24 }, (_, index) => ({
-      id: `o-${index}`,
-      kind: "action",
-      label: "Operation",
-      occurrenceId: "original-occurrence"
-    }));
-    largeScope.modified.flowchart.nodes = Array.from({ length: 24 }, (_, index) => ({
-      id: `m-${index}`,
-      kind: "action",
-      label: "Operation",
-      occurrenceId: "modified-occurrence"
-    }));
-    largeScope.original.flowchart.edges = [];
-    largeScope.modified.flowchart.edges = [];
+    for (const side of [largeScope.original, largeScope.modified]) {
+      side.operations.push(...Array.from({ length: 22 }, (_, index) => ({
+        id: `extra-${index}`, kind: "action", label: "Operation", startLine: 3, endLine: 4
+      })));
+    }
     const parsed = parseComparison({
       ...base,
       changes: [change()],
@@ -212,12 +249,8 @@ describe("parseComparison", () => {
       const visual = scope();
       visual.id = scopeIndex === 0 ? "request" : `request-${scopeIndex}`;
       for (const sideName of ["original", "modified"] as const) {
-        const chart = visual[sideName].flowchart;
-        const edge = chart.edges[0]!;
-        chart.edges = Array.from({ length: 40 }, (_, index) => ({
-          ...edge,
-          id: `${sideName}-${scopeIndex}-${index}`
-        }));
+        const side = visual[sideName];
+        side.edges = Array.from({ length: 40 }, () => ({ ...side.edges[0]! }));
       }
       return visual;
     });
@@ -238,7 +271,7 @@ describe("parseComparison", () => {
   it("keeps valid scopes when another scope fails and reports the exact validation reason", () => {
     const invalid = scope();
     invalid.id = "invalid-scope";
-    invalid.modified.steps[0]!.endLine = 11;
+    invalid.modified.operations[1]!.endLine = 11;
     const parsed = parseComparison({ ...base, changes: [change()], visualScopes: [invalid, scope()] }, bounds);
     expect(parsed.visualScopes).toHaveLength(1);
     expect(parsed.visualScopes?.[0]?.id).toBe("request");
@@ -247,10 +280,10 @@ describe("parseComparison", () => {
 
   it("still rejects unsafe source references and reports why", () => {
     const invalid = scope();
-    invalid.original.flowchart.nodes[0]!.occurrenceId = "unknown-occurrence";
+    invalid.original.steps[0]!.operation = "unknown-operation";
     const parsed = parseComparison({ ...base, changes: [change()], visualScopes: [invalid] }, bounds);
     expect(parsed.visualScopes).toBeUndefined();
-    expect(parsed.limitations.join(" ")).toContain("Flowchart node references an occurrence on the wrong side");
+    expect(parsed.limitations.join(" ")).toContain("Comparison text references an unknown operation on this side");
   });
 
   it("rejects duplicate scope identities rather than guessing the intended link", () => {
@@ -276,9 +309,9 @@ describe("parseComparison", () => {
     });
     expect(result.value.changes[0]).toMatchObject({ id: "mock-change", visualScopeId: "mock-scope" });
     expect(result.value.visualScopes?.[0]).toMatchObject({
-      unitCorrespondences: [{ originalUnitId: "mock-before", modifiedUnitId: "mock-after" }],
       original: { presence: "present", flowchartStatus: "available" },
       modified: { presence: "present", flowchartStatus: "available" }
     });
+    expect(result.value.visualScopes?.[0]?.unitCorrespondences).toHaveLength(3);
   });
 });

@@ -452,7 +452,7 @@ export interface ComparisonVisualSide {
   readonly flowchart: ComparisonFlowchart;
 }
 
-/** All visual forms for a region are generated together from both exact snapshots. */
+/** Validated presentation data expanded locally from the compact paired model response. */
 export interface ComparisonVisualScope {
   readonly id: string;
   readonly title: string;

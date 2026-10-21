@@ -1,4 +1,5 @@
 import * as vscode from "vscode";
+import { parseModelResponse } from "./jsonResponse";
 import { estimateTokens } from "../core/fingerprint";
 import type {
   FileComparisonDraft,
@@ -124,12 +125,6 @@ function describeFailure(error: unknown, modelName: string): Error {
   }
   const message = error instanceof Error ? error.message.slice(0, 500) : "unknown error";
   return new Error(`Language model request failed: ${message}. No automatic retry was made.`);
-}
-
-function decodeJson(output: string): unknown {
-  const trimmed = output.trim();
-  const fenced = /^```(?:json)?[^\n]*\n([\s\S]*?)\n?```$/i.exec(trimmed);
-  return JSON.parse(fenced?.[1] ?? trimmed) as unknown;
 }
 
 export class LanguageModelProvider implements GenerationProvider {
@@ -281,7 +276,7 @@ export class LanguageModelProvider implements GenerationProvider {
         output += chunk;
         if (output.length > MAX_OUTPUT_CHARACTERS) {
           tokenSource.cancel();
-          throw new LocalLimitError(`${this.model.name} returned more output than the prototype accepts. No automatic retry was made.`);
+          throw new LocalLimitError(`${this.model.name} returned more output than the prototype accepts (${output.length} characters received; limit ${MAX_OUTPUT_CHARACTERS}). No automatic retry was made.`);
         }
       }
     } catch (error) {
@@ -302,13 +297,7 @@ export class LanguageModelProvider implements GenerationProvider {
       );
     }
 
-    let decoded: unknown;
-    try {
-      decoded = decodeJson(output);
-    } catch {
-      throw new Error(`${this.model.name} did not return valid JSON. No automatic retry was made.`);
-    }
-    const value = parse(decoded);
+    const value = parseModelResponse(output, this.model.name, parse, true);
     const countSource = new vscode.CancellationTokenSource();
     try {
       return {

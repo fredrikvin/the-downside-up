@@ -382,10 +382,22 @@ validation reason is shown.
 
 Comparison generation stays on the Functions model. The prompt prefers one to
 three coherent changed regions, concise steps and charts, and compact JSON
-rather than exhaustive full-file diagrams, reducing output without another
-model request. Coverage limitations name what is not shown. Invalid JSON is
-still rejected; compact output does not guarantee a valid response, and no
-automatic repair call, retry, or model fallback is made for diff prefetch.
+rather than exhaustive full-file diagrams. The wire contract defines operations
+and their source spans once per side. Steps and pseudocode reference those
+operations; operations with a chart kind become nodes, and edges explicitly
+name their endpoints. Source-ordered text and graph control flow remain
+independent. The host constructs side-specific units, occurrences, item IDs,
+edge IDs, and line links locally; the model supplies only explicit operation
+matches and zero-based edge matches, never navigation targets. Missing-file
+presence comes from the snapshots, not model output. Each side allows at most
+30 operations, still capped at 24 chart nodes and 40 edges, with the existing
+whole-response budgets checked after expansion.
+This remains one model request for both exact snapshots and all three views.
+Coverage limitations name what is not shown. Invalid JSON is still rejected;
+the compact contract does not guarantee a valid response, and no automatic
+repair call, retry, or model fallback is made for diff prefetch.
+The comparison prompt version is bumped for this contract; old comparison
+records are not migrated or reused under the new version.
 
 An illustrative **Trace a case** remains planned in
 [Visual behavior comparisons](diff-flow-plan.md); it will not execute code or
@@ -989,7 +1001,12 @@ one-time permission prompt for language-model access in addition to this
 extension's consent. The API has no system role or schema-constrained output,
 so the instructions and JSON Schema are sent in a single user message, and the
 reply is validated with the same parser as other providers. Malformed replies
-fail without an automatic retry. The request is checked against the model's
+fail without an automatic retry. JSON failures from either real provider report
+`incomplete-json` (an unclosed structure/string suggests incompleteness, not
+proof of provider truncation), `malformed-json`, or `invalid-schema`, along with
+the received character count. Schema details use only fixed host-owned labels.
+No response excerpts, source text, or raw JSON-parser errors are logged or
+attached to those diagnostics. The request is checked against the model's
 `maxInputTokens` before sending, the output is capped, and requests time out
 after 10 minutes, allowing slower reasoning and overview models time to finish.
 The preview animates the existing header divider and shows the current stage

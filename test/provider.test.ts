@@ -12,6 +12,7 @@ import {
   parseFormat
 } from "../src/generation/schema";
 import type { ComparisonPromptInput, ExplanationPromptInput } from "../src/generation/provider";
+import { comparisonInput, comparisonResponse } from "./comparisonFixture";
 
 const overview: RepositoryOverview = {
   purpose: "Observed checkout flow.",
@@ -128,12 +129,30 @@ describe("structured generation", () => {
     fetch.mockResolvedValueOnce(response({
       output: [{ content: [{ type: "output_text", text: "{" }] }]
     }));
-    await expect(provider.explainFunction(promptInput)).rejects.toThrow(/malformed/i);
+    await expect(provider.explainFunction(promptInput)).rejects.toMatchObject({ code: "incomplete-json", outputCharacters: 1 });
 
     fetch.mockResolvedValueOnce(response({
       output: [{ content: [{ type: "output_text", text: JSON.stringify({ purpose: "only one field" }) }] }]
     }));
     await expect(provider.explainFunction(promptInput)).rejects.toThrow(/invalid "title"/i);
+  });
+
+  it("validates and expands the same compact comparison contract through OpenAI", async () => {
+    const fetch = vi.fn().mockResolvedValue(response({
+      status: "completed",
+      output: [{ content: [{ type: "output_text", text: JSON.stringify(comparisonResponse()) }] }]
+    }));
+    vi.stubGlobal("fetch", fetch);
+    const result = await new OpenAIProvider("test-model", "test-key").explainComparison(comparisonInput);
+    expect(fetch).toHaveBeenCalledOnce();
+    expect(result.value.visualScopes?.[0]?.unitCorrespondences).toHaveLength(2);
+    expect(result.value.visualScopes?.[0]?.edgeCorrespondences).toHaveLength(1);
+    expect(result.value.limitations).toEqual([]);
+    const [, init] = fetch.mock.calls[0] as [string, RequestInit];
+    const request = JSON.parse(init.body as string);
+    expect(request.text.format.strict).toBe(true);
+    expect(JSON.stringify(request.text.format.schema)).toContain('"operations"');
+    expect(JSON.stringify(request.text.format.schema)).not.toContain('"occurrenceId"');
   });
 
   it("allocates a bounded output budget for paired visual comparisons", async () => {

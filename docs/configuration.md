@@ -535,7 +535,15 @@ disabled, and does not automatically retry failures. Review Changes batches
 keep their own confirmed scope and do not also prefetch the shown diff.
 Comparisons use the current Functions model, with compact visuals focused on
 the changed behavior rather than full-file diagrams; no separate review model
-or additional model calls are needed.
+or additional model calls are needed. The model defines each visual operation
+and source span once; the extension constructs the linked views locally while
+preserving explicit text order and graph connections.
+
+If a response fails, the error distinguishes `incomplete-json` (appears cut
+short), `malformed-json`, and `invalid-schema`, and shows the received character
+count. These diagnostics contain no response excerpts or source text and do
+not cause another model call. Incompleteness is a diagnostic hint, not proof
+of a model output limit; retry success alone does not establish the cause.
 
 Recent function context is reused within the session while the selected document
 and its tracked files and unsaved buffers are unchanged. Clicking or refocusing the

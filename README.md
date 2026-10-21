@@ -44,6 +44,9 @@ and billing.
   With **Prefetch** enabled and sharing already approved, the comparison
   preloads automatically when the preview shows the diff. Otherwise,
   **Explain changes** sends both versions of that one file.
+  All three views come from one compact paired response. Failed responses
+  report incomplete JSON, malformed JSON, or schema validation errors without
+  exposing source text or silently retrying.
 - **Prepare a review.** Run **Downside Up: Review Changes…**, select a
   comparison, and confirm the number of changed files to explain; each opens in
   VS Code's native diff.

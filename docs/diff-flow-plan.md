@@ -106,6 +106,18 @@ The Steps, Pseudocode, and Flowchart representations must share units and
 branch meanings; do not derive pseudocode by naively traversing a graph,
 which can misrepresent loops, joins, or deferred work.
 
+The implemented wire contract is smaller than the presentation contract above:
+each side sends one `operations` table (`id`, label, kind, source span).
+Steps and pseudocode reference operation IDs without repeating spans or item
+IDs. Chart nodes are operations whose kind is not `none`; edges reference
+those same operations. `operationMatches` names one operation on each side,
+and `edgeMatches` uses zero-based positions in the side-specific edge lists.
+The host validates and expands this into the existing typed presentation
+objects with its own side-specific identifiers. Source order and explicit
+graph edges remain independent. Absent/present state comes from the snapshots.
+There is no second model call for expansion, no chart-derived pseudocode, and
+no inferred matching from equal labels or IDs.
+
 Preserve one bounded request per file for initial **Explain changes** and
 confirmed review batches. Steps are always available; request the optional
 formats selected by existing format preferences. If a requested format was
