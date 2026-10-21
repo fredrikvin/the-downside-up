@@ -619,6 +619,7 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
     let comparisonVisualId = 0;
     let state;
     let renderedFile = "";
+    let renderCount = 0;
     let sourceLine = 0;
     let currentEntry;
     let scrollFrame = 0;
@@ -2167,6 +2168,14 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
       for (const observer of chartObservers.splice(0)) observer.disconnect();
       const focusedEntry = document.activeElement && document.activeElement.closest ? document.activeElement.closest(".entry") : null;
       const focusedClass = document.activeElement ? document.activeElement.className : "";
+      const focusedItem = document.activeElement && document.activeElement.dataset
+        ? ["step", "pseudo", "node"].find((name) => document.activeElement.dataset[name] !== undefined)
+        : undefined;
+      const focusedItemSelector = focusedItem ? "[data-" + focusedItem + '="' + document.activeElement.dataset[focusedItem] + '"]' : "";
+      // Flowcharts are drawn a frame after rendering; until then the page must not shrink, or the browser would clamp its scroll.
+      const doc = byId("doc");
+      const renderToken = ++renderCount;
+      doc.style.minHeight = doc.offsetHeight + "px";
       state = next;
       renderActivity(next);
       const loading = next.loading;
@@ -2216,12 +2225,19 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
       updateStuck();
       if (focusedEntry && focusedEntry.id) {
         const focusedKind = focusedClass.split(" ")[0] || "explain";
-        const selector = focusedKind === "tab" ? '.tab[aria-selected="true"]' : "." + focusedKind;
-        const target = document.querySelector("#" + CSS.escape(focusedEntry.id) + " " + selector);
-        if (target) target.focus({ preventScroll: true });
+        const selector = focusedItemSelector || (focusedKind === "tab" ? '.tab[aria-selected="true"]' : "." + focusedKind);
+        const refocus = () => {
+          const target = document.querySelector("#" + CSS.escape(focusedEntry.id) + " " + selector);
+          if (target) target.focus({ preventScroll: true });
+        };
+        refocus();
+        // A flowchart node exists only once the chart is drawn.
+        if (focusedItem === "node") requestAnimationFrame(() => { if (state === next) refocus(); });
       }
+      const release = () => { if (renderToken === renderCount) doc.style.minHeight = ""; };
       const fileKey = change ? "change:" + change.key : file ? file.path : folder ? "folder:" + folder.path : loading ? "loading:" + loading.name : "";
       if (fileKey !== renderedFile) {
+        release();
         renderedFile = fileKey;
         if (folder || loading || change) window.scrollTo(0, 0);
         else scrollToLine(sourceLine);
@@ -2234,7 +2250,12 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
           window.scrollTo(0, kept && anchorTop !== undefined ? window.scrollY + kept.getBoundingClientRect().top - anchorTop : previousScroll);
         };
         restore();
-        requestAnimationFrame(restore);
+        // Charts registered their drawing frames during rendering, so they are drawn before this one.
+        requestAnimationFrame(() => {
+          ignoreScrollUntil = performance.now() + 100;
+          release();
+          restore();
+        });
       }
     }
 
