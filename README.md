@@ -194,7 +194,7 @@ In the repository and extension package:
 - `CHANGELOG.md`: release notes.
 
 For a locally built package, install the current version with
-`code --install-extension the-downside-up-0.44.0.vsix`.
+`code --install-extension the-downside-up-0.44.1.vsix`.
 
 ## License
 
