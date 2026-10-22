@@ -743,6 +743,8 @@ async function runWithCommitRepository(commitRoot: string): Promise<void> {
     assert.ok(transition.some((state) => state?.fileName === "Badge.tsx" && state.loading),
       "The next file is shown, disabled, while it is read.");
     assert.equal(transition.at(-1)?.loading, false);
+    assert.ok(transition.every((state) => state?.stats),
+      `The cache statistics row stays visible while the next diff loads: ${JSON.stringify(transition)}`);
     // The diff a review opens for an added file describes the same two versions the batch explained.
     const emptyBadge = badgeUri.with({ scheme: "downside-up-empty", query: "HEAD" });
     await vscode.commands.executeCommand("vscode.diff", emptyBadge, badgeUri, "Badge (test)");

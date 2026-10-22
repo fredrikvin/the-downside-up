@@ -265,7 +265,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
   /** Opaque authority for the currently rendered exact review comparison. */
   let activeReviewNavigation: { readonly session: Review; readonly item: ReviewItem; readonly token: string } | undefined;
   /** Recent rendered navigation states, for tests of band stability across loads. */
-  const renderedReviewNavigation: Array<{ fileName: string; loading: boolean } | undefined> = [];
+  const renderedReviewNavigation: Array<{ fileName: string; loading: boolean; stats: boolean } | undefined> = [];
   /** The folder shown instead of a file, until the active editor changes. */
   let folderPreview: FolderPreview | undefined;
   /**
@@ -918,7 +918,12 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
 
   const statsForPanel = (): PanelState["stats"] => {
     const root = change.active ? change.root : preview?.root ?? folderPreview?.root;
-    if (!headerData || headerData.root !== root) return undefined;
+    if (!headerData) return undefined;
+    if (headerData.root !== root) {
+      // Keep the previous figures, marked as updating, while the shown page is read or its repository's stats load.
+      const pending = root !== undefined || change.reading;
+      return pending ? { ...headerData.stats, outdatedHere: 0, scope: preview ? "file" : "folder", stale: true } : undefined;
+    }
     const outdated = change.active ? { states: [], files: [], summary: false, flows: false } : outdatedHere();
     return {
       ...headerData.stats,
@@ -1015,7 +1020,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     } else {
       activeReviewNavigation = undefined;
     }
-    renderedReviewNavigation.push(reviewNavigationView && { fileName: reviewNavigationView.fileName, loading: reviewNavigationView.loading === true });
+    renderedReviewNavigation.push(reviewNavigationView && { fileName: reviewNavigationView.fileName, loading: reviewNavigationView.loading === true, stats: stats !== undefined });
     if (renderedReviewNavigation.length > 50) renderedReviewNavigation.shift();
     panel.update({
       provider: descriptor.kind,
@@ -4030,7 +4035,7 @@ export interface DownsideUpTestApi {
   reviewItems(): Array<{ path: string; change: string; status: string }>;
   reviewNavigation(): { token: string; fileName: string; position: number; total: number; canPrevious: boolean; canNext: boolean } | undefined;
   invokeReviewNavigation(direction: "previous" | "next" | "picker", token: string): Promise<void>;
-  renderedReviewNavigation(reset?: boolean): Array<{ fileName: string; loading: boolean } | undefined>;
+  renderedReviewNavigation(reset?: boolean): Array<{ fileName: string; loading: boolean; stats: boolean } | undefined>;
   /** The native diff shown in the preview, or undefined. */
   shownChange(): { fileName: string; facts: string; status: string; explained: boolean; links: number;
     added: readonly ChangeFunctionCardView[]; removed: readonly ChangeFunctionCardView[] } | undefined;

@@ -599,6 +599,14 @@ describe("preview webview document", () => {
     expect(details!.elements().map((node) => node.textContent)).toContain("Functions: 100 input / 20 output");
     expect(details!.elements().map((node) => node.textContent)).toContain("Fast (vscode-lm): ~100 input / 20 output");
     expect(element("stats").elements().some((node) => node.textContent.includes("0 outdated"))).toBe(false);
+    expect(element("stats").className.split(" ")).not.toContain("stale");
+    renderHeader({
+      provider: "vscode-lm", models: { explanation: "Fast" }, busy: false, hasRepository: true,
+      stats: { explanations: 1, fileSummaries: 0, folderSummaries: 0, flows: 0, outdatedHere: 0, scope: "file", stale: true }
+    });
+    expect(element("stats").hidden).toBe(false);
+    expect(element("stats").className.split(" ")).toContain("stale");
+    expect(element("stats").getAttribute("aria-busy")).toBe("true");
   });
 
   it("renders level-aware crumbs as text, marking rich pages and the current location", () => {

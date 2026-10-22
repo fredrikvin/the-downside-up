@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.46.2
+
+- Keep the cache statistics row visible, dimmed, while the next page or diff
+  is read, instead of hiding it and reflowing the preview.
+
 ## 0.46.1
 
 - Keep both review bands visible while the next diff loads, with the file's

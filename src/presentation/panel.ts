@@ -248,6 +248,8 @@ export interface PanelState {
     readonly mapSavedAt?: number;
     readonly outdatedHere: number;
     readonly scope: "file" | "folder";
+    /** Figures from the previous page, kept while the shown page's are read. */
+    readonly stale?: boolean;
   };
   readonly statsError?: string;
   readonly document?: FileOverview;
@@ -372,6 +374,7 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
     .icon { width: 16px; height: 16px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.25; stroke-linecap: round; stroke-linejoin: round; vertical-align: middle; }
     .stats { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; margin-top: 4px; font-size: 11px; color: var(--vscode-descriptionForeground); }
     .stats .outdated { color: var(--vscode-editorWarning-foreground, var(--vscode-descriptionForeground)); }
+    .stats.stale { opacity: .55; transition: opacity .15s; }
     .stats button { font-size: 11px; padding: 2px 6px; min-height: 24px; }
     .review-band { margin: 0 0 12px; padding: 4px 0 8px; border-bottom: 1px solid var(--separator); }
     .review-navigation { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: center; gap: 4px; width: 100%; min-width: 0; }
@@ -828,6 +831,8 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
       renderedStats = statsKey;
       const stats = byId("stats");
       stats.hidden = !next.stats && !next.statsError;
+      stats.classList.toggle("stale", Boolean(next.stats?.stale) && !next.statsError);
+      stats.setAttribute("aria-busy", next.stats?.stale && !next.statsError ? "true" : "false");
       stats.replaceChildren();
       if (next.statsError) {
         stats.append(el("span", "error", next.statsError));
