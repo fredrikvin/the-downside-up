@@ -85,9 +85,10 @@ and billing.
   the bottom of the preview offer **‹ Previous** and **Next ›** to step through
   the review in path order, plus **Review: 3/8 ready** progress at the top.
   The filename and position open the existing **Show Changed Files** picker.
-  Navigation stays
-  within the confirmed review, does not wrap, and only reprioritizes its
-  pending work; it does not start requests.
+  Navigation stays within the confirmed review, does not wrap, and only
+  reprioritizes its pending work; it does not start requests. Opening a file
+  outside the review ends review mode. If the review is still preparing, you
+  are asked first.
 - **Prepare a commit.** Run **Downside Up: Prepare Commit Explanations…**,
   choose a commit (or enter its ID/ref), and confirm the bounded file scope and
   request count; the first file's diff then opens beside the preview. This

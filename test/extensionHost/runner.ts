@@ -720,6 +720,36 @@ async function runWithCommitRepository(commitRoot: string): Promise<void> {
       api.stopReview();
     }
 
+    // Leaving a review that is still preparing asks first; confirming ends it.
+    // After Stop, a request already sent still counts: declining keeps the review and lets it finish.
+    api.mockDelay(1_500);
+    try {
+      assert.equal(await api.reviewChanges("HEAD"), 3);
+      await assertReviewLayout(api, "src/Badge.next.tsx");
+      await waitFor(async () => api.reviewItems().some((item) => item.status === "explaining") ? true : undefined, "a review in flight");
+      const endPrompts = api.answerLeaveReview("End Review");
+      await vscode.window.showTextDocument(cartViewDocument, vscode.ViewColumn.One);
+      await waitFor(async () => api.reviewItems().length === 0 ? true : undefined, "confirming to end a preparing review");
+      assert.equal(endPrompts(), 1);
+
+      assert.equal(await api.reviewChanges("HEAD"), 3);
+      await assertReviewLayout(api, "src/Badge.next.tsx");
+      await waitFor(async () => api.reviewItems().some((item) => item.status === "explaining") ? true : undefined, "a review request in flight");
+      api.pauseReview();
+      const prompts = api.answerLeaveReview(undefined);
+      await vscode.window.showTextDocument(cartViewDocument, vscode.ViewColumn.One);
+      await waitFor(async () => prompts() === 1 ? true : undefined, "leaving a stopped review with a request in flight to ask first");
+      assert.equal(api.reviewItems().length, 3, "Declining keeps the review.");
+      await waitFor(async () => api.reviewItems().some((item) => item.status === "done") ? true : undefined, "the sent request to finish and be saved");
+      await vscode.window.showTextDocument(cartItemDocument, vscode.ViewColumn.One);
+      await vscode.window.showTextDocument(cartViewDocument, vscode.ViewColumn.One);
+      await new Promise((resolveWait) => setTimeout(resolveWait, 300));
+      assert.equal(prompts(), 1, "A declined review is not asked about again.");
+    } finally {
+      api.mockDelay(0);
+      api.stopReview();
+    }
+
     assert.equal(await api.reviewChanges("HEAD"), 3, "The changed file and the two new files are queued.");
     await assertReviewLayout(api, "src/Badge.next.tsx");
     assert.deepEqual(
@@ -756,6 +786,8 @@ async function runWithCommitRepository(commitRoot: string): Promise<void> {
     // An ordinary working editor in the set takes precedence over path order.
     await vscode.window.showTextDocument(cartItemDocument, vscode.ViewColumn.One);
     await waitFor(async () => api.shownChange() === undefined ? true : undefined, "the active reviewed working document");
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 200));
+    assert.equal(api.reviewItems().length, 3, "A working file in the confirmed set keeps review mode.");
     assert.equal(await api.reviewChanges("HEAD"), 3);
     await assertReviewLayout(api, "src/CartItem.tsx");
     api.stopReview();
@@ -765,6 +797,10 @@ async function runWithCommitRepository(commitRoot: string): Promise<void> {
     await vscode.window.showTextDocument(cartViewDocument, vscode.ViewColumn.One);
     await waitFor(async () => api.shownOutline().some((entry) => entry.name === "CartView") ? true : undefined,
       "the existing visible preview to follow an ordinary editor before starting review");
+    // A file outside a finished review ends review mode quietly, restoring ordinary preview behavior.
+    await waitFor(async () => api.reviewItems().length === 0 ? true : undefined, "opening a file outside the finished review to end it");
+    assert.equal(api.reviewProgress(), undefined);
+    assert.equal(api.reviewNavigation(), undefined);
     const visiblePanel = await waitForPanel();
     assert.equal(visiblePanel.group.viewColumn, vscode.ViewColumn.Two);
     assert.equal(visiblePanel.group.activeTab, visiblePanel, "The preview is already visible before Review starts.");

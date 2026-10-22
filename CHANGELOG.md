@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.47.0
+
+- Opening a file outside the confirmed review ends review mode:
+  - A finished or stopped review ends quietly; its explanations stay saved.
+  - A review still preparing explanations first asks, once per review, whether
+    to end it.
+  - After it ends, the preview behaves normally again, including opt-in
+    prefetching.
+- Show review progress only on files that are part of the review.
+
 ## 0.46.2
 
 - Keep the cache statistics row visible, dimmed, while the next page or diff

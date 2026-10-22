@@ -997,12 +997,13 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     const navigationSession = reviewSession;
     const comparisonRef = change.comparisonRef;
     // While a review diff is still being read, keep its place visible (disabled) instead of removing the bands.
-    const readingItem = navigationSession && changeView && changeIsNativeDiff && !comparisonRef && change.reading
+    const readingItem = navigationSession && changeView && !comparisonRef && change.reading
       ? navigationSession.items.find((item) => { const pair = reviewDiffUris(item); return change.shows(pair.original, pair.modified); })
       : undefined;
-    const navigation = navigationSession && changeView && changeIsNativeDiff && (comparisonRef ?? readingItem?.ref)
+    const shownReviewItem = navigationSession && changeView && (comparisonRef ?? readingItem?.ref)
       ? reviewNavigation(navigationSession.items, (comparisonRef ?? readingItem?.ref)!)
       : undefined;
+    const navigation = changeIsNativeDiff ? shownReviewItem : undefined;
     if (navigation && navigationSession) {
       const item = navigation.items[navigation.index]!;
       if (activeReviewNavigation?.session !== navigationSession || activeReviewNavigation.item !== item) {
@@ -1033,7 +1034,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       ...(preview && !changeView ? { document: { ...preview.overview, entries: shownEntries() } } : {}),
       ...(folder ? { folder } : {}),
       ...(changeView ? { change: changeView } : {}),
-      ...(reviewSession && (!shownRoot || reviewSession.root === shownRoot) ? { review: reviewProgress(reviewSession) } : {}),
+      ...(reviewSession && shownReviewItem ? { review: reviewProgress(reviewSession) } : {}),
       ...(reviewNavigationView ? { reviewNavigation: reviewNavigationView } : {}),
       ...(breadcrumbs ? { breadcrumbs } : {}),
       explanations: changeView ? [] : explanations,
@@ -2766,8 +2767,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
   /** Shows review progress in the status bar; clicking it lists the changed files. */
   const updateReviewStatus = (): void => {
     const session = reviewSession;
-    const root = change.active ? change.root : preview?.root ?? folderPreview?.root;
-    panel?.updateReview(session && (!root || session.root === root) ? reviewProgress(session) : undefined);
+    panel?.updateReview(session && showsReviewItem(session) ? reviewProgress(session) : undefined);
     void vscode.commands.executeCommand("setContext", "downsideUp.hasReview", Boolean(session));
     if (!session) {
       reviewStatus.hide();
@@ -2803,6 +2803,62 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     activeReviewNavigation = undefined;
     updateReviewStatus();
     render();
+  };
+
+  /** Whether the preview shows one of the session's confirmed comparisons, including one still being read. */
+  const showsReviewItem = (session: Review): boolean => {
+    if (!change.active) return false;
+    const ref = change.comparisonRef;
+    if (ref) return Boolean(reviewNavigation(session.items, ref));
+    return change.reading && session.items.some((item) => { const pair = reviewDiffUris(item); return change.shows(pair.original, pair.modified); });
+  };
+
+  /** A working file in the review set is still part of reading it, even outside its diff. */
+  const previewInReview = (session: Review): boolean =>
+    Boolean(preview && !change.active && session.kind === "working" && preview.root === session.root &&
+      session.items.some((item) => item.path === filePath(session.root, preview!.document.uri)));
+
+  let leaveReviewPrompt: Promise<void> | undefined;
+  /** Test-only replacement for the modal, recording each prompt. */
+  let leaveReviewAnswerForTests: { answer: "End Review" | undefined; prompts: number } | undefined;
+  let keptReview: Review | undefined;
+  /**
+   * Opening a file outside the confirmed set leaves review mode: a finished
+   * review ends quietly (its results are saved); one still preparing asks first.
+   * Ending re-enables ordinary prefetching for the newly shown file.
+   */
+  const leaveReviewIfOutside = async (editor: vscode.TextEditor, session: Review): Promise<void> => {
+    if (reviewSession !== session || vscode.window.activeTextEditor !== editor || leaveReviewPrompt) return;
+    const shownHere = change.active || Boolean(preview && sameUri(preview.document.uri, editor.document.uri));
+    if (!shownHere || showsReviewItem(session) || previewInReview(session)) return;
+    const end = (): void => {
+      dismissReview();
+      if (preview && !change.active) startPrefetch(preview.document, preview.root);
+      else if (change.active) void change.prefetch();
+    };
+    // A request already sent is still in progress after Stop; ending would discard it.
+    const inProgress = (item: ReviewItem) => item.status === "explaining" || (!session.stopped && item.status === "pending");
+    const preparing = session.items.some(inProgress);
+    if (!preparing) {
+      end();
+      return;
+    }
+    if (keptReview === session) return;
+    const prompt = (async () => {
+      const remaining = session.items.filter(inProgress).length;
+      const tested = leaveReviewAnswerForTests;
+      if (tested) tested.prompts++;
+      const answer = tested ? tested.answer : await vscode.window.showWarningMessage(
+        `End the review of changed files ${session.base}?`,
+        { modal: true, detail: `${plural(remaining, "file")} still being prepared will stop, including requests already sent. Saved explanations are kept.` },
+        "End Review"
+      );
+      if (reviewSession !== session) return;
+      if (answer === "End Review") end();
+      else keptReview = session;
+    })();
+    leaveReviewPrompt = prompt;
+    try { await prompt; } finally { leaveReviewPrompt = undefined; }
   };
 
   /** The file being read, when it is in the review's repository: the one shown or its diff. */
@@ -3684,7 +3740,15 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     }
     if (preview && !change.active && sameUri(preview.document.uri, editor.document.uri) && !diff) return;
     if (outlineTimer) clearTimeout(outlineTimer);
-    if (panel?.panel.visible && !routeToChange(editor, true)) void previewDocument(editor.document);
+    if (!panel?.panel.visible) return;
+    const session = reviewSession;
+    const shown = diff
+      ? showChange(diff, true).catch((error: unknown) => {
+          notice = { tone: "error", text: `Could not read the change: ${errorMessage(error)}` };
+          render();
+        })
+      : previewDocument(editor.document);
+    if (session) void shown.then(() => leaveReviewIfOutside(editor, session)).catch(() => undefined);
   });
 
   const onTabsChange = vscode.window.tabGroups.onDidChangeTabs(() => {
@@ -3954,6 +4018,10 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
           }
         : undefined;
     },
+    answerLeaveReview: (answer: "End Review" | undefined) => {
+      leaveReviewAnswerForTests = { answer, prompts: 0 };
+      return () => leaveReviewAnswerForTests?.prompts ?? 0;
+    },
     renderedReviewNavigation: (reset = false) => {
       const states = [...renderedReviewNavigation];
       if (reset) renderedReviewNavigation.length = 0;
@@ -3962,6 +4030,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     invokeReviewNavigation: (direction: "previous" | "next" | "picker", token: string) =>
       handlePanelAction({ type: "reviewNavigation", direction, token }),
     stopReview: () => dismissReview(),
+    pauseReview: () => { stopReview(); updateReviewStatus(); },
     commandRoot: () => rootForCommand(),
     mockDelay: (ms: number) => { mockProvider.delayMs = ms; },
     shownFolder: () => folderPreview && !preview
@@ -4035,6 +4104,7 @@ export interface DownsideUpTestApi {
   reviewItems(): Array<{ path: string; change: string; status: string }>;
   reviewNavigation(): { token: string; fileName: string; position: number; total: number; canPrevious: boolean; canNext: boolean } | undefined;
   invokeReviewNavigation(direction: "previous" | "next" | "picker", token: string): Promise<void>;
+  answerLeaveReview(answer: "End Review" | undefined): () => number;
   renderedReviewNavigation(reset?: boolean): Array<{ fileName: string; loading: boolean; stats: boolean } | undefined>;
   /** The native diff shown in the preview, or undefined. */
   shownChange(): { fileName: string; facts: string; status: string; explained: boolean; links: number;
@@ -4044,6 +4114,8 @@ export interface DownsideUpTestApi {
   revealChange(side: "original" | "modified"): Promise<void>;
   explainChange(): Promise<void>;
   stopReview(): void;
+  /** Stop: no new files start; requests already sent finish and are saved. */
+  pauseReview(): void;
   /** The repository that Clear Cache and Refresh Repository Context act on now. */
   commandRoot(): Promise<string | undefined>;
   /** Makes each mock request take this long, to observe work in flight. */

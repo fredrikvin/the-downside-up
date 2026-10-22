@@ -563,7 +563,13 @@ changes only that line; it does not re-render the bands or charts. Starting
 Review Changes… or Prepare Commit Explanations… opens one confirmed file's
 native diff in the first editor column, with the preview beside it and focus
 kept on the diff. That file is the active editor's file if it is in the set,
-otherwise the first by path. Opening it starts no request. A renamed comparison must match
+otherwise the first by path. Opening it starts no request. Review progress
+shows only while the preview shows a file in the review. Opening a file
+outside the set (another file or diff, but not a working file of a Review
+Changes… set) leaves review mode. A finished or stopped review ends quietly.
+A review still preparing asks once, in a modal, whether to end it; ending
+aborts its remaining requests, like Cancel. Ordinary opt-in prefetching then
+resumes for the shown file, using only consent already given. A renamed comparison must match
 both of its side paths; matching only a label or one path is not sufficient.
 The toolbar is hidden for comparisons outside the active session and for
 single historical documents. Host-issued opaque navigation authority is bound
