@@ -3216,6 +3216,8 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       }),
       () => {
         if (panel !== created) return;
+        // Cancellation notifies listeners synchronously; none may see the closed panel.
+        panel = undefined;
         clearReveal();
         regeneration?.abort();
         stopPrefetch();
@@ -3231,7 +3233,6 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
         folderPreview = undefined;
         openingFolder = undefined;
         notice = undefined;
-        panel = undefined;
       },
       (visible) => {
         // A folder shown or being opened stays; otherwise catch up with the editor.

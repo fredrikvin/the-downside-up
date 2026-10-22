@@ -194,6 +194,31 @@ async function testCommitPreparation(api: DownsideUpTestApi, root: string): Prom
     }
     assert.equal(await api.prepareCommit(root, commit), 4);
     assert.ok(api.reviewItems().every((item) => item.status === "done"), "Preparing again reuses exact revision comparisons without another request.");
+    await vscode.window.tabGroups.close(await waitForPanel());
+    await waitFor(async () => api.shownChange() === undefined ? true : undefined, "closing a prepared commit to finish cleanup");
+    assert.deepEqual(api.previewExplanations(), [], "Closing a commit preview clears its state.");
+    assert.equal(api.commitProgress()?.canStop, false);
+    assert.equal(await api.prepareCommit(root, commit), 4, "Preparation can reopen the preview without reloading the window.");
+    await vscode.commands.executeCommand("vscode.diff", side("main.ts", parent), side("main.ts", commit), "Reopened commit (test)");
+    await vscode.commands.executeCommand("downsideUp.showFileOverview");
+    await waitFor(async () => api.shownChange()?.fileName === "main.ts" && api.shownChange()?.status === "current" ? true : undefined, "reopened prepared comparison");
+
+    await writeFile(resolve(root, "main.ts"), "export function main() { return 3; }\n");
+    git("add", "."); git("commit", "-q", "-m", "next");
+    api.mockDelay(1_500);
+    try {
+      assert.equal(await api.prepareCommit(root, git("rev-parse", "HEAD")), 1);
+      await waitFor(async () => api.reviewItems().some((item) => item.status === "explaining") ? true : undefined, "preparation in flight before closing");
+      await vscode.window.tabGroups.close(await waitForPanel());
+      await waitFor(async () => api.shownChange() === undefined ? true : undefined, "closing an in-flight preparation to finish cleanup");
+      await waitFor(async () => api.reviewItems().every((item) => item.status === "pending") ? true : undefined, "closed preparation requests to abort without saving");
+      assert.equal(api.commitProgress()?.canStop, false);
+    } finally {
+      api.mockDelay(0);
+    }
+    await vscode.commands.executeCommand("downsideUp.showFileOverview");
+    await waitForPanel();
+    assert.equal(await api.prepareCommit(root, commit), 4, "Late cancellation updates cannot poison a new review session.");
   } finally {
     api.stopReview();
   }

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.44.1
+
+- Fix closing a commit-preparation preview leaving a disposed webview attached
+  to the extension, causing later review commands and preview updates to fail
+  until the window was reloaded. Detach the panel before cancellation callbacks
+  run, and ignore late messages and navigation handlers after disposal.
+
 ## 0.44.0
 
 - Add **Prepare Commit Explanations…**: confirm a bounded immutable commit vs

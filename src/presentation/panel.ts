@@ -2448,6 +2448,7 @@ function nonce(): string {
 
 export class ExplanationPanel {
   readonly panel: vscode.WebviewPanel;
+  private disposed = false;
   private state: PanelState | undefined;
   private scrollLine: number | undefined;
   private cursorEntry: string | undefined;
@@ -2476,6 +2477,7 @@ export class ExplanationPanel {
     this.panel.webview.html = panelHtml(nonce());
     this.disposables.push(
       this.panel.webview.onDidReceiveMessage((message: unknown) => {
+        if (this.disposed) return;
         if (typeof message !== "object" || message === null || !("type" in message)) return;
         const fields = message as Record<string, unknown>;
         const stringField = (key: string): string | undefined => {
@@ -2516,40 +2518,48 @@ export class ExplanationPanel {
         this.dispose();
         onClosed?.();
       }),
-      this.panel.onDidChangeViewState((event) => onVisibilityChanged?.(event.webviewPanel.visible))
+      this.panel.onDidChangeViewState((event) => {
+        if (!this.disposed) onVisibilityChanged?.(event.webviewPanel.visible);
+      })
     );
   }
 
   private replay(): void {
-    if (this.state) void this.panel.webview.postMessage({ type: "state", state: this.state });
-    if (this.cursorEntry) void this.panel.webview.postMessage({ type: "cursor", entryId: this.cursorEntry });
-    if (this.scrollLine !== undefined) void this.panel.webview.postMessage({ type: "scroll", line: this.scrollLine });
-    if (this.activeSteps.entryId) void this.panel.webview.postMessage({ type: "steps", ...this.activeSteps });
+    if (this.state) this.postMessage({ type: "state", state: this.state });
+    if (this.cursorEntry) this.postMessage({ type: "cursor", entryId: this.cursorEntry });
+    if (this.scrollLine !== undefined) this.postMessage({ type: "scroll", line: this.scrollLine });
+    if (this.activeSteps.entryId) this.postMessage({ type: "steps", ...this.activeSteps });
+  }
+
+  private postMessage(message: unknown): void {
+    if (!this.disposed) void this.panel.webview.postMessage(message);
   }
 
   update(state: PanelState): void {
+    if (this.disposed) return;
     this.state = state;
-    void this.panel.webview.postMessage({ type: "state", state });
+    this.postMessage({ type: "state", state });
   }
 
   /** Progress changes must not rebuild charts or disturb the reader's selection. */
   updateReview(review: PanelState["review"]): void {
+    if (this.disposed) return;
     if (JSON.stringify(this.state?.review) === JSON.stringify(review)) return;
     if (this.state) this.state = { ...this.state, review };
-    void this.panel.webview.postMessage({ type: "review", review });
+    this.postMessage({ type: "review", review });
   }
 
   /** Aligns the preview with the first visible source line. */
   scrollToLine(line: number): void {
     this.scrollLine = line;
-    void this.panel.webview.postMessage({ type: "scroll", line });
+    this.postMessage({ type: "scroll", line });
   }
 
   /** Highlights the outline entry at the editor cursor. */
   highlightEntry(entryId: string | undefined): void {
     if (entryId === this.cursorEntry) return;
     this.cursorEntry = entryId;
-    void this.panel.webview.postMessage({ type: "cursor", entryId });
+    this.postMessage({ type: "cursor", entryId });
   }
 
   /** Highlights the steps, pseudocode lines, and flowchart nodes that cover the editor's cursor or selection. */
@@ -2563,15 +2573,17 @@ export class ExplanationPanel {
       : { entryId: "", steps: [], pseudocode: [], nodes: [] };
     if (!reveal && JSON.stringify(next) === JSON.stringify(this.activeSteps)) return;
     this.activeSteps = next;
-    void this.panel.webview.postMessage({ type: "steps", ...next, ...(reveal ? { reveal: true } : {}) });
+    this.postMessage({ type: "steps", ...next, ...(reveal ? { reveal: true } : {}) });
   }
 
   setReferenceHandlers(handlers: Map<string, () => Promise<void>>): void {
+    if (this.disposed) return;
     this.referenceHandlers.clear();
     for (const [id, navigate] of handlers) this.referenceHandlers.set(id, navigate);
   }
 
   setFileReferenceHandlers(handlers: Map<string, () => Promise<void>>): void {
+    if (this.disposed) return;
     this.fileReferenceHandlers.clear();
     for (const [id, navigate] of handlers) this.fileReferenceHandlers.set(id, navigate);
   }
@@ -2582,6 +2594,11 @@ export class ExplanationPanel {
   }
 
   dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
+    this.state = undefined;
+    this.referenceHandlers.clear();
+    this.fileReferenceHandlers.clear();
     for (const disposable of this.disposables.splice(0)) disposable.dispose();
   }
 }
