@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.46.1
+
+- Keep both review bands visible while the next diff loads, with the file's
+  name shown and all controls disabled, instead of hiding them and reflowing.
+- Place the Next chevron after its label, and put review progress above the
+  navigation buttons.
+
 ## 0.46.0
 
 - Starting **Review Changes…** or **Prepare Commit Explanations…** now opens

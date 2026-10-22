@@ -552,8 +552,10 @@ When the preview shows a native diff whose repository, both side identities
 (including exact revision IDs), and both paths match an item in the active
 confirmed Review set, a review band above the file header (**‹ Previous /
 filename · position of total / Next ›**) steps through the confirmed files in
-stable path order. The band is mirrored below a divider at the bottom of the
-preview, without progress. Boundary buttons are disabled and navigation does
+stable path order. The band is mirrored below a divider at the bottom of the preview, without
+progress. While the next confirmed diff is being read, both bands stay in
+place with that file's name and all controls disabled, so they don't
+disappear and reflow. Boundary buttons are disabled and navigation does
 not wrap. The filename/position opens the existing **Show Changed Files**
 picker. The top band also holds the single compact progress status
 (**Review:** or **Commit:** ready/total) with **Stop**. A progress update

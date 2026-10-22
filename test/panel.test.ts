@@ -151,6 +151,9 @@ it("renders mirrored review navigation with accessible controls and host-only ac
   expect(buttons.map((button) => button.elements().some((node) => node.tagName === "svg" && node.getAttribute("class") === "icon"))).toEqual([true, false, true]);
   expect(buttons[0]!.elements().some((node) => node.tagName === "path" && node.getAttribute("d") === "m10 3-5 5 5 5")).toBe(true);
   expect(buttons[2]!.elements().some((node) => node.tagName === "path" && node.getAttribute("d") === "m6 3 5 5-5 5")).toBe(true);
+  // Chevrons sit on the outer edge: before Previous, after Next.
+  expect(buttons[0]!.children[0]).toMatchObject({ tagName: "svg" });
+  expect(buttons[2]!.children.at(-1)).toMatchObject({ tagName: "svg" });
   expect(buttons[1]!.elements().some((node) => node.textContent === navigation.fileName)).toBe(true);
   expect(buttons[1]!.elements().some((node) => node.textContent === "2 of 8")).toBe(true);
   expect(bottomButtons.map((button) => button.getAttribute("aria-label"))).toEqual(buttons.map((button) => button.getAttribute("aria-label")));
@@ -176,6 +179,15 @@ it("renders mirrored review navigation with accessible controls and host-only ac
     expect(boundary[0]!.disabled).toBe(true);
     expect(boundary[2]!.disabled).toBe(true);
   }
+  renderReviewBands({ ...navigation, loading: true }, undefined);
+  for (const id of ["reviewNavigationTop", "reviewNavigationBottom"]) {
+    expect(element(id).hidden).toBe(false);
+    expect(element(id).getAttribute("aria-busy")).toBe("true");
+    const loading = element(id).children.filter((child): child is TestElement => child instanceof TestElement);
+    expect(loading.map((button) => button.disabled)).toEqual([true, true, true]);
+    expect(loading[1]!.elements().some((node) => node.textContent === navigation.fileName)).toBe(true);
+  }
+  messages.length = 0;
   renderReviewBands(undefined, undefined);
   expect(element("reviewBandTop").hidden).toBe(true);
   expect(element("reviewNavigationTop").hidden).toBe(true);
@@ -280,6 +292,7 @@ describe("preview webview document", () => {
   it("places review bands around file content and removes progress from the header", () => {
     const html = panelHtml("n");
     expect(html.indexOf('id="reviewBandTop"')).toBeLessThan(html.indexOf('id="crumbs"'));
+    expect(html.indexOf('id="reviewProgress"')).toBeLessThan(html.indexOf('id="reviewNavigationTop"'));
     expect(html.indexOf('id="reviewNavigationBottom"')).toBeGreaterThan(html.indexOf('id="limitations"'));
     expect(html.indexOf('id="reviewNavigationBottom"')).toBeLessThan(html.indexOf('id="repo"'));
     const header = html.slice(html.indexOf("<header"), html.indexOf("</header>"));

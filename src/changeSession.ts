@@ -101,6 +101,8 @@ export class ChangeSession {
   get root(): string | undefined { return this.shown?.root; }
   /** Exact resolved source pair currently bound to the preview, including both identities and paths. */
   get comparisonRef(): ComparisonRef | undefined { return this.shown?.ref; }
+  /** The shown pair is still being resolved and read, before it has a comparison or a problem. */
+  get reading(): boolean { return Boolean(this.shown && !this.shown.ref && !this.shown.problem); }
   /** Repository-relative path of the shown file, once read. */
   get path(): string | undefined {
     const snapshot = this.shown?.snapshot;

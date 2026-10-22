@@ -733,8 +733,16 @@ async function runWithCommitRepository(commitRoot: string): Promise<void> {
     assert.deepEqual(api.reviewProgress(), { text: "Review: 3/3 ready", canStop: false });
     const navigation = api.reviewNavigation();
     assert.ok(navigation?.canNext);
+    api.renderedReviewNavigation(true);
     await api.invokeReviewNavigation("next", navigation.token);
     await assertReviewLayout(api, "src/Badge.tsx");
+    const transition = api.renderedReviewNavigation();
+    assert.ok(transition.length > 0, "Navigating re-renders the preview.");
+    assert.ok(transition.every((state) => state !== undefined),
+      `The review bands stay visible while the next diff loads: ${JSON.stringify(transition)}`);
+    assert.ok(transition.some((state) => state?.fileName === "Badge.tsx" && state.loading),
+      "The next file is shown, disabled, while it is read.");
+    assert.equal(transition.at(-1)?.loading, false);
     // The diff a review opens for an added file describes the same two versions the batch explained.
     const emptyBadge = badgeUri.with({ scheme: "downside-up-empty", query: "HEAD" });
     await vscode.commands.executeCommand("vscode.diff", emptyBadge, badgeUri, "Badge (test)");

@@ -264,6 +264,8 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
   let reviewSession: Review | undefined;
   /** Opaque authority for the currently rendered exact review comparison. */
   let activeReviewNavigation: { readonly session: Review; readonly item: ReviewItem; readonly token: string } | undefined;
+  /** Recent rendered navigation states, for tests of band stability across loads. */
+  const renderedReviewNavigation: Array<{ fileName: string; loading: boolean } | undefined> = [];
   /** The folder shown instead of a file, until the active editor changes. */
   let folderPreview: FolderPreview | undefined;
   /**
@@ -989,8 +991,12 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     let reviewNavigationView: ReviewNavigationView | undefined;
     const navigationSession = reviewSession;
     const comparisonRef = change.comparisonRef;
-    const navigation = navigationSession && changeView && changeIsNativeDiff && comparisonRef
-      ? reviewNavigation(navigationSession.items, comparisonRef)
+    // While a review diff is still being read, keep its place visible (disabled) instead of removing the bands.
+    const readingItem = navigationSession && changeView && changeIsNativeDiff && !comparisonRef && change.reading
+      ? navigationSession.items.find((item) => { const pair = reviewDiffUris(item); return change.shows(pair.original, pair.modified); })
+      : undefined;
+    const navigation = navigationSession && changeView && changeIsNativeDiff && (comparisonRef ?? readingItem?.ref)
+      ? reviewNavigation(navigationSession.items, (comparisonRef ?? readingItem?.ref)!)
       : undefined;
     if (navigation && navigationSession) {
       const item = navigation.items[navigation.index]!;
@@ -1003,11 +1009,14 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
         position: navigation.index + 1,
         total: navigation.items.length,
         canPrevious: navigation.index > 0,
-        canNext: navigation.index + 1 < navigation.items.length
+        canNext: navigation.index + 1 < navigation.items.length,
+        ...(comparisonRef ? {} : { loading: true })
       };
     } else {
       activeReviewNavigation = undefined;
     }
+    renderedReviewNavigation.push(reviewNavigationView && { fileName: reviewNavigationView.fileName, loading: reviewNavigationView.loading === true });
+    if (renderedReviewNavigation.length > 50) renderedReviewNavigation.shift();
     panel.update({
       provider: descriptor.kind,
       models: {
@@ -3940,6 +3949,11 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
           }
         : undefined;
     },
+    renderedReviewNavigation: (reset = false) => {
+      const states = [...renderedReviewNavigation];
+      if (reset) renderedReviewNavigation.length = 0;
+      return states;
+    },
     invokeReviewNavigation: (direction: "previous" | "next" | "picker", token: string) =>
       handlePanelAction({ type: "reviewNavigation", direction, token }),
     stopReview: () => dismissReview(),
@@ -4016,6 +4030,7 @@ export interface DownsideUpTestApi {
   reviewItems(): Array<{ path: string; change: string; status: string }>;
   reviewNavigation(): { token: string; fileName: string; position: number; total: number; canPrevious: boolean; canNext: boolean } | undefined;
   invokeReviewNavigation(direction: "previous" | "next" | "picker", token: string): Promise<void>;
+  renderedReviewNavigation(reset?: boolean): Array<{ fileName: string; loading: boolean } | undefined>;
   /** The native diff shown in the preview, or undefined. */
   shownChange(): { fileName: string; facts: string; status: string; explained: boolean; links: number;
     added: readonly ChangeFunctionCardView[]; removed: readonly ChangeFunctionCardView[] } | undefined;

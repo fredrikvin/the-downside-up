@@ -44,6 +44,8 @@ export interface ReviewNavigationView {
   readonly total: number;
   readonly canPrevious: boolean;
   readonly canNext: boolean;
+  /** The exact pair is still being read; controls stay visible but disabled. */
+  readonly loading?: boolean;
 }
 
 export interface LinkedItems {
@@ -383,7 +385,7 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
     .review-navigation .review-file-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; font-weight: 500; }
     .review-navigation .review-position { color: var(--vscode-descriptionForeground); font-size: .85em; white-space: nowrap; font-weight: 400; }
     .review-navigation .icon { width: 14px; height: 14px; }
-    .review-progress { display: flex; align-items: center; gap: 6px; margin-top: 2px; font-size: .8em; color: var(--vscode-descriptionForeground); }
+    .review-progress { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; font-size: .8em; color: var(--vscode-descriptionForeground); }
     .review-progress button { border: 0; border-radius: 3px; padding: 2px 6px; color: inherit; background: transparent; font: inherit; cursor: pointer; }
     .review-progress button:hover { background: var(--vscode-toolbar-hoverBackground, rgba(128,128,128,.14)); }
     .review-progress button:focus-visible { outline: 1px solid var(--vscode-contrastActiveBorder, var(--vscode-focusBorder)); outline-offset: 1px; }
@@ -626,8 +628,8 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
   <aside id="prefetchConsent" class="prefetch-consent" aria-label="Background explanation approval" hidden></aside>
   <main id="doc">
     <section id="reviewBandTop" class="review-band" hidden>
-      <nav id="reviewNavigationTop" class="review-navigation" aria-label="Review files, top" hidden></nav>
       <div id="reviewProgress" class="review-progress" role="status" aria-live="polite" hidden></div>
+      <nav id="reviewNavigationTop" class="review-navigation" aria-label="Review files, top" hidden></nav>
     </section>
     <nav id="crumbs" class="crumbs muted small" aria-label="Location" hidden></nav>
     <div class="page-heading"><h1 id="title">Downside Up</h1><div id="pageActions" class="page-actions"></div></div>
@@ -2476,14 +2478,17 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
       toolbar.hidden = !navigation;
       toolbar.replaceChildren();
       if (!navigation) return;
-      const button = (label, direction, disabled, title, glyph, className) => {
+      const loading = navigation.loading === true;
+      toolbar.setAttribute("aria-busy", loading ? "true" : "false");
+      const button = (label, direction, disabled, title, glyph, className, glyphAfter) => {
         const control = el("button", className || "");
         control.type = "button";
-        control.disabled = disabled;
+        control.disabled = disabled || loading;
         control.title = title;
         control.setAttribute("aria-label", title);
-        if (glyph) control.append(icon(glyph));
+        if (glyph && !glyphAfter) control.append(icon(glyph));
         control.append(el("span", direction === "picker" ? "review-file-name" : "review-action-label", label));
+        if (glyph && glyphAfter) control.append(icon(glyph));
         control.addEventListener("click", () => post({
           type: "reviewNavigation", token: navigation.token, direction
         }));
@@ -2493,7 +2498,7 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
       toolbar.append(
         button("Previous", "previous", !navigation.canPrevious, "Previous changed file", "chevron-left"),
         button(navigation.fileName, "picker", false, pickerTitle, undefined, "review-file"),
-        button("Next", "next", !navigation.canNext, "Next changed file", "chevron-right")
+        button("Next", "next", !navigation.canNext, "Next changed file", "chevron-right", undefined, true)
       );
       const label = toolbar.children[1];
       const position = el("span", "review-position", navigation.position + " of " + navigation.total);
