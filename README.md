@@ -46,7 +46,9 @@ and billing.
 - **Understand a change.** With the preview open, show a Git diff in VS Code
   and click **Explain changes**. The result groups functions into **Added**,
   **Changed**, and **Removed**, followed by **Other changes** for non-function
-  edits. Added and Removed functions get a short summary and an **Explain**
+  edits. Current cached function details expand automatically when you return
+  to a diff; cache misses never generate them. Added and Removed functions get
+  a short summary and an **Explain**
   button; only that explicit action requests their normal Steps, Pseudocode,
   and Flowchart detail. Changed functions retain before/after/when/flow items
   and paired visuals. Signature-only changes count; pure comments and

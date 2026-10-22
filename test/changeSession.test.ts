@@ -61,6 +61,60 @@ async function cardSession() {
 }
 
 describe("explicit change function cards", () => {
+  it("restores cached added and removed details when returning to a saved diff without provider requests", async () => {
+    const { changes, provider, view } = await cardSession();
+    const added = view().result!.added![0]!.id;
+    const removed = view().result!.removed![0]!.id;
+    await changes.explainCard(added);
+    await changes.explainCard(removed);
+    const requests = provider.requests;
+    changes.clear();
+    await changes.show(headOf("functions.ts"), uri("file", "functions.ts"));
+    expect(changes.cardState(added)?.view.status).toBe("current");
+    expect(changes.cardState(removed)?.view.status).toBe("current");
+    expect(changes.cardState(added)?.view.detail).toBe("Saved explanation");
+    expect(changes.cardState(removed)?.view.detail).toBe("Saved explanation");
+    expect(view().result!.added![0]!.explanation?.status).toBe("current");
+    expect(view().result!.removed![0]!.explanation?.status).toBe("current");
+    expect(provider.requests).toBe(requests);
+  });
+
+  it("leaves uncached details collapsed when returning to a saved diff", async () => {
+    const { changes, provider, view } = await cardSession();
+    const id = view().result!.added![0]!.id;
+    changes.clear();
+    await changes.show(headOf("functions.ts"), uri("file", "functions.ts"));
+    expect(changes.cardState(id)).toBeUndefined();
+    expect(view().result!.added![0]!.explanation).toBeUndefined();
+    expect(provider.requests).toBe(1);
+  });
+
+  it("does not attach a late cache lookup after leaving the diff", async () => {
+    const { changes, provider, service, view } = await cardSession();
+    const id = view().result!.added![0]!.id;
+    await changes.explainCard(id);
+    const requests = provider.requests;
+    changes.clear();
+    const lookup = service.findCachedExplanation.bind(service);
+    let release!: () => void;
+    let started!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const entered = new Promise<void>((resolve) => { started = resolve; });
+    vi.spyOn(service, "findCachedExplanation").mockImplementation(async (...args) => {
+      started();
+      await gate;
+      return lookup(...args);
+    });
+    const opening = changes.show(headOf("functions.ts"), uri("file", "functions.ts"));
+    await entered;
+    changes.clear();
+    release();
+    await opening;
+    expect(changes.cardStates()).toEqual([]);
+    expect(changes.active).toBe(false);
+    expect(provider.requests).toBe(requests);
+  });
+
   it("does not request details from showing, rendering, refreshing, prefetch or comparison generation", async () => {
     const { changes, provider, view } = await cardSession();
     expect(provider.requests).toBe(1);
@@ -185,7 +239,8 @@ function session(onGenerate?: () => Promise<void>, options: Partial<Pick<ChangeS
     authorizeExternalData: async () => true
   });
   const changes = new ChangeSession({
-    service, reveal: async () => undefined, schedule: (task) => task(), changed: () => undefined, ...options
+    service, reveal: async () => undefined, schedule: (task) => task(), changed: () => undefined,
+    explanationView: (state, entryId) => ({ ...state.view, entryId }), ...options
   });
   return { changes, provider, sent, service };
 }

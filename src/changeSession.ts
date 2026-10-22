@@ -206,6 +206,7 @@ export class ChangeSession {
     if (this.shown !== shown || this.epoch !== epoch) return;
     if (!saved?.current || (shown.snapshot && JSON.stringify(shown.snapshot) !== JSON.stringify(snapshot))) this.clearCards();
     apply({ root, ref: resolved.ref, snapshot, problem, saved });
+    await this.restoreCards(shown, epoch);
   }
 
   /**
@@ -239,18 +240,43 @@ export class ChangeSession {
 
   cancelCard(id: string): void { this.cardRequests.get(id)?.abort(); }
 
-  private async resolveCard(id: string): Promise<ChangeCardState | undefined> {
+  private async resolveCard(id: string, cacheOnly = false): Promise<ChangeCardState | undefined> {
     if (!this.hasCard(id)) return undefined;
     const existing = this.cards.get(id);
     if (existing) { await existing.validate(); return existing; }
     const pending = this.cardLoads.get(id);
     if (pending) return pending;
-    const load = this.loadCard(id);
+    const load = this.loadCard(id, cacheOnly);
     this.cardLoads.set(id, load);
     try { return await load; } finally { if (this.cardLoads.get(id) === load) this.cardLoads.delete(id); }
   }
 
-  private async loadCard(id: string): Promise<ChangeCardState | undefined> {
+  private applyCardResult(card: ChangeCardState, result: ExplanationResult): void {
+    card.result = result;
+    card.view = {
+      functionName: card.value.target.qualifiedName, status: "current", detail: result.cached ? "Saved explanation" : "Generated just now",
+      explanation: result.explanation, references: [], limitations: [...new Set([...result.context.limitations, ...result.explanation.limitations])],
+      ...(result.usage ? { usage: formatUsage(result.usage) } : {})
+    };
+  }
+
+  private async restoreCards(shown: Shown, epoch: number): Promise<void> {
+    const bindingEpoch = this.bindingEpoch;
+    for (const entry of shown.saved?.current ? shown.saved.catalogue?.entries ?? [] : []) {
+      if (this.shown !== shown || this.epoch !== epoch || this.bindingEpoch !== bindingEpoch) return;
+      if (entry.category === "changed") continue;
+      const id = this.cardId(entry);
+      if (this.cards.has(id) || this.cardRequests.has(id)) continue;
+      try {
+        await this.resolveCard(id, true);
+      } catch (error) {
+        if (this.shown !== shown || this.epoch !== epoch || this.bindingEpoch !== bindingEpoch) return;
+        this.cardErrors.set(id, `Could not load the saved function explanation: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+  }
+
+  private async loadCard(id: string, cacheOnly = false): Promise<ChangeCardState | undefined> {
     const bindingEpoch = this.bindingEpoch;
     const shown = this.shown!;
     const snapshot = shown.snapshot!;
@@ -281,6 +307,14 @@ export class ChangeSession {
       key: id, side, value: { root: snapshot.root, target, document }, validate, ...(scope ? { scope } : {}),
       view: { functionName: entry.name, status: "loading", detail: "", references: [], limitations: [] }
     };
+    if (cacheOnly) {
+      const result = scope
+        ? await this.host.service.findSnapshotExplanation(snapshot.root, target, scope)
+        : await this.host.service.findCachedExplanation(snapshot.root, target, document);
+      await validate();
+      if (!result || result.stale) return undefined;
+      this.applyCardResult(state, result);
+    }
     this.cards.set(id, state);
     return state;
   }
@@ -293,6 +327,8 @@ export class ChangeSession {
     let state: ChangeCardState | undefined;
     try {
       state = await this.resolveCard(id);
+      // A concurrent cache-only load may have completed with a miss.
+      if (!state && this.hasCard(id) && !controller.signal.aborted) state = await this.resolveCard(id);
       if (!state || controller.signal.aborted) return;
       state.controller = controller;
       state.loadingFormat = format;
@@ -310,12 +346,7 @@ export class ChangeSession {
           : this.host.service.explain(root, target, document, controller.signal, undefined, card.validate);
       }, "explicit");
       if (this.cards.get(id) !== card) return;
-      card.result = result;
-      card.view = {
-        functionName: target.qualifiedName, status: "current", detail: result.cached ? "Saved explanation" : "Generated just now",
-        explanation: result.explanation, references: [], limitations: [...new Set([...result.context.limitations, ...result.explanation.limitations])],
-        ...(result.usage ? { usage: formatUsage(result.usage) } : {})
-      };
+      this.applyCardResult(card, result);
     } catch (error) {
       if (!state) {
         if (this.hasCard(id) && this.cardRequests.get(id) === controller && !controller.signal.aborted) {
@@ -381,7 +412,10 @@ export class ChangeSession {
         }
         return this.host.service.explainComparison(snapshot, () => this.currentPair(shown, root), controller.signal);
       }, prefetching ? "prefetch" : "explicit");
-      if (this.shown === shown) shown.saved = result;
+      if (this.shown === shown) {
+        shown.saved = result;
+        await this.restoreCards(shown, this.epoch);
+      }
     } catch (error) {
       if (controller.signal.aborted) {
         shown.error = undefined;

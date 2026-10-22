@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.43.5
+
+- Restore current cached Added/Removed function explanations expanded when
+  returning to a diff. Cache misses remain behind Explain without provider
+  requests; obsolete lookups cannot attach details after leaving the diff.
+
 ## 0.43.4
 
 - Preserve clicked source-item highlights through intermediate and delayed

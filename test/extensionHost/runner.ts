@@ -111,6 +111,18 @@ async function testSnapshotFunctionCards(api: DownsideUpTestApi, document: vscod
     assert.equal(vscode.window.tabGroups.all.flatMap((group) => group.tabs).length, tabsBefore,
       "Card detail and source navigation do not open separate file tabs.");
     assert.ok(vscode.window.tabGroups.all.some((group) => group.activeTab?.input instanceof vscode.TabInputTextDiff));
+    const other = await vscode.workspace.openTextDocument(resolve(document.uri.fsPath, "../CartView.tsx"));
+    await vscode.window.showTextDocument(other, vscode.ViewColumn.One);
+    await waitFor(async () => api.shownChange() === undefined ? true : undefined, "leaving the function diff");
+    await vscode.commands.executeCommand("vscode.diff", originalUri, uri, "Function sections (test)");
+    await vscode.commands.executeCommand("downsideUp.showFileOverview");
+    await waitFor(async () => {
+      const restored = api.shownChange();
+      return restored?.added[0]?.explanation?.status === "current" && restored.removed[0]?.explanation?.status === "current"
+        ? true : undefined;
+    }, "cached Added and Removed explanations to expand on returning");
+    assert.equal(api.shownChange()?.added[0]?.explanation?.detail, "Saved explanation");
+    assert.equal(api.shownChange()?.removed[0]?.explanation?.detail, "Saved explanation");
     console.log("Downside Up integration tests: Added/Removed details and three formats reveal their exact native Git diff side.");
   } finally {
     await replace(before);

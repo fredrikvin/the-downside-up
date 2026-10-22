@@ -404,7 +404,10 @@ are omitted with a limitation while valid text survives.
 
 **Explain** on an Added/Removed card is a separate explicit request for its
 normal Steps/Pseudocode/Flowchart explanation. Rendering, navigation, review,
-diff prefetch, and cache misses never request those details. A working-tree
+diff prefetch, and cache misses never request those details. Reopening a diff
+restores current cached card explanations expanded; missing or stale details
+retain the Explain button without generation. Historical cards use the same
+cache-only restoration for their exact snapshot. A working-tree
 addition reuses the normal function cache and context/consent pipeline; it may
 prime/review project context (with separate Overview-model approval) but never
 starts a file-summary request from the card. Historical details (Removed or an
