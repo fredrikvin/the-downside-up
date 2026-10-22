@@ -64,7 +64,9 @@ function webviewHelpers() {
   const script = html.slice(start, html.indexOf("</script>", start));
   const elements = new Map<string, TestElement>();
   const messages: unknown[] = [];
-  const frames: Array<() => void> = [];
+  const frames: Array<{ id: number; callback: () => void }> = [];
+  const cancelledFrames = new Set<number>();
+  let nextFrame = 0;
   const element = (id: string) => {
     const rendered = [...elements.values()].flatMap((node) => node.elements()).find((node) => node.id === id);
     if (rendered) return rendered;
@@ -73,9 +75,11 @@ function webviewHelpers() {
   };
   const window = {
     scrollY: 0, innerHeight: 720,
-    addEventListener: () => undefined,
-    scrollTo: vi.fn((_x: number, y: number) => { window.scrollY = y; })
+    addEventListener: (name: string, callback: (event: { data: unknown }) => void) => { listeners.set(name, callback); },
+    scrollTo: vi.fn((_x: number, y: number) => { window.scrollY = y; }),
+    scrollBy: vi.fn()
   };
+  const listeners = new Map<string, (event: { data: unknown }) => void>();
   const helpers = new Function("acquireVsCodeApi", "document", "window", "requestAnimationFrame", "cancelAnimationFrame", script + "\nreturn { render, layoutFlow, downwardPath, renderPseudocode, renderFlowchart, renderEntry, renderAiBody, missingFormat, renderHeader, renderCrumbs, renderActivity, renderPageActions, renderChange, highlightSteps, setFormats: (formats) => { state = { formats }; } };")(
     () => ({ getState: () => ({}), postMessage: (message: unknown) => messages.push(message) }),
     {
@@ -87,8 +91,8 @@ function webviewHelpers() {
       querySelectorAll: (selector: string) => [...elements.values()].flatMap((node) => node.querySelectorAll(selector))
     },
     window,
-    (callback: () => void) => { frames.push(callback); return frames.length; },
-    () => undefined
+    (callback: () => void) => { const id = ++nextFrame; frames.push({ id, callback }); return id; },
+    (id: number) => { cancelledFrames.add(id); }
   ) as {
     render(state: PanelState): void;
     layoutFlow(chart: Flowchart, limit?: number): { rows: Flowchart["nodes"][]; back: Set<Flowchart["edges"][number]> };
@@ -107,8 +111,47 @@ function webviewHelpers() {
     setFormats(formats: PanelState["formats"]): void;
   };
   messages.length = 0;
-  return { ...helpers, element, messages, window, flushFrames: () => { while (frames.length) frames.shift()!(); } };
+  return {
+    ...helpers, element, messages, window,
+    receive: (data: unknown) => listeners.get("message")!({ data }),
+    flushFrames: () => {
+      while (frames.length) {
+        const frame = frames.shift()!;
+        if (!cancelledFrames.has(frame.id)) frame.callback();
+      }
+    }
+  };
 }
+
+it("cancels a queued code-driven reveal when a newer highlight must leave the preview still", () => {
+  const { element, receive, flushFrames, window } = webviewHelpers();
+  const step = new TestElement("li");
+  step.className = "step";
+  step.dataset.step = "0";
+  element("f-ai").append(step);
+  receive({ type: "steps", entryId: "f", steps: [0], pseudocode: [], nodes: [], reveal: true });
+  receive({ type: "steps", entryId: "f", steps: [0], pseudocode: [], nodes: [] });
+  flushFrames();
+  expect(step.className.split(" ")).toContain("active");
+  expect(window.scrollBy).not.toHaveBeenCalled();
+});
+
+it("cancels queued scroll feedback when the reader clicks a flowchart node", () => {
+  const { renderFlowchart, element, receive, flushFrames, window, messages } = webviewHelpers();
+  const chart = renderFlowchart({
+    nodes: [{ id: "work", kind: "action", label: "Do work", startLine: 1, endLine: 2 }], edges: []
+  }, { entryId: "f", linked: { steps: [], pseudocode: [], nodes: [true] } });
+  element("f-ai").append(chart);
+  flushFrames();
+  receive({ type: "scroll", line: 12 });
+  receive({ type: "steps", entryId: "f", steps: [], pseudocode: [], nodes: [0], reveal: true });
+  const node = chart.elements().find((part) => part.dataset.node === "0")!;
+  node.listeners.get("click")?.({ target: node, preventDefault() {}, stopPropagation() {} });
+  flushFrames();
+  expect(window.scrollTo).not.toHaveBeenCalled();
+  expect(window.scrollBy).not.toHaveBeenCalled();
+  expect(messages).toEqual([{ type: "revealItem", entryId: "f", kind: "node", index: 0 }]);
+});
 
 it("does not briefly follow a shifted entry while a tall chart awaits its drawing frame", () => {
   const { render, element, window, flushFrames } = webviewHelpers();

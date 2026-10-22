@@ -486,8 +486,14 @@ export async function run(): Promise<void> {
     await vscode.commands.executeCommand("downsideUp.showFileOverview");
     await waitFor(async () => api.shownChange()?.fileName === "Badge.tsx" ? true : undefined, "an added file's diff in the preview");
     await vscode.commands.executeCommand("workbench.action.compareEditor.focusSecondarySide");
-    assert.notEqual(vscode.window.activeTextEditor?.document.uri.scheme, "file");
-    assert.equal(await api.commandRoot(), repositoryRoot, "Repository commands act on the shown diff's repository from its other side.");
+    if (vscode.window.state.focused) {
+      await waitFor(async () => vscode.window.activeTextEditor?.document.uri.scheme === "downside-up-empty" ? true : undefined,
+        "the comparison's empty side to receive focus");
+      assert.equal(await api.commandRoot(), repositoryRoot, "Repository commands act on the shown diff's repository from its other side.");
+    } else {
+      assert.ok(vscode.window.visibleTextEditors.some((editor) => editor.document.uri.scheme === "downside-up-empty"),
+        "The unfocused test window still exposes the comparison's empty side.");
+    }
 
     await vscode.window.showTextDocument(cartViewDocument, vscode.ViewColumn.One);
     await waitFor(async () => api.shownChange() === undefined ? true : undefined, "an ordinary file to replace the diff in the preview");
@@ -803,6 +809,34 @@ export async function run(): Promise<void> {
   moved.selection = new vscode.Selection(checkoutBody, checkoutBody);
   await waitFor(async () => api.revealedLines() === undefined ? true : undefined, "the line highlight to clear when the cursor moves");
   console.log("Downside Up integration tests: a flowchart is added on request and follows the cursor.");
+
+  moved.selection = new vscode.Selection(0, 0, 0, 0);
+  await waitFor(async () => api.stepHighlight() === undefined ? true : undefined, "the cursor to leave the explained function");
+  const previousSelection = moved.selection;
+  const revealingNode = api.revealStep("checkout", nodeIndex, "node");
+  // Focus can report the old selection before showTextDocument has applied the requested caret.
+  api.selectionEvent({
+    textEditor: moved, selections: [previousSelection], kind: vscode.TextEditorSelectionChangeKind.Command
+  });
+  await revealingNode;
+  assert.ok(api.revealedLines(), "An intermediate programmatic selection must not cancel a pending node click.");
+  assert.deepEqual(api.stepHighlight()?.nodes, [nodeIndex], "The pending click retains exactly its node.");
+  api.selectionEvent({
+    textEditor: moved, selections: [previousSelection], kind: vscode.TextEditorSelectionChangeKind.Command
+  });
+  assert.ok(api.revealedLines(), "A delayed stale selection must not clear the completed node click.");
+  assert.deepEqual(api.stepHighlight()?.nodes, [nodeIndex], "A stale event must not replace the clicked node's highlight.");
+  // A real click at the same caret returns ownership to the code editor, even without a position change.
+  api.selectionEvent({
+    textEditor: moved, selections: [moved.selection], kind: vscode.TextEditorSelectionChangeKind.Mouse
+  });
+  assert.equal(api.revealedLines(), undefined, "An explicit code click releases preview-owned selection.");
+  await Promise.all([
+    api.revealStep("checkout", 0, "node"),
+    api.revealStep("checkout", nodeIndex, "node")
+  ]);
+  assert.deepEqual(api.stepHighlight()?.nodes, [nodeIndex], "Rapid preview clicks leave only the latest node highlighted.");
+  console.log("Downside Up integration tests: pending and stale selection events do not undo a preview click.");
 
   const downsideUpSettings = vscode.workspace.getConfiguration("downsideUp");
   const availableCommands = await vscode.commands.getCommands(true);

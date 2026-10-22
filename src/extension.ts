@@ -665,12 +665,13 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
   context.subscriptions.push(revealDecoration);
   let revealed: {
     uri: string;
-    caret: vscode.Position;
     entryId: string;
     kind: LinkedKind;
     index: number;
     start: number;
     end: number;
+    pending: boolean;
+    selection: vscode.Selection;
     editor?: vscode.TextEditor;
   } | undefined;
 
@@ -703,7 +704,12 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       if (!card || !ranges) { panel.highlightSteps(undefined, NO_ITEMS, reveal); return; }
       const at = (list: Array<StepRange | undefined>) => current.start.line === current.end.line
         ? innermostAt(list, current.active.line) : stepsAt(list, current.start.line, current.end.line);
-      const items = { steps: at(ranges.steps), pseudocode: at(ranges.pseudocode), nodes: at(ranges.nodes) };
+      const items: { steps: number[]; pseudocode: number[]; nodes: number[] } = revealed?.entryId === card.key && current.isEqual(revealed.selection)
+        ? { steps: [], pseudocode: [], nodes: [] }
+        : { steps: at(ranges.steps), pseudocode: at(ranges.pseudocode), nodes: at(ranges.nodes) };
+      if (revealed?.entryId === card.key && current.isEqual(revealed.selection)) {
+        items[revealed.kind === "step" ? "steps" : revealed.kind === "pseudocode" ? "pseudocode" : "nodes"].push(revealed.index);
+      }
       lastStepHighlight = { functionName: card.view.functionName, ...items };
       panel.highlightSteps(card.key, items, reveal);
       return;
@@ -720,7 +726,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       return;
     }
     let items: { steps: number[]; pseudocode: number[]; nodes: number[] };
-    if (revealed && revealed.entryId === match.entry.id && current.isEmpty && current.active.isEqual(revealed.caret)) {
+    if (revealed && revealed.entryId === match.entry.id && current.isEqual(revealed.selection)) {
       // The reader clicked this item, so exactly it stays highlighted.
       items = { steps: [], pseudocode: [], nodes: [] };
       items[revealed.kind === "step" ? "steps" : revealed.kind === "pseudocode" ? "pseudocode" : "nodes"].push(revealed.index);
@@ -744,13 +750,26 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       const range = ranges?.[kind === "step" ? "steps" : kind === "pseudocode" ? "pseudocode" : "nodes"][index];
       if (!range) return;
       clearReveal();
+      const caret = new vscode.Position(range.start, 0);
+      const current: NonNullable<typeof revealed> = {
+        uri: card.value.document.uri.toString(), entryId, kind, index,
+        start: range.start, end: range.end, pending: true, selection: new vscode.Selection(caret, caret)
+      };
+      revealed = current;
       suppressEditorSyncUntil = Date.now() + 800;
-      const editor = await revealChangeLines(card.value.document.uri, range.start + 1, range.end + 1, card.side);
-      await card.validate();
-      editor.setDecorations(revealDecoration, [new vscode.Range(range.start, 0, range.end, 0)]);
-      revealed = { uri: card.value.document.uri.toString(), caret: editor.selection.active, entryId, kind, index,
-        start: range.start, end: range.end, editor };
-      syncStepHighlight(editor.selection, false, editor);
+      try {
+        const editor = await revealChangeLines(card.value.document.uri, range.start + 1, range.end + 1, card.side);
+        await card.validate();
+        if (revealed !== current) return;
+        current.editor = editor;
+        current.selection = editor.selection;
+        current.pending = false;
+        editor.setDecorations(revealDecoration, [new vscode.Range(range.start, 0, range.end, 0)]);
+        syncStepHighlight(editor.selection, false, editor);
+      } catch (error) {
+        if (revealed === current) clearReveal();
+        throw error;
+      }
       return;
     }
     const state = existingStateForEntry(entryId);
@@ -761,21 +780,31 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     const end = Math.min(range.end, document.lineCount - 1);
     const caret = new vscode.Position(range.start, 0);
     clearReveal();
-    const current: NonNullable<typeof revealed> = { uri: document.uri.toString(), caret, entryId, kind, index, start: range.start, end };
+    const current: NonNullable<typeof revealed> = {
+      uri: document.uri.toString(), entryId, kind, index, start: range.start, end,
+      pending: true, selection: new vscode.Selection(caret, caret)
+    };
     revealed = current;
     // The click came from the preview, so the editor scroll it causes must not scroll the preview.
     suppressEditorSyncUntil = Date.now() + 800;
-    const editor = await vscode.window.showTextDocument(document, {
-      viewColumn: columnFor(document.uri),
-      selection: new vscode.Selection(caret, caret),
-      preserveFocus: false
-    });
-    if (revealed !== current) return;
-    const lines = new vscode.Range(range.start, 0, end, 0);
-    current.editor = editor;
-    editor.setDecorations(revealDecoration, [lines]);
-    editor.revealRange(lines, vscode.TextEditorRevealType.InCenterIfOutsideViewport);
-    syncStepHighlight();
+    try {
+      const editor = await vscode.window.showTextDocument(document, {
+        viewColumn: columnFor(document.uri),
+        selection: current.selection,
+        preserveFocus: true
+      });
+      if (revealed !== current) return;
+      const lines = new vscode.Range(range.start, 0, end, 0);
+      current.editor = editor;
+      current.pending = false;
+      suppressEditorSyncUntil = Date.now() + 800;
+      editor.setDecorations(revealDecoration, [lines]);
+      editor.revealRange(lines, vscode.TextEditorRevealType.InCenterIfOutsideViewport);
+      syncStepHighlight(current.selection, false, editor);
+    } catch (error) {
+      if (revealed === current) clearReveal();
+      throw error;
+    }
   };
 
   const formatSettings = (): FormatSettings => {
@@ -3440,6 +3469,10 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     lastTextEditor = editor;
     selectionLookupEpoch++;
     if (selectionTimer) clearTimeout(selectionTimer);
+    // Returning focus to a shown document does not change its outline or explanation.
+    const diff = diffForEditor(editor);
+    if (diff && change.shows(diff.original, diff.modified)) return;
+    if (preview && !change.active && sameUri(preview.document.uri, editor.document.uri) && !diff) return;
     if (outlineTimer) clearTimeout(outlineTimer);
     if (panel?.panel.visible && !routeToChange(editor, true)) void previewDocument(editor.document);
   });
@@ -3461,7 +3494,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     wakePrefetch();
     const line = event.visibleRanges[0]?.start.line ?? 0;
     // Ignore the editor scrolling that the preview itself requested, and repeated ranges.
-    if (Date.now() < suppressEditorSyncUntil) {
+    if (revealed?.pending || Date.now() < suppressEditorSyncUntil) {
       lastEditorTopLine = line;
       return;
     }
@@ -3470,10 +3503,14 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     panel.scrollToLine(line);
   });
 
-  const onTextSelectionChange = vscode.window.onDidChangeTextEditorSelection((event) => {
-    lastTextEditor = event.textEditor;
+  const handleTextSelectionChange = (event: vscode.TextEditorSelectionChangeEvent): void => {
     const moved = event.selections[0];
-    if (revealed && (event.textEditor.document.uri.toString() !== revealed.uri || !moved?.isEmpty || !moved.active.isEqual(revealed.caret))) {
+    // Editor events can arrive after a newer selection or during showTextDocument's focus/selection handshake.
+    if (!moved || !moved.isEqual(event.textEditor.selection)) return;
+    const userMoved = event.kind === vscode.TextEditorSelectionChangeKind.Mouse || event.kind === vscode.TextEditorSelectionChangeKind.Keyboard;
+    if (revealed?.pending && !userMoved) return;
+    lastTextEditor = event.textEditor;
+    if (revealed && (userMoved || event.textEditor.document.uri.toString() !== revealed.uri || !moved.isEqual(revealed.selection))) {
       clearReveal();
     }
     if (panel?.panel.visible && change.active && change.involves(event.textEditor.document.uri)) {
@@ -3498,7 +3535,8 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
         render();
       });
     }, 250);
-  });
+  };
+  const onTextSelectionChange = vscode.window.onDidChangeTextEditorSelection(handleTextSelectionChange);
 
   const onConfigChange = vscode.workspace.onDidChangeConfiguration((event) => {
     if (change.active && ["downsideUp.provider", "downsideUp.languageModel", "downsideUp.openai", "downsideUp.exclusion"].some((key) => event.affectsConfiguration(key))) {
@@ -3626,6 +3664,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     cancel: cancelExplanations,
     stepHighlight: () => lastStepHighlight,
     revealedLines: () => revealed ? { start: revealed.start, end: revealed.end } : undefined,
+    selectionEvent: (event: vscode.TextEditorSelectionChangeEvent) => handleTextSelectionChange(event),
     revealStep: async (functionName: string, step: number, kind: LinkedKind = "step") => {
       const found = previewStates().find(({ state }) => state.view.functionName === functionName);
       if (found) await revealItem(found.entry.id, kind, step);
@@ -3762,6 +3801,7 @@ export interface DownsideUpTestApi {
   stepHighlight(): { functionName: string; steps: number[]; pseudocode: number[]; nodes: number[] } | undefined;
   revealStep(functionName: string, index: number, kind?: LinkedKind): Promise<void>;
   revealedLines(): { start: number; end: number } | undefined;
+  selectionEvent(event: vscode.TextEditorSelectionChangeEvent): void;
   addFormat(functionName: string, format: ExplanationFormat): Promise<void>;
   explanationOf(functionName: string): FunctionExplanation | undefined;
   fileSummary(): { text: string; current: boolean } | undefined;

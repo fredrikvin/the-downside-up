@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.43.4
+
+- Preserve clicked source-item highlights through intermediate and delayed
+  editor selection events. Cancel queued preview scroll/reveal feedback when
+  clicking an item, and avoid rebuilding the preview on same-document focus.
+- Keep keyboard focus in the preview when selecting ordinary-file source
+  items. Explicit code-editor mouse/keyboard input resumes cursor following.
+
 ## 0.43.3
 
 - Keep the preview at its current scroll offset while flowcharts redraw, then

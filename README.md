@@ -34,8 +34,10 @@ and billing.
   changing its plain-language wording. Flowcharts use diamonds for decisions
   and rounded start/end nodes. Both improvements also apply to saved results
   and paired diff views, locally without extra AI requests.
-- **Stay beside the source.** Editor and preview scroll together. Steps
-  highlight their source lines, and saved explanations reappear when you
+- **Stay beside the source.** Editor and preview scroll together. Clicking
+  steps, pseudocode, or flowchart nodes highlights their source lines without
+  moving the preview; ordinary-file clicks keep keyboard focus in the preview.
+  Saved explanations reappear when you
   return to a file. Click a function's name to navigate to its source;
   use **Explain** to request an explanation.
 - **Explore the project.** Run **Downside Up: Preview Project**, preview a

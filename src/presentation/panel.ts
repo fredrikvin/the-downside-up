@@ -873,6 +873,9 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
         if (target && target.closest && target.closest("a")) return;
         // A flowchart node inside another handles its own clicks.
         if (target && target.closest && target.closest("[data-" + attribute + "]") !== item) return;
+        cancelAnimationFrame(scrollFrame);
+        cancelAnimationFrame(revealFrame);
+        cancelAnimationFrame(revealActiveFrame);
         post({ type: "revealItem", entryId: view.entryId, kind, index });
       };
       item.addEventListener("click", (clicked) => reveal(clicked.target));
@@ -2394,6 +2397,7 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
       else if (message.type === "scroll" && typeof message.line === "number") scrollToLine(message.line);
       else if (message.type === "cursor") highlight(typeof message.entryId === "string" ? message.entryId : undefined);
       else if (message.type === "steps") {
+        cancelAnimationFrame(revealActiveFrame);
         const indices = (value) => (Array.isArray(value) ? value.filter((index) => Number.isInteger(index)) : []);
         highlightSteps({
           entryId: typeof message.entryId === "string" ? message.entryId : "",

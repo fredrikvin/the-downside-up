@@ -41,7 +41,13 @@ steps, pseudocode lines, and flowchart nodes are anchors at their own code
 lines, so a scrolled code line lands on what describes it; anchors that would
 make the mapping run backwards (such as an exit node beside its decision) are
 skipped. Clicking an item in the preview scrolls the editor to its lines but
-leaves the preview where it is. Moving the cursor in the code brings what it
+leaves the preview where it is. Ordinary-file item clicks retain keyboard focus
+in the preview. Intermediate programmatic selections while navigation is
+pending and stale selection events cannot undo the clicked highlight; new
+keyboard or mouse input in the code returns control to the editor. Returning
+focus to an already shown document or diff does not rebuild the preview.
+Queued scroll/reveal frames are cancelled when the reader clicks a linked item.
+Moving the cursor in the code brings what it
 highlights into view in the preview (the highlighted item, or else the item
 at the cursor) without scrolling the editor back. Item headings are sticky:
 a function's heading stays at the top of the preview, on one line with its
