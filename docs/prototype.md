@@ -339,7 +339,8 @@ usage limits or billing for every function it explains.
 Explaining a change is a request for one file's before and after, in the
 preview. When the editor being viewed is a native VS Code diff of local Git
 changes (working tree against the index, staged changes against `HEAD`, or a
-base commit against the working tree), the preview, if open, switches to a
+base commit against the working tree, or immutable parent-to-commit revisions
+from Source Control Graph), the preview, if open, switches to a
 **change view** for that exact pair of documents. Opening a diff alone never
 opens a closed preview, and clicking between the two sides or focusing the
 preview keeps the same comparison; a normal file or folder preview returns
@@ -519,8 +520,10 @@ with the remote's default branch, `main`, `master`, `origin/main`, or
 any of the last 50 commits. It compares the base, resolved to a commit, with
 the working tree (`git diff --name-status -M` restricted to the repository
 root, plus untracked files that are not ignored). Additions, deletions,
-renames, and changes outside functions each count as one file comparison;
-commits that are not checked out are not explained. At most 200 changed files
+renames, and changes outside functions each count as one file comparison.
+This command continues to compare with the working tree; use **Prepare Commit
+Explanations…** for the content of a commit, including one not checked out.
+At most 200 changed files
 are considered; excluded files are skipped and counted, as are binary,
 oversized, identical, and unreadable ones. Nothing is sent until the user
 confirms the number of requests (files with a current saved comparison are
@@ -545,6 +548,54 @@ status bar item shows progress and opens a list of the changed files with
 their state; choosing one opens its native diff (with an empty document for
 the missing side of an added or deleted file), which shows the same saved
 comparison. It works regardless of the `downsideUp.prefetch.*` settings.
+
+**Prepare Commit Explanations…** reuses this Review queue, scheduler, consent,
+comparison request and cache. The command palette offers the last 50 commits
+or an entered ID/ref, resolved once to an immutable commit. Metadata and parent
+IDs are read from Git, never trusted from a command's history-item argument.
+Single-parent commits compare against that parent; a merge requires an explicit
+choice of one actual parent before confirmation. Root commits compare against
+Git's empty tree (SHA-1 or SHA-256). No index, untracked, working-tree or unsaved
+editor content substitutes for a committed side. The confirmation names both
+revisions, eligible/cached/skipped counts and the bound of initial requests plus
+at most one retry per failed file. At most 200 files are considered, with the
+same per-side exclusions, request bounds, trust and final persistence checks.
+Each successful uncached file is one comparison request, never a request for
+Added/Removed function details. No prompt/schema change or cache migration is
+needed: both revision IDs and old/new paths are the native Git diff cache keys.
+
+Source Control Graph's existing file tree remains the navigator; there is no
+new file viewer. Its individual native diffs look up the prepared pair, and a
+comparison already being read reloads cache-only after background persistence.
+Reader movement prioritizes only the confirmed set; cache misses outside it
+do not enqueue work. Independent function/diff prefetch is suppressed while
+Review is present. The preview shows **Commit: 3/8 ready · 1 preparing** and
+**Stop**, scoped to the prepared repository; failed/skipped/outdated items are
+not counted ready. Stop prevents new requests but allows sent ones to finish;
+Cancel, closing the preview, replacing the session, clearing the cache, or
+changing models/exclusion settings aborts uncommitted requests. Persistence's
+atomic rename remains the commit point; a cancellation after successful
+persistence does not report the item as unsaved.
+
+The graph opens added/deleted files as single historical `git:` documents,
+not diffs. While the confirmed commit session is present, these documents
+are bound only by an exact revision/path match in its set; the preview reads
+that confirmed pair, and source links select the already visible historical
+editor without opening a viewer or today's file. After dismissing the session,
+use a native diff or prepare the commit again (saved results are reused).
+The graph defaults to a merge's first parent; another parent is a separate
+comparison, available from the existing **Show Changed Files** list.
+Native multi-diff integration is not included.
+
+**Platform limitation:** VS Code 1.143.0's bundled Git/workbench source and
+current upstream mark `scm/historyItem/context` as the proposed
+`contribSourceControlHistoryItemMenu` menu, unavailable to ordinary stable
+extensions. The release therefore contributes the stable command palette
+command (`downsideUp.prepareCommit`), not a rejected graph menu contribution
+or a proposed-API requirement. The command validates the verified
+`(SourceControl, HistoryItem)` argument shape if invoked with graph arguments;
+a future public graph contribution can reuse it without changing scope or
+generation semantics. See development.md for source references.
 
 Hovering a call to a function inside another function shows the
 purpose from that function's current saved explanation, found with the same
@@ -1508,11 +1559,12 @@ webview's content-security policy.
 - Other language support depends on installed VS Code document-symbol
   providers. There is no whole-program analyzer or guaranteed call graph;
   unresolved references and unavailable tooling are surfaced as limitations.
-- Review mode needs Git and a commit to compare with. It compares with the
-  working tree only, finds changed functions by line overlap (a renamed or
-  moved function counts as changed, and a deleted one is not listed), and
-  skips a changed function it can no longer find by name, for example after
-  edits move it before its turn.
+- Review needs local Git. **Review Changes…** compares a chosen base with
+  working-tree files; **Prepare Commit Explanations…** compares immutable
+  parent/commit files, including additions, deletions and renames. The graph
+  context menu is still proposed-only; use the stable command palette fallback.
+  Single historical graph documents require the confirmed session to identify
+  their pair; native diffs reuse saved results independently of that session.
 - Git branch/revision tracking requires an available Git executable and a
   resolvable `HEAD`; when unavailable, source-file fingerprints still apply and
   the limitation is reported.

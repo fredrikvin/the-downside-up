@@ -3,7 +3,7 @@ import { unapprovedModels, withConsent } from "../src/cache/consent";
 import { emptyRepositoryCache } from "../src/cache/store";
 import { snapshotSignature, type ComparisonRef, type ComparisonSnapshot } from "../src/context/comparison";
 import { RequestScheduler } from "../src/presentation/requestScheduler";
-import { Review, type ReviewHost, type ReviewItem } from "../src/review";
+import { Review, commitProgress, reviewedDocument, type ReviewHost, type ReviewItem } from "../src/review";
 
 const root = "/repo";
 
@@ -116,6 +116,43 @@ const until = async (check: () => boolean, what: string): Promise<void> => {
 };
 
 describe("review mode", () => {
+  it("does not allow an explicit request to add an unconfirmed file to the queue", async () => {
+    const fixture = new Fixture(2);
+    const review = new Review(fixture.host, root, "commit", fixture.items("a.ts"), "commit");
+    const outside = fixture.items("outside.ts")[0]!;
+    await expect(review.explainNow(outside)).rejects.toThrow("not confirmed");
+    expect(fixture.reads).toEqual([]);
+    expect(fixture.explained).toEqual([]);
+    review.cancel();
+  });
+
+  it("binds graph Git documents only to exact confirmed revision/path identities", () => {
+    const fixture = new Fixture(2);
+    const item = fixture.items("a.ts")[0]!;
+    const original = item.ref.original;
+    const hash = "1".repeat(40);
+    const document = (path: string, ref: string) => ({ scheme: "git", fsPath: path, query: JSON.stringify({ path, ref }) });
+    expect(original.source).toEqual({ kind: "revision", hash });
+    expect(reviewedDocument([item], document("/repo/a.ts", hash))).toBe(item);
+    expect(reviewedDocument([item], document("/repo/a.ts", "HEAD"))).toBeUndefined();
+    expect(reviewedDocument([item], document("/repo/outside.ts", hash))).toBeUndefined();
+    expect(reviewedDocument([item], document("/elsewhere/a.ts", hash))).toBeUndefined();
+    expect(reviewedDocument([item], { scheme: "git", fsPath: "/repo/a.ts", query: "null" })).toBeUndefined();
+    expect(reviewedDocument([item], { ...document("/repo/a.ts", hash), scheme: "file" })).toBeUndefined();
+  });
+
+  it("reports compact commit progress without counting failed/skipped/outdated files as ready", () => {
+    const fixture = new Fixture(2);
+    const items = fixture.items("a.ts", "b.ts", "c.ts", "d.ts", "e.ts");
+    items[0]!.status = "done";
+    items[1]!.status = "explaining";
+    items[2]!.status = "failed";
+    expect(commitProgress({ items, stopped: false })).toEqual({ text: "Commit: 1/5 ready · 1 preparing · 1 not ready", canStop: true });
+    expect(commitProgress({ items, stopped: true })).toEqual({ text: "Commit: 1/5 ready · 1 preparing · 1 not ready · stopped", canStop: false });
+    for (const item of items) item.status = "done";
+    expect(commitProgress({ items, stopped: false })).toEqual({ text: "Commit: 5/5 ready", canStop: false });
+  });
+
   it("explains every confirmed file in the background and stops when done", async () => {
     const fixture = new Fixture(3);
     fixture.start("a.ts", "b.ts", "c.ts");

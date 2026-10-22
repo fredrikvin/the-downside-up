@@ -9,6 +9,9 @@ import {
   baseComparisonRef,
   changedFilesSince,
   comparisonProblem,
+  commitComparisonRef,
+  commitDetails,
+  commitScope,
   readComparison,
   resolveNativeDiff,
   snapshotSignature,
@@ -218,6 +221,84 @@ describe("changed files since a commit", () => {
     expect(renamed.modified.path).toBe("new.txt");
     expect(renamed.original.state).toBe("present");
     expect((await changedFilesSince(root, "HEAD", 2)).truncated).toBe(true);
+  });
+
+  describe("immutable commit preparation", () => {
+    it("prepares exact additions/deletions/renames/modifications, ignoring dirty buffers and later HEAD", async () => {
+      const parent = git("rev-parse", "HEAD");
+      git("mv", "old.txt", "new.txt");
+      await rm(join(root, "a.txt"));
+      await writeFile(join(root, "added.ts"), "export function added() { return 1; }\n");
+      git("add", "."); git("commit", "-q", "-m", "selected");
+      const commit = git("rev-parse", "HEAD");
+      const scope = await commitScope(root, "HEAD");
+      expect(scope).toMatchObject({ commit, parent, truncated: false, files: [
+        { status: "deleted", path: "a.txt" },
+        { status: "added", path: "added.ts" },
+        { status: "renamed", oldPath: "old.txt", path: "new.txt" }
+      ] });
+      await writeFile(join(root, "added.ts"), "today\n");
+      await writeFile(join(root, "untracked.ts"), "not in commit\n");
+      git("add", "added.ts"); git("commit", "-q", "-m", "later");
+      const buffers = new Map([[join(root, "added.ts"), "unsaved\n"]]);
+      for (const file of scope.files) {
+        const ref = commitComparisonRef(root, scope, file);
+        const snapshot = await readComparison(ref, { buffers });
+        const native = await refOf(gitUri(file.oldPath ?? file.path, parent), gitUri(file.path, commit));
+        expect(ref).toEqual(native);
+        expect(snapshotSignature(snapshot)).toBe(snapshotSignature(await readComparison(native)));
+        if (file.status === "added") {
+          expect(snapshot.original.state).toBe("absent");
+          expect(snapshot.modified.text).toContain("return 1");
+        }
+        if (file.status === "deleted") expect(snapshot.modified.state).toBe("absent");
+        if (file.status === "renamed") expect(snapshot.original.text).toBe(snapshot.modified.text);
+      }
+      expect((await commitScope(root, commit, undefined, 2)).truncated).toBe(true);
+    });
+
+    it("handles root commits against Git's empty tree without inventing a parent or reading working files", async () => {
+      const details = await commitDetails(root, "HEAD");
+      expect(details.parents).toEqual([]);
+      const scope = await commitScope(root, details.hash);
+      expect(scope.parent).toBe("4b825dc642cb6eb9a060e54bf8d69288fbee4904");
+      expect(scope.files).toEqual([{ status: "added", path: "a.txt" }, { status: "added", path: "old.txt" }]);
+      const ref = commitComparisonRef(root, scope, scope.files[0]!);
+      const native = await refOf(gitUri("a.txt", scope.parent), gitUri("a.txt", scope.commit));
+      expect(native).toEqual(ref);
+      expect(await readComparison(ref)).toMatchObject({ original: { state: "absent" }, modified: { state: "present", text: "export const a = 1;\n" } });
+      expect(await refOf({ scheme: "downside-up-empty", fsPath: join(root, "a.txt"), query: scope.parent }, gitUri("a.txt", scope.commit))).toEqual(ref);
+    });
+
+    it("requires an explicit actual parent for merges and keeps different parent pairs separate", async () => {
+      const baseBranch = git("branch", "--show-current");
+      git("checkout", "-q", "-b", "other");
+      await writeFile(join(root, "other.ts"), "export const other = 1;\n");
+      git("add", "."); git("commit", "-q", "-m", "other side");
+      const other = git("rev-parse", "HEAD");
+      git("checkout", "-q", baseBranch);
+      await writeFile(join(root, "a.txt"), "export const a = 2;\n");
+      git("add", "."); git("commit", "-q", "-m", "first side");
+      const first = git("rev-parse", "HEAD");
+      git("merge", "-q", "--no-ff", "-m", "merge", "other");
+      const details = await commitDetails(root, "HEAD");
+      expect(details.parents).toEqual([first, other]);
+      await expect(commitScope(root, details.hash)).rejects.toThrow("Choose a parent explicitly");
+      await expect(commitScope(root, details.hash, "f".repeat(40))).rejects.toThrow("not a parent");
+      expect((await commitScope(root, details.hash, first)).files).toEqual([{ status: "added", path: "other.ts" }]);
+      expect((await commitScope(root, details.hash, other)).files).toEqual([{ status: "modified", path: "a.txt" }]);
+      await expect(commitScope(root, "--upload-pack=evil")).rejects.toThrow("existing Git commit");
+    });
+
+    it("checks both historical paths for exclusions before preparing a renamed file", async () => {
+      git("mv", "old.txt", "new.txt"); git("commit", "-q", "-m", "rename");
+      const scope = await commitScope(root, "HEAD");
+      const snapshot = await readComparison(commitComparisonRef(root, scope, scope.files[0]!), {
+        exclusion: async (_root, path) => path.endsWith("old.txt") ? "the old path is excluded" : undefined
+      });
+      expect(snapshot.original).toMatchObject({ state: "excluded", text: "" });
+      expect(comparisonProblem(snapshot)).toContain("the old path is excluded");
+    });
   });
 
   it("lists paths relative to a project folder inside a larger repository", async () => {

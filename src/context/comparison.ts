@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { readFile, stat } from "node:fs/promises";
 import { isAbsolute, join, relative, sep } from "node:path";
 import { fingerprint } from "../core/fingerprint";
@@ -109,8 +110,12 @@ const gitText = async (root: string, args: readonly string[]): Promise<string> =
   (await git(root, args)).stdout.toString("utf8");
 
 const SAFE_REVISION = /^[A-Za-z0-9][A-Za-z0-9._/~^@{}-]{0,200}$/;
+// Git's object IDs for the empty tree, including repositories using SHA-256.
+const EMPTY_TREES = ["sha1", "sha256"].map((algorithm) => createHash(algorithm).update("tree 0\0").digest("hex"));
 
 async function resolveRevision(root: string, revision: string): Promise<string | undefined> {
+  // A root comparison can name the empty tree even before Git has stored that object.
+  if (EMPTY_TREES.includes(revision)) return revision;
   if (!SAFE_REVISION.test(revision)) return undefined;
   try {
     const hash = (await gitText(root, ["rev-parse", "--verify", "--quiet", `${revision}^{commit}`])).trim();
@@ -178,6 +183,7 @@ type Located = { readonly blob: Blob } | { readonly state: "absent" | "unreadabl
 
 async function locate(root: string, source: SideSource, path: string): Promise<Located> {
   if (source.kind === "revision") {
+    if (EMPTY_TREES.includes(source.hash)) return { state: "absent", detail: "" };
     const entry = (await gitText(root, ["ls-tree", "-l", "-z", source.hash, "--", path])).split("\0")[0];
     if (!entry) return { state: "absent", detail: "" };
     const [meta] = entry.split("\t");
@@ -273,21 +279,62 @@ export function comparisonProblem(snapshot: ComparisonSnapshot): string | undefi
 
 export interface ChangedFile {
   readonly status: "added" | "deleted" | "modified" | "renamed";
-  /** Path in the working tree, or the deleted path. */
+  /** Modified-side path, or the deleted path. */
   readonly path: string;
-  /** Path at the base, when the file was renamed. */
+  /** Original-side path, when the file was renamed. */
   readonly oldPath?: string;
 }
 
-/**
- * Files changed in the working tree since a commit, with additions,
- * deletions, and renames kept distinct, bounded to `limit` files. `truncated`
- * is true when more changed.
- */
-export async function changedFilesSince(root: string, base: string, limit = MAX_CHANGED_FILES): Promise<{ files: ChangedFile[]; truncated: boolean }> {
-  const hash = await resolveRevision(root, base);
-  if (!hash) throw new Error(`The Git revision "${base}" could not be resolved.`);
-  const tokens = (await gitText(root, ["diff", "--name-status", "--relative", "-M", "-z", "--no-ext-diff", hash])).split("\0");
+/** Immutable commit metadata, read from Git rather than command arguments. */
+export interface CommitDetails {
+  readonly hash: string;
+  readonly parents: readonly string[];
+}
+
+export async function commitDetails(root: string, revision: string): Promise<CommitDetails> {
+  const hash = await resolveRevision(root, revision);
+  if (!hash || EMPTY_TREES.includes(hash)) throw new Error("Choose an existing Git commit.");
+  const parents = (await gitText(root, ["show", "-s", "--format=%P", hash])).trim().split(/\s+/).filter(Boolean);
+  return { hash, parents };
+}
+
+export interface CommitScope {
+  readonly commit: string;
+  /** An actual parent commit, or Git's empty tree for a root commit. */
+  readonly parent: string;
+  readonly files: ChangedFile[];
+  readonly truncated: boolean;
+}
+
+/** Exact parent -> commit changes; never includes the index, untracked files or editor buffers. */
+export async function commitScope(root: string, revision: string, parent?: string, limit = MAX_CHANGED_FILES): Promise<CommitScope> {
+  const details = await commitDetails(root, revision);
+  if (details.parents.length > 1 && !parent) throw new Error("Choose a parent explicitly for this merge commit.");
+  if (parent && !details.parents.includes(parent)) throw new Error("The selected revision is not a parent of this commit.");
+  const original = parent ?? details.parents[0];
+  const format = (await gitText(root, ["rev-parse", "--show-object-format"])).trim();
+  if (format !== "sha1" && format !== "sha256") throw new Error("This repository's Git object format is not supported.");
+  const empty = EMPTY_TREES[format === "sha256" ? 1 : 0]!;
+  const args = ["--name-status", "--relative", "-M", "-z", "--no-ext-diff"];
+  const listing = original
+    ? await gitText(root, ["diff", ...args, original, details.hash, "--"])
+    : await gitText(root, ["diff-tree", "--root", "--no-commit-id", "-r", ...args, details.hash, "--"]);
+  const files = parseChangedFiles(listing);
+  files.sort((left, right) => left.path.localeCompare(right.path));
+  return { commit: details.hash, parent: original ?? empty, files: files.slice(0, limit), truncated: files.length > limit };
+}
+
+/** Uses exactly the same revision/path identities as native Git graph diffs. */
+export function commitComparisonRef(root: string, scope: Pick<CommitScope, "commit" | "parent">, file: ChangedFile): ComparisonRef {
+  return {
+    root,
+    original: { path: file.oldPath ?? file.path, source: { kind: "revision", hash: scope.parent } },
+    modified: { path: file.path, source: { kind: "revision", hash: scope.commit } }
+  };
+}
+
+function parseChangedFiles(listing: string): ChangedFile[] {
+  const tokens = listing.split("\0");
   const files: ChangedFile[] = [];
   for (let index = 0; index < tokens.length;) {
     const status = tokens[index++] ?? "";
@@ -300,9 +347,20 @@ export async function changedFilesSince(root: string, base: string, limit = MAX_
       continue;
     }
     const path = tokens[index++] ?? "";
-    if (!path) continue;
-    files.push({ status: kind === "A" ? "added" : kind === "D" ? "deleted" : "modified", path });
+    if (path) files.push({ status: kind === "A" ? "added" : kind === "D" ? "deleted" : "modified", path });
   }
+  return files;
+}
+
+/**
+ * Files changed in the working tree since a commit, with additions,
+ * deletions, and renames kept distinct, bounded to `limit` files. `truncated`
+ * is true when more changed.
+ */
+export async function changedFilesSince(root: string, base: string, limit = MAX_CHANGED_FILES): Promise<{ files: ChangedFile[]; truncated: boolean }> {
+  const hash = await resolveRevision(root, base);
+  if (!hash) throw new Error(`The Git revision "${base}" could not be resolved.`);
+  const files = parseChangedFiles(await gitText(root, ["diff", "--name-status", "--relative", "-M", "-z", "--no-ext-diff", hash]));
   const tracked = new Set(files.map((file) => file.path));
   const untracked = (await gitText(root, ["ls-files", "--others", "--exclude-standard", "-z"])).split("\0").filter((path) => path && !tracked.has(path));
   for (const path of untracked) files.push({ status: "added", path });

@@ -37,6 +37,11 @@
         "category": "Downside Up"
       },
       {
+        "command": "downsideUp.prepareCommit",
+        "title": "Prepare Commit Explanations…",
+        "category": "Downside Up"
+      },
+      {
         "command": "downsideUp.showChangedFunctions",
         "title": "Show Changed Files",
         "category": "Downside Up"
@@ -366,6 +371,7 @@
   "activationEvents": [
     "onCommand:downsideUp.showFileOverview",
     "onCommand:downsideUp.reviewChanges",
+    "onCommand:downsideUp.prepareCommit",
     "onCommand:downsideUp.previewProject",
     "onCommand:downsideUp.selectOverviewModel",
     "onCommand:downsideUp.refreshRepositoryContext",

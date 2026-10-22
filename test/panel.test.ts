@@ -218,6 +218,36 @@ it("shows elapsed activity across updates and clears the timer when work stops",
 });
 
 describe("preview webview document", () => {
+  it("shows compact commit preparation with Stop, without a file navigator or generation action", () => {
+    const { render, element, messages, flushFrames, receive, window } = webviewHelpers();
+    const state: PanelState = {
+      provider: "mock", models: { explanation: "mock" }, busy: false, hasRepository: false,
+      explanations: [], showDetails: false, formats: { pseudocode: false, flowchart: false, initial: "steps" },
+      review: { text: "Commit: 3/8 ready · 1 preparing", canStop: true }
+    };
+    render(state);
+    flushFrames();
+    const progress = element("commitProgress");
+    expect(progress.hidden).toBe(false);
+    expect(progress.children[0]).toMatchObject({ textContent: "Commit: 3/8 ready · 1 preparing" });
+    const stop = progress.elements().find((entry) => entry.textContent === "Stop")!;
+    expect(stop.tagName).toBe("button");
+    stop.listeners.get("click")!();
+    expect(messages).toEqual([{ type: "stopReview" }]);
+    const entries = element("entries");
+    const replace = vi.spyOn(entries, "replaceChildren");
+    window.scrollTo.mockClear();
+    receive({ type: "review", review: { text: "Commit: 8/8 ready", canStop: false } });
+    flushFrames();
+    expect(replace).not.toHaveBeenCalled();
+    expect(window.scrollTo).not.toHaveBeenCalled();
+    expect(progress.children[0]).toMatchObject({ textContent: "Commit: 8/8 ready" });
+    expect(progress.elements().some((entry) => entry.textContent === "Stop")).toBe(false);
+    receive({ type: "review", review: undefined });
+    flushFrames();
+    expect(progress.hidden).toBe(true);
+  });
+
   it("omits the shared help footer while keeping contextual notices and limitations", () => {
     const html = panelHtml("n");
     expect(html).not.toContain("<footer");

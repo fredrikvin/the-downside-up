@@ -70,6 +70,39 @@ Comparison catalogue version 1 and prompt versions `downside-up-changes-6` /
 `downside-up-plain-10` invalidate changed records without migrating them or
 changing repository envelope schema 2/consent.
 
+## Git graph integration contract
+
+Verified against installed VS Code **1.143.0** (`extensions/git/package.json`,
+`extensions/git/dist/main.js`, and workbench menu registry) and authoritative
+upstream source:
+
+- [`menusExtensionPoint.ts`](https://github.com/microsoft/vscode/blob/main/src/vs/workbench/services/actions/common/menusExtensionPoint.ts):
+  `scm/historyItem/context` is gated by the proposed
+  `contribSourceControlHistoryItemMenu`. Stable extensions cannot use it merely
+  by contributing a menu or raising their engine version. Do not add a
+  nonfunctional contribution or enable proposed APIs for a release.
+- [`scmHistoryViewPane.ts`](https://github.com/microsoft/vscode/blob/main/src/vs/workbench/contrib/scm/browser/scmHistoryViewPane.ts):
+  graph context actions forward the provider then the history item;
+  extension-host SCM marshalling supplies `(SourceControl, HistoryItem)`.
+  Only the provider's local `rootUri` and history item's immutable `id` are
+  used. Parent IDs are independently read from Git. Single add/delete entries
+  open the sole historical document, not a two-sided diff.
+- [`historyProvider.ts`](https://github.com/microsoft/vscode/blob/main/extensions/git/src/historyProvider.ts)
+  and [`uri.ts`](https://github.com/microsoft/vscode/blob/main/extensions/git/src/uri.ts):
+  graph revisions are `git:` URIs with JSON `{ path, ref }`; renames use the
+  old/new paths. Missing sides are absent URIs; a root has Git's empty tree as
+  its base. Preparation shares these revision/path cache identities.
+
+The release-facing fallback is **Downside Up: Prepare Commit Explanations…**
+(`downsideUp.prepareCommit`), compatible with the existing ^1.90.0 engine.
+Graph argument validation is retained for future public menu support, without
+depending on proposed API types. The Review queue remains the only preparation
+queue. `ChangeSession.comparisonSaved` refreshes a visible exact pair cache-only
+after successful persistence; UI failure must not trigger a paid retry.
+Unit tests gate in-flight completion/cancellation deterministically, and the
+extension-host suite uses a disposable Git repository outside the development
+worktree to verify graph-shaped URIs, historical documents and cache reuse.
+
 ## Copilot development agents
 
 Repository-local profiles live in `.github/agents/`. These are development

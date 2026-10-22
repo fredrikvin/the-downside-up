@@ -10,6 +10,9 @@ import { ExplanationService } from "../src/controller";
 import type { ComparisonPromptInput } from "../src/generation/provider";
 import { MockProvider } from "../src/generation/mock";
 import { javascriptSupport } from "../src/languages/javascript";
+import { commitComparisonRef, commitScope, readComparison, snapshotSignature } from "../src/context/comparison";
+import { Review, type ReviewHost, type ReviewItem } from "../src/review";
+import { RequestScheduler } from "../src/presentation/requestScheduler";
 
 beforeAll(() => javascriptSupport.initialize!(process.cwd()));
 
@@ -247,6 +250,145 @@ function session(onGenerate?: () => Promise<void>, options: Partial<Pick<ChangeS
 
 function prefetchOptions(allowed = true) {
   return { enabled: vi.fn(() => true), allowed: vi.fn(async () => allowed), background: vi.fn() };
+}
+
+/** The production review/cache/visible-comparison path with deterministic request gates. */
+describe("commit preparation in the shared review queue", () => {
+  const gate = () => {
+    let release!: () => void;
+    return { promise: new Promise<void>((resolve) => { release = resolve; }), release: () => release() };
+  };
+  const prepare = async (onGenerate?: () => Promise<void>) => {
+    await writeFile(join(root, "a.txt"), "export const a = 2;\n");
+    git("add", "."); git("commit", "-q", "-m", "selected");
+    const scope = await commitScope(root, "HEAD");
+    const { changes, service, provider, sent } = session(onGenerate);
+    const items: ReviewItem[] = [];
+    for (const file of scope.files) {
+      const ref = commitComparisonRef(root, scope, file);
+      const snapshot = await readComparison(ref);
+      items.push({ path: file.path, file, ref, confirmed: snapshotSignature(snapshot), status: "pending" });
+    }
+    const completed = gate();
+    const scheduler = new RequestScheduler(() => 2);
+    const host: ReviewHost = {
+      scheduler, read: (ref) => readComparison(ref),
+      isCurrent: async (snapshot) => Boolean((await service.findComparison(snapshot))?.current),
+      explain: async (snapshot, reread, signal) => {
+        const saved = await service.explainComparison(snapshot, reread, signal);
+        await changes.comparisonSaved(snapshot);
+        return saved;
+      },
+      sharingAllowed: async () => vscode.workspace.isTrusted,
+      readingPath: () => changes.path,
+      background: () => undefined,
+      changed: () => { if (items.every((item) => item.status === "done" || item.status === "pending" && review.stopped)) completed.release(); },
+      stoppedWith: () => undefined
+    };
+    const review = new Review(host, root, "selected commit", items, "commit");
+    const gitSide = (path: string, ref: string) => uri("git", path, JSON.stringify({ path: join(root, path), ref }));
+    return { review, host, changes, provider, service, sent, scope, completed, gitSide };
+  };
+
+  it("updates a comparison already being read after background persistence and reuses native graph cache keys", async () => {
+    const entered = gate();
+    const release = gate();
+    const { review, changes, provider, service, sent, scope, completed, gitSide } = await prepare(async () => { entered.release(); await release.promise; });
+    await changes.show(gitSide("a.txt", scope.parent), gitSide("a.txt", scope.commit));
+    expect(changes.view(() => "link")?.status).toBe("ready");
+    review.start();
+    await entered.promise;
+    // Today's checked-out file and HEAD are not part of the confirmed commit pair.
+    await writeFile(join(root, "a.txt"), "export const a = 3;\n");
+    git("add", "."); git("commit", "-q", "-m", "later HEAD");
+    release.release();
+    await completed.promise;
+    expect(sent).toMatchObject([{ original: { source: "export const a = 1;\n" }, modified: { source: "export const a = 2;\n" } }]);
+    expect(changes.view(() => "link")?.status).toBe("current");
+    expect((await service.findComparison(await readComparison(review.items[0]!.ref)))?.current).toBe(true);
+    expect(changes.cardStates()).toEqual([]);
+    expect(provider.requests).toBe(1);
+    // Native pair cache misses outside that immutable set do not extend review.
+    await changes.show(gitSide("a.txt", scope.commit), gitSide("a.txt", git("rev-parse", "HEAD")));
+    await changes.refresh();
+    await changes.prefetch();
+    expect(changes.view(() => "link")?.status).toBe("ready");
+    expect(provider.requests).toBe(1);
+    expect(review.items).toHaveLength(1);
+    review.cancel();
+  });
+
+  it("picks up a background save while the initial cache lookup is still loading", async () => {
+    const { review, changes, service, provider, scope, gitSide } = await prepare();
+    const entered = gate();
+    const release = gate();
+    const lookup = service.findComparison.bind(service);
+    vi.spyOn(service, "findComparison").mockImplementationOnce(async (snapshot) => {
+      const missing = await lookup(snapshot);
+      entered.release();
+      await release.promise;
+      return missing;
+    });
+    const opening = changes.show(gitSide("a.txt", scope.parent), gitSide("a.txt", scope.commit));
+    await entered.promise;
+    const snapshot = await readComparison(review.items[0]!.ref);
+    await service.explainComparison(snapshot, () => readComparison(review.items[0]!.ref));
+    await changes.comparisonSaved(snapshot);
+    release.release();
+    await opening;
+    expect(changes.view(() => "link")?.status).toBe("current");
+    expect(provider.requests).toBe(1);
+    review.cancel();
+  });
+
+  it.each(["before commit", "after commit"] as const)("cancellation %s respects the shared persistence commit point", async (when) => {
+    const entered = gate();
+    const release = gate();
+    const prepared = await prepare(when === "before commit" ? async () => { entered.release(); await release.promise; } : undefined);
+    const { review, host, service } = prepared;
+    if (when === "after commit") {
+      const explain = host.explain;
+      host.explain = async (...args) => {
+        const saved = await explain(...args);
+        // Atomic persistence has returned success, but the queue hasn't received it yet.
+        review.cancel();
+        return saved;
+      };
+    }
+    const work = review.explainNow(review.items[0]!);
+    if (when === "before commit") {
+      await entered.promise;
+      review.cancel();
+      release.release();
+    }
+    await work;
+    expect(review.items[0]!.status).toBe(when === "before commit" ? "pending" : "done");
+    expect(Boolean((await service.findComparison(await readComparison(review.items[0]!.ref)))?.current)).toBe(when === "after commit");
+    review.cancel();
+  });
+
+  it("rechecks trust and historical-path exclusions before sending, without expanding the set", async () => {
+    const { review, host, provider } = await prepare();
+    host.read = (ref) => readComparison(ref, { exclusion: async () => "blocked after confirmation" });
+    await review.explainNow(review.items[0]!);
+    expect(review.items[0]!.status).toBe("outdated");
+    expect(provider.requests).toBe(0);
+    review.items[0]!.status = "pending";
+    workspace.isTrusted = false;
+    review.start();
+    // sharingAllowed's false result stops the queue before it reads or sends.
+    await preparedStop(review, host);
+    expect(provider.requests).toBe(0);
+    review.cancel();
+  });
+});
+
+async function preparedStop(review: Review, host: ReviewHost): Promise<void> {
+  if (review.stopped) return;
+  await new Promise<void>((resolve) => {
+    const changed = host.changed;
+    host.changed = () => { changed(); if (review.stopped) resolve(); };
+  });
 }
 
 describe("the shown native diff", () => {

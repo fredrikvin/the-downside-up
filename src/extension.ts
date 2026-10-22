@@ -3,14 +3,20 @@ import { basename, isAbsolute, relative, resolve, sep } from "node:path";
 import * as vscode from "vscode";
 import { hasConsent, unapprovedModels, withConsent } from "./cache/consent";
 import { ChangeSession, snapshotOptions } from "./changeSession";
-import { Review, type ReviewHost, type ReviewItem } from "./review";
+import { Review, commitProgress, reviewedDocument, type ReviewHost, type ReviewItem } from "./review";
+import { graphCommitTarget } from "./context/commitCommand";
 import {
   baseComparisonRef,
   changedFilesSince,
   comparisonProblem,
+  commitComparisonRef,
+  commitDetails,
+  commitScope,
   EMPTY_SCHEME,
   snapshotSignature,
-  readComparison
+  readComparison,
+  type CommitScope,
+  type ComparisonRef
 } from "./context/comparison";
 import { FileRepositoryCacheStore } from "./cache/store";
 import {
@@ -331,11 +337,31 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
 
   /** Reveals lines of one side of the shown diff, clamped to that document. */
   const revealChangeLines = async (uri: vscode.Uri, startLine: number, endLine: number, side: "original" | "modified"): Promise<vscode.TextEditor> => {
+    const selectLines = (editor: vscode.TextEditor): vscode.TextEditor => {
+      const document = editor.document;
+      const last = Math.max(0, document.lineCount - 1);
+      const first = Math.min(Math.max(startLine - 1, 0), last);
+      const final = Math.min(Math.max(endLine - 1, first), last);
+      const range = new vscode.Range(first, 0, final, document.lineAt(final).text.length);
+      editor.selection = new vscode.Selection(range.start, range.end);
+      editor.revealRange(range, vscode.TextEditorRevealType.InCenterIfOutsideViewport);
+      return editor;
+    };
     const group = vscode.window.tabGroups.all.find((candidate) => {
       const input = candidate.activeTab?.input;
       return input instanceof vscode.TabInputTextDiff && sameUri(input[side], uri) && change.shows(input.original, input.modified);
     });
-    if (!group) throw new Error("The comparison editor is no longer visible. Open the diff again before selecting its source lines.");
+    if (!group) {
+      // Graph additions/deletions have a single historical editor. Reuse it;
+      // never open a replacement editor or navigate to today's working file.
+      const item = reviewSession?.kind === "commit" ? reviewedDocument(reviewSession.items, uri) : undefined;
+      const pair = item ? reviewDiffUris(item) : undefined;
+      const single = pair && change.shows(pair.original, pair.modified)
+        ? vscode.window.visibleTextEditors.find((editor) => sameUri(editor.document.uri, uri))
+        : undefined;
+      if (single) return selectLines(single);
+      throw new Error("The comparison editor is no longer visible. Open the diff again before selecting its source lines.");
+    }
     const positions = ["First", "Second", "Third", "Fourth", "Fifth", "Sixth", "Seventh", "Eighth"];
     const position = positions[group.viewColumn - 1];
     if (!position) throw new Error("The comparison editor group cannot be focused. Move the diff to one of the first eight editor groups.");
@@ -376,14 +402,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     editor ??= vscode.window.visibleTextEditors.find((candidate) => candidate.viewColumn === undefined && sameUri(candidate.document.uri, uri))
       ?? vscode.window.visibleTextEditors.find((candidate) => sameUri(candidate.document.uri, uri));
     if (!editor) throw new Error("The comparison editor is no longer visible. Open the diff again before selecting its source lines.");
-    const document = editor.document;
-    const last = Math.max(0, document.lineCount - 1);
-    const first = Math.min(Math.max(startLine - 1, 0), last);
-    const final = Math.min(Math.max(endLine - 1, first), last);
-    const range = new vscode.Range(first, 0, final, document.lineAt(final).text.length);
-    editor.selection = new vscode.Selection(range.start, range.end);
-    editor.revealRange(range, vscode.TextEditorRevealType.InCenterIfOutsideViewport);
-    return editor;
+    return selectLines(editor);
   };
 
   const change = new ChangeSession({
@@ -973,6 +992,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       ...(preview && !changeView ? { document: { ...preview.overview, entries: shownEntries() } } : {}),
       ...(folder ? { folder } : {}),
       ...(changeView ? { change: changeView } : {}),
+      ...(reviewSession?.kind === "commit" && (!shownRoot || reviewSession.root === shownRoot) ? { review: commitProgress(reviewSession) } : {}),
       ...(breadcrumbs ? { breadcrumbs } : {}),
       explanations: changeView ? [] : explanations,
       ...(summary ? { summary: { text: summary.text, current: summary.current } } : {}),
@@ -1915,6 +1935,12 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
         return { original: input.original, modified: input.modified };
       }
     }
+    // The graph opens additions/deletions as one Git document, not a diff.
+    // Bind only an exact immutable side of this confirmed commit set.
+    if (reviewSession?.kind === "commit") {
+      const item = reviewedDocument(reviewSession.items, editor.document.uri);
+      if (item) return reviewDiffUris(item);
+    }
     return undefined;
   };
 
@@ -1933,6 +1959,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     folderPreview = undefined;
     panel.setFileReferenceHandlers(new Map());
     await change.show(diff.original, diff.modified, force);
+    reviewSession?.wakeUp();
     if (!panel || !change.active) return;
     const root = change.root;
     panel.panel.title = `Downside Up: Changes in ${change.fileName ?? "this file"}`;
@@ -1951,7 +1978,26 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
   };
 
   const previewDocument = async (document: vscode.TextDocument): Promise<void> => {
-    if (!panel || document.uri.scheme !== "file") return;
+    if (!panel) return;
+    if (document.uri.scheme !== "file") {
+      if (document.uri.scheme === "git") {
+        regeneration?.abort();
+        stopPrefetch();
+        clearReveal();
+        selectionLookupEpoch++;
+        savedLookupEpoch++;
+        folderEpoch++;
+        previewEpoch++;
+        openingFolder = undefined;
+        panel.setFileReferenceHandlers(new Map());
+        change.clear();
+        preview = undefined;
+        folderPreview = undefined;
+        notice = { tone: "info", text: "No confirmed comparison for this Git document. Open its native diff, or run Prepare Commit Explanations…." };
+        render();
+      }
+      return;
+    }
     const name = document.uri.path.split("/").pop() ?? "this file";
     try {
       const root = await resolveRoot(document);
@@ -2627,7 +2673,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
   const startPrefetch = (document: vscode.TextDocument, root: string): void => {
     stopPrefetch();
     prefetchConsent = undefined;
-    if (!panel || !preview || !sameUri(preview.document.uri, document.uri) || preview.exclusion || !prefetchSettings().enabled) return;
+    if (!panel || !preview || !sameUri(preview.document.uri, document.uri) || preview.exclusion || reviewSession || !prefetchSettings().enabled) return;
     const names = new Set(preview.overview.entries.filter((entry) => entry.explainable).map((entry) => entry.qualifiedName));
     if (names.size === 0) return;
     const session: PrefetchSession = {
@@ -2675,6 +2721,8 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
   /** Shows review progress in the status bar; clicking it lists the changed files. */
   const updateReviewStatus = (): void => {
     const session = reviewSession;
+    const root = change.active ? change.root : preview?.root ?? folderPreview?.root;
+    panel?.updateReview(session?.kind === "commit" && (!root || session.root === root) ? commitProgress(session) : undefined);
     void vscode.commands.executeCommand("setContext", "downsideUp.hasReview", Boolean(session));
     if (!session) {
       reviewStatus.hide();
@@ -2720,7 +2768,14 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     scheduler,
     read: (ref) => readComparison(ref, snapshotOptions()),
     isCurrent: async (snapshot) => Boolean((await service.findComparison(snapshot))?.current),
-    explain: (snapshot, reread, signal) => service.explainComparison(snapshot, reread, signal),
+    explain: async (snapshot, reread, signal) => {
+      const saved = await service.explainComparison(snapshot, reread, signal);
+      // Persistence has committed. UI/cache reload failure must not retry a paid request.
+      void change.comparisonSaved(snapshot).catch((error: unknown) => {
+        void vscode.window.showWarningMessage(`The explanation was saved, but the preview could not refresh: ${errorMessage(error)}`);
+      });
+      return saved;
+    },
     sharingAllowed: reviewSharingAllowed,
     readingPath,
     background: (signal) => prefetchSignals.add(signal),
@@ -2738,15 +2793,17 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
    * command is the explicit request; when code sharing is not approved yet,
    * the first file is explained as an ordinary request, which asks.
    */
-  const startReview = async (root: string, base: string, baseLabel: string, confirm: boolean): Promise<number> => {
-    const { files, truncated } = await changedFilesSince(root, base, MAX_REVIEW_FILES);
+  const startReview = async (root: string, base: string, baseLabel: string, confirm: boolean, committed?: CommitScope): Promise<number> => {
+    if (!vscode.workspace.isTrusted) throw new Error("Preparing explanations requires a trusted workspace. Nothing was sent.");
+    const model = JSON.stringify(describeProvider());
+    const { files, truncated } = committed ?? await changedFilesSince(root, base, MAX_REVIEW_FILES);
     const options = snapshotOptions();
     const items: ReviewItem[] = [];
     let excluded = 0;
     let skipped = 0;
     for (let index = 0; index < files.length; index += 8) {
       const prepared = await Promise.all(files.slice(index, index + 8).map(async (file) => {
-        const ref = await baseComparisonRef(root, base, file);
+        const ref = committed ? commitComparisonRef(root, committed, file) : await baseComparisonRef(root, base, file);
         const snapshot = await readComparison(ref, options);
         return { file, ref, snapshot, saved: comparisonProblem(snapshot) ? undefined : await service.findComparison(snapshot) };
       }).map((work) => work.catch(() => undefined)));
@@ -2780,18 +2837,27 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       if (confirm) await vscode.window.showInformationMessage(`No changed files could be explained ${baseLabel}. ${notes}`.trim());
       return 0;
     }
-    if (confirm && pending > 0) {
-      const accept = "Explain Changed Files";
+    if (confirm && (pending > 0 || committed)) {
+      const accept = committed ? "Prepare Explanations" : "Explain Changed Files";
+      const requests = committed
+        ? `${plural(pending, "initial request")}, up to ${pending * 2} requests including at most one retry per failed file`
+        : plural(pending, "request");
       const answer = await vscode.window.showInformationMessage(
-        `Explain ${plural(pending, "changed file")} ${baseLabel} in the background? That is ${plural(pending, "request")} to your model provider, each sending the two versions of one file. The other ${items.length - pending} of ${items.length} already have a current explanation.`,
+        `Explain ${plural(pending, "changed file")} ${baseLabel} in the background? That is ${requests} to your model provider, each sending the two versions of one file. The other ${items.length - pending} of ${items.length} already have a current explanation.`,
         { modal: true, detail: notes || undefined },
         accept
       );
       if (answer !== accept) return 0;
     }
+    if (!vscode.workspace.isTrusted || model !== JSON.stringify(describeProvider())) {
+      throw new Error("Workspace trust or the Functions model changed. Run preparation again to confirm its scope.");
+    }
     cancelReview();
-    const session = new Review(reviewHost, root, baseLabel, items);
+    stopPrefetch();
+    change.stopPrefetch();
+    const session = new Review(reviewHost, root, baseLabel, items, committed ? "commit" : "working");
     reviewSession = session;
+    if (committed) ensurePanel();
     updateReviewStatus();
     if (pending > 0 && !(await reviewSharingAllowed(root))) {
       // The first file is an ordinary request, so code sharing is approved the usual way.
@@ -2803,6 +2869,57 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     }
     if (reviewSession === session && !session.stopped) session.start();
     return items.length;
+  };
+
+  /** Stable palette fallback; graph arguments, when supplied, must name one exact local commit. */
+  const prepareCommitCommand = async (sourceControl?: unknown, historyItem?: unknown): Promise<void> => {
+    try {
+      if (!vscode.workspace.isTrusted) throw new Error("Preparing explanations requires a trusted workspace. Nothing was sent.");
+      let root: string | undefined;
+      let revision: string | undefined;
+      if (sourceControl !== undefined || historyItem !== undefined) {
+        ({ root, revision } = graphCommitTarget(sourceControl, historyItem));
+        if (!vscode.workspace.getWorkspaceFolder(vscode.Uri.file(root))) throw new Error("Choose a repository in an open workspace folder.");
+        root = await findRepositoryRoot(root);
+      } else {
+        root = await rootForCommand();
+        if (!root) {
+          const roots = [...new Set(await Promise.all((vscode.workspace.workspaceFolders ?? []).slice(0, 20)
+            .map((folder) => findRepositoryRoot(folder.uri.fsPath))))];
+          root = roots.length === 1 ? roots[0] : (await vscode.window.showQuickPick(
+            roots.map((path) => ({ label: basename(path), description: path, root: path })),
+            { title: "Prepare commit explanations", placeHolder: "Choose a repository" }
+          ))?.root;
+        }
+        if (!root) return;
+        const commits = await recentCommits(root);
+        const enter = { label: "Enter commit ID or ref…", description: "including a commit not checked out", hash: "" };
+        const picked = await vscode.window.showQuickPick([
+          ...commits.map((commit) => ({ label: commit.subject, description: `${commit.shortHash} · ${commit.when}`, hash: commit.hash })),
+          enter
+        ], { title: "Prepare Commit Explanations", placeHolder: "Explain this commit against its parent, not the working tree", matchOnDescription: true });
+        if (!picked) return;
+        revision = picked === enter ? await vscode.window.showInputBox({ title: "Commit to prepare", prompt: "Commit ID or ref (resolved once before confirmation)", ignoreFocusOut: true }) : picked.hash;
+      }
+      if (!root || !revision) return;
+      const details = await commitDetails(root, revision);
+      const parent = details.parents.length > 1 ? (await vscode.window.showQuickPick(
+        details.parents.map((hash, index) => ({ label: `Parent ${index + 1}: ${hash.slice(0, 12)}`, description: index === 0 ? "Git graph's default comparison" : "A different exact parent comparison", hash })),
+        { title: "Choose a merge parent", placeHolder: "Preparation covers only this parent → commit pair" }
+      ))?.hash : details.parents[0];
+      if (details.parents.length > 1 && !parent) return;
+      const scope = await commitScope(root, details.hash, parent);
+      const label = `in commit ${scope.commit.slice(0, 7)} against ${parent ? `parent ${parent.slice(0, 7)}` : "the empty tree (root commit)"}`;
+      const prepared = await startReview(root, scope.commit, label, true, scope);
+      if (prepared) {
+        const editor = vscode.window.activeTextEditor ?? lastTextEditor;
+        ensurePanel();
+        if (!routeToChange(editor, false) && editor?.document.uri.scheme === "file") await previewDocument(editor.document);
+        render();
+      }
+    } catch (error) {
+      await vscode.window.showWarningMessage(`Commit preparation could not start: ${errorMessage(error)}`);
+    }
   };
 
   /** Asks which changes to review and starts review mode. */
@@ -2845,18 +2962,21 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     await startReview(root, base, label, true);
   };
 
-  /** Opens the native diff of a reviewed file: the base version against the working file, as confirmed. */
+  /** Native URIs for a confirmed pair; absent sides retain their revision identity. */
+  const reviewDiffUris = (item: ReviewItem): { original: vscode.Uri; modified: vscode.Uri } => {
+    const sideUri = (side: ComparisonRef["original"], absent: boolean): vscode.Uri => {
+      const file = vscode.Uri.file(resolve(item.ref.root, side.path));
+      const revision = side.source.kind === "revision" ? side.source.hash : "";
+      if (absent) return file.with({ scheme: EMPTY_SCHEME, query: revision });
+      return side.source.kind === "working" ? file : file.with({ scheme: "git", query: JSON.stringify({ path: file.fsPath, ref: revision }) });
+    };
+    return { original: sideUri(item.ref.original, item.file.status === "added"), modified: sideUri(item.ref.modified, item.file.status === "deleted") };
+  };
+
+  /** Existing status list fallback, not a new navigator. */
   const openReviewDiff = async (session: Review, item: ReviewItem): Promise<void> => {
-    const source = item.ref.original.source;
-    if (source.kind !== "revision") return;
-    const originalFile = vscode.Uri.file(resolve(session.root, item.ref.original.path));
-    const workingFile = vscode.Uri.file(resolve(session.root, item.ref.modified.path));
-    // Git has no version of an added file and the working tree none of a deleted one; an empty document stands in.
-    const left = item.file.status === "added"
-      ? originalFile.with({ scheme: EMPTY_SCHEME, query: source.hash })
-      : originalFile.with({ scheme: "git", query: JSON.stringify({ path: originalFile.fsPath, ref: source.hash }) });
-    const right = item.file.status === "deleted" ? workingFile.with({ scheme: EMPTY_SCHEME, query: "" }) : workingFile;
-    await vscode.commands.executeCommand("vscode.diff", left, right, `${basename(item.path)} (${session.base})`, {
+    const pair = reviewDiffUris(item);
+    await vscode.commands.executeCommand("vscode.diff", pair.original, pair.modified, `${basename(item.path)} (${session.base})`, {
       viewColumn: vscode.ViewColumn.One,
       preview: true
     });
@@ -3030,6 +3150,9 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
         return;
       case "cancel":
         cancelExplanations();
+        return;
+      case "stopReview":
+        stopReview();
         return;
       case "explainChanges":
         await change.explain();
@@ -3539,6 +3662,10 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
   const onTextSelectionChange = vscode.window.onDidChangeTextEditorSelection(handleTextSelectionChange);
 
   const onConfigChange = vscode.workspace.onDidChangeConfiguration((event) => {
+    // A confirmed preparation belongs to the selected model and sharing policy.
+    // Never continue it under another configuration without a new confirmation.
+    if (reviewSession && ["downsideUp.provider", "downsideUp.languageModel", "downsideUp.openai", "downsideUp.exclusion", "files.exclude", "search.exclude"]
+      .some((key) => event.affectsConfiguration(key))) dismissReview();
     if (change.active && ["downsideUp.provider", "downsideUp.languageModel", "downsideUp.openai", "downsideUp.exclusion"].some((key) => event.affectsConfiguration(key))) {
       change.stopPrefetch();
       change.invalidateCards();
@@ -3606,6 +3733,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       render();
     }),
     vscode.commands.registerCommand("downsideUp.reviewChanges", reviewChangesCommand),
+    vscode.commands.registerCommand("downsideUp.prepareCommit", prepareCommitCommand),
     vscode.commands.registerCommand("downsideUp.showChangedFunctions", showChangedFunctionsCommand),
     reviewStatus,
     vscode.commands.registerCommand("downsideUp.refreshRepositoryContext", refreshRepositoryContext),
@@ -3704,7 +3832,8 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
         return id;
       });
       const link = view?.result?.changes.flatMap((item) => item.links)
-        .find((item) => item.caption.startsWith(side === "original" ? "Original " : "Modified "));
+        .find((item) => item.caption.startsWith(side === "original" ? "Original " : "Modified ")) ??
+        (side === "original" ? view?.result?.removed : view?.result?.added)?.find((card) => card.link)?.link;
       if (!link) throw new Error("No checked comparison source link is available.");
       await handlers.get(link.referenceId)!();
     },
@@ -3712,6 +3841,11 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       const root = preview?.root ?? change.root;
       return root ? startReview(root, base, "for testing", false) : Promise.resolve(0);
     },
+    prepareCommit: async (root: string, revision: string, parent?: string) => {
+      const scope = await commitScope(root, revision, parent);
+      return startReview(root, scope.commit, `in commit ${scope.commit.slice(0, 7)}`, false, scope);
+    },
+    commitProgress: () => reviewSession?.kind === "commit" ? commitProgress(reviewSession) : undefined,
     reviewItems: () => (reviewSession?.items ?? []).map((item) => ({ path: item.path, change: item.file.status, status: item.status })),
     stopReview: () => dismissReview(),
     commandRoot: () => rootForCommand(),
@@ -3781,6 +3915,8 @@ export interface DownsideUpTestApi {
   flowsKind(): "files" | "parts" | undefined;
   previewFolder(path: string): Promise<void>;
   reviewChanges(base: string): Promise<number>;
+  prepareCommit(root: string, revision: string, parent?: string): Promise<number>;
+  commitProgress(): { text: string; canStop: boolean } | undefined;
   reviewItems(): Array<{ path: string; change: string; status: string }>;
   /** The native diff shown in the preview, or undefined. */
   shownChange(): { fileName: string; facts: string; status: string; explained: boolean; links: number;

@@ -3,14 +3,16 @@ import {
   snapshotSignature,
   type ChangedFile,
   type ComparisonRef,
-  type ComparisonSnapshot
+  type ComparisonSnapshot,
+  type DiffUri
 } from "./context/comparison";
+import { resolve } from "node:path";
 import { nextReviewFile } from "./presentation/prefetch";
 import type { RequestPriority } from "./presentation/requestScheduler";
 
 /** A changed file that review mode explains ahead of the reader, as the two versions that were confirmed. */
 export interface ReviewItem {
-  /** Path of the file in the working tree, or of the deleted file. */
+  /** Modified-side path, or the deleted file's path (working or committed). */
   readonly path: string;
   readonly file: ChangedFile;
   readonly ref: ComparisonRef;
@@ -51,6 +53,32 @@ export interface ReviewHost {
 
 export const MAX_REVIEW_FAILURES = 3;
 
+/** Matches a graph's single historical document (add/delete/Open File) only inside the confirmed set. */
+export function reviewedDocument(items: readonly ReviewItem[], uri: DiffUri): ReviewItem | undefined {
+  if (uri.scheme !== "git") return undefined;
+  let query: { path?: unknown; ref?: unknown };
+  try { query = JSON.parse(uri.query) as typeof query; } catch { return undefined; }
+  if (typeof query?.path !== "string" || typeof query.ref !== "string") return undefined;
+  return items.find((item) => [item.ref.original, item.ref.modified].some((side) =>
+    side.source.kind === "revision" && side.source.hash === query.ref &&
+    resolve(item.ref.root, side.path) === query.path));
+}
+
+/** Compact preparation progress; files with failures are never counted as ready. */
+export function commitProgress(session: Pick<Review, "items" | "stopped">): { text: string; canStop: boolean } {
+  const count = (status: ReviewItem["status"]) => session.items.filter((item) => item.status === status).length;
+  const preparing = count("explaining");
+  const problems = count("failed") + count("skipped") + count("outdated");
+  const canStop = !session.stopped && session.items.some((item) => item.status === "pending" || item.status === "explaining");
+  return {
+    text: `Commit: ${count("done")}/${session.items.length} ready` +
+      (preparing ? ` · ${preparing} preparing` : "") +
+      (problems ? ` · ${problems} not ready` : "") +
+      (session.stopped ? " · stopped" : ""),
+    canStop
+  };
+}
+
 const stopped = (): DOMException => new DOMException("Review stopped.", "AbortError");
 
 /**
@@ -77,9 +105,10 @@ export class Review {
   constructor(
     private readonly host: ReviewHost,
     readonly root: string,
-    /** Such as "since main (merge base 1a2b3c4)". */
+    /** Such as "since main (merge base 1a2b3c4)" or "in commit 1a2b3c4". */
     readonly base: string,
-    readonly items: ReviewItem[]
+    readonly items: ReviewItem[],
+    readonly kind: "working" | "commit" = "working"
   ) {
     this.unsubscribeCapacityChange = host.scheduler.onCapacityChange(() => this.wakeUp());
   }
@@ -118,6 +147,7 @@ export class Review {
 
   /** Explains one file as an ordinary request, which may ask for code-sharing approval. */
   explainNow(item: ReviewItem): Promise<void> {
+    if (!this.items.includes(item)) return Promise.reject(new Error("This file was not confirmed for review."));
     const generation = this.generation;
     return this.explain(item, "explicit", () => !this.stopped && this.generation === generation);
   }

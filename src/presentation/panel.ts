@@ -253,6 +253,8 @@ export interface PanelState {
   readonly formats: FormatSettings;
   readonly notice?: PanelNotice;
   readonly prefetchConsent?: { readonly models: readonly string[]; readonly approving: boolean };
+  /** Commit preparation only; the existing Git graph remains the navigator. */
+  readonly review?: { readonly text: string; readonly canStop: boolean };
   /** A folder being opened; its placeholder is shown until it is listed. */
   readonly loading?: { readonly name: string };
   readonly busy: boolean;
@@ -267,6 +269,7 @@ export type PanelAction =
   | { readonly type: "regenerate"; readonly entryId: string }
   | { readonly type: "cancelEntry"; readonly entryId: string }
   | { readonly type: "cancel" }
+  | { readonly type: "stopReview" }
   | { readonly type: "explainChanges" }
   | { readonly type: "summarizeFolder" }
   | { readonly type: "summarizeTree" }
@@ -584,6 +587,7 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
     </nav>
     <div id="stats" class="stats" aria-label="Local cache statistics" hidden></div>
     <div id="activity" class="activity" hidden><span id="activityStage" role="status"></span><span id="activityTime" class="muted small"></span></div>
+    <div id="commitProgress" class="stats" role="status" aria-live="polite" hidden></div>
   </header>
   <p id="notice" class="notice" role="status" aria-live="polite"></p>
   <aside id="prefetchConsent" class="prefetch-consent" aria-label="Background explanation approval" hidden></aside>
@@ -2222,6 +2226,7 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
       const folder = file || loading || change ? undefined : next.folder;
       renderCrumbs(next.breadcrumbs);
       renderHeader(next);
+      renderCommitProgress(next.review);
       renderPageActions(next);
       const notice = byId("notice");
       notice.textContent = next.notice ? next.notice.text : "";
@@ -2390,10 +2395,29 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
       if (entryId) byId(entryId)?.classList.add("current");
     }
 
+    function renderCommitProgress(review) {
+      const progress = byId("commitProgress");
+      progress.hidden = !review;
+      progress.replaceChildren();
+      if (!review) return;
+      progress.append(el("span", "", review.text));
+      if (review.canStop) {
+        const stop = el("button", "text-button", "Stop");
+        stop.type = "button";
+        stop.addEventListener("click", () => post({ type: "stopReview" }));
+        stop.title = "Stop preparing new files; requests already sent may finish and be saved";
+        progress.append(" · ", stop);
+      }
+    }
+
     window.addEventListener("message", (event) => {
       const message = event.data;
       if (!message || typeof message !== "object") return;
       if (message.type === "state") render(message.state);
+      else if (message.type === "review") {
+        if (state) state = { ...state, review: message.review };
+        renderCommitProgress(message.review);
+      }
       else if (message.type === "scroll" && typeof message.line === "number") scrollToLine(message.line);
       else if (message.type === "cursor") highlight(typeof message.entryId === "string" ? message.entryId : undefined);
       else if (message.type === "steps") {
@@ -2461,7 +2485,7 @@ export class ExplanationPanel {
         const type = fields.type;
         if (type === "ready") {
           this.replay();
-        } else if (type === "cancel" || type === "refreshContext" || type === "clearCache" || type === "chooseModel" || type === "chooseOverviewModel" || type === "regenerateOutdated" || type === "summarizeFolder" || type === "summarizeTree" || type === "describeFlows" || type === "approveSharing" || type === "explainChanges") {
+        } else if (type === "cancel" || type === "stopReview" || type === "refreshContext" || type === "clearCache" || type === "chooseModel" || type === "chooseOverviewModel" || type === "regenerateOutdated" || type === "summarizeFolder" || type === "summarizeTree" || type === "describeFlows" || type === "approveSharing" || type === "explainChanges") {
           onAction({ type });
         } else if (type === "expand" || type === "regenerate" || type === "cancelEntry" || type === "showCallers") {
           const entryId = stringField("entryId");
@@ -2506,6 +2530,13 @@ export class ExplanationPanel {
   update(state: PanelState): void {
     this.state = state;
     void this.panel.webview.postMessage({ type: "state", state });
+  }
+
+  /** Progress changes must not rebuild charts or disturb the reader's selection. */
+  updateReview(review: PanelState["review"]): void {
+    if (JSON.stringify(this.state?.review) === JSON.stringify(review)) return;
+    if (this.state) this.state = { ...this.state, review };
+    void this.panel.webview.postMessage({ type: "review", review });
   }
 
   /** Aligns the preview with the first visible source line. */

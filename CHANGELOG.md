@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.44.0
+
+- Add **Prepare Commit Explanations…**: confirm a bounded immutable commit vs
+  parent scope, then reuse Review's scheduler, consent, exclusions and cache.
+  Root commits use the empty tree; merges require an explicit parent choice.
+- Keep Source Control Graph's file tree as the navigator. Native revision diffs
+  reuse prepared comparisons, additions/deletions bind their historical
+  documents within the confirmed session, and visible comparisons refresh when
+  background preparation finishes. Added/Removed details are never prepared.
+- Show compact **Commit: ready/total · preparing** progress with Stop in the
+  preview. Do not expand scope on opening/cache misses; changing models or
+  sharing exclusions cancels the confirmed run.
+- Use the command palette on stable VS Code: its graph commit context menu
+  remains proposed-only. No engine bump, rejected menu contribution, or
+  proposed-API release requirement is introduced.
+
 ## 0.43.5
 
 - Restore current cached Added/Removed function explanations expanded when

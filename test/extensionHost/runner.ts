@@ -1,5 +1,7 @@
 import * as assert from "node:assert/strict";
-import { rm, writeFile } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
+import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import * as vscode from "vscode";
 import { findFunctionWithEditorTools } from "../../src/languages/editor/symbols";
@@ -130,6 +132,75 @@ async function testSnapshotFunctionCards(api: DownsideUpTestApi, document: vscod
 }
 
 export async function run(): Promise<void> {
+  const commitRoot = await realpath(await mkdtemp(resolve(tmpdir(), "dsu-commit-host-")));
+  try {
+    execFileSync("git", ["-C", commitRoot, "init", "-q"]);
+    await runWithCommitRepository(commitRoot);
+  } finally {
+    await rm(commitRoot, { recursive: true, force: true });
+  }
+}
+
+/** Uses only a disposable repository; tests never commit in the development worktree. */
+async function testCommitPreparation(api: DownsideUpTestApi, root: string): Promise<void> {
+  const git = (...args: string[]) => execFileSync("git", ["-C", root, ...args], { encoding: "utf8" }).trim();
+  git("init", "-q");
+  git("config", "user.name", "Test"); git("config", "user.email", "test@example.com");
+  await writeFile(resolve(root, "main.ts"), "export function main() { return 1; }\n");
+  await writeFile(resolve(root, "old.ts"), "export function renamed() { return 1; }\n");
+  await writeFile(resolve(root, "deleted.ts"), "export function deleted() { return 1; }\n");
+  git("add", "."); git("commit", "-q", "-m", "parent");
+  const parent = git("rev-parse", "HEAD");
+  await writeFile(resolve(root, "main.ts"), "export function main() { return 2; }\n");
+  await writeFile(resolve(root, "added.ts"), "export function added() { return 2; }\n");
+  await writeFile(resolve(root, ".env"), "PRIVATE_EXAMPLE=not-sent\n");
+  git("mv", "old.ts", "renamed.ts"); git("rm", "-q", "deleted.ts");
+  git("add", "."); git("commit", "-q", "-m", "selected");
+  const commit = git("rev-parse", "HEAD");
+  const gitExtension = vscode.extensions.getExtension("vscode.git");
+  assert.ok(gitExtension);
+  const gitApi = (await gitExtension.activate() as { getAPI(version: number): { getRepository(uri: vscode.Uri): unknown } }).getAPI(1);
+  await waitFor(async () => gitApi.getRepository(vscode.Uri.file(root)) || undefined, "Git to discover the disposable commit repository");
+  const side = (path: string, hash: string) => {
+    const file = vscode.Uri.file(resolve(root, path));
+    return file.with({ scheme: "git", query: JSON.stringify({ path: file.fsPath, ref: hash }) });
+  };
+  try {
+    await writeFile(resolve(root, "main.ts"), "export function main() { return 999; }\n");
+    await vscode.commands.executeCommand("vscode.diff", side("main.ts", parent), side("main.ts", commit), "Commit main (test)");
+    await vscode.commands.executeCommand("downsideUp.showFileOverview");
+    await waitFor(async () => api.shownChange()?.fileName === "main.ts" && api.shownChange()?.status === "ready" ? true : undefined, "an immutable native graph pair");
+    assert.ok((await vscode.commands.getCommands(true)).includes("downsideUp.prepareCommit"), "The stable commit preparation command is registered.");
+    assert.equal(await api.prepareCommit(root, commit), 4, "The committed secret file is excluded from the bounded preparation.");
+    assert.deepEqual(api.reviewItems().map((item) => `${item.path} ${item.change}`), [
+      "added.ts added", "deleted.ts deleted", "main.ts modified", "renamed.ts renamed"
+    ]);
+    await waitFor(async () => api.reviewItems().every((item) => item.status === "done") ? true : undefined, "commit comparisons to finish");
+    assert.equal(api.shownChange()?.status, "current", "Background completion refreshes the comparison already being read.");
+    assert.deepEqual(api.commitProgress(), { text: "Commit: 4/4 ready", canStop: false });
+    await vscode.commands.executeCommand("vscode.diff", side("old.ts", parent), side("renamed.ts", commit), "Commit rename (test)");
+    await vscode.commands.executeCommand("downsideUp.showFileOverview");
+    await waitFor(async () => api.shownChange()?.fileName === "renamed.ts" && api.shownChange()?.status === "current" ? true : undefined, "the graph rename pair to reuse its prepared cache");
+    // The graph opens true additions/deletions in a single Git editor.
+    for (const [path, revision, sourceSide] of [["added.ts", commit, "modified"], ["deleted.ts", parent, "original"]] as const) {
+      const document = await vscode.workspace.openTextDocument(side(path, revision));
+      const editor = await vscode.window.showTextDocument(document, vscode.ViewColumn.One);
+      await vscode.commands.executeCommand("downsideUp.showFileOverview");
+      await waitFor(async () => api.shownChange()?.fileName === path && api.shownChange()?.status === "current" ? true : undefined, `the graph's single ${path} document to reuse its prepared comparison`);
+      assert.ok([...api.shownChange()!.added, ...api.shownChange()!.removed].every((card) => !card.explanation), "No Added/Removed detail was generated by preparation.");
+      await api.revealChange(sourceSide);
+      assert.equal(editor.document.uri.toString(), document.uri.toString(), "Source navigation reuses the graph's historical editor.");
+      assert.ok(!editor.selection.isEmpty);
+    }
+    assert.equal(await api.prepareCommit(root, commit), 4);
+    assert.ok(api.reviewItems().every((item) => item.status === "done"), "Preparing again reuses exact revision comparisons without another request.");
+  } finally {
+    api.stopReview();
+  }
+  console.log("Downside Up integration tests: immutable commit preparation, graph diff cache alignment, historical add/delete documents, compact progress, and background refresh.");
+}
+
+async function runWithCommitRepository(commitRoot: string): Promise<void> {
   console.log("Downside Up integration tests: activating extension.");
   const extension = vscode.extensions.getExtension("FredrikVinkvist.the-downside-up");
   assert.ok(extension, "The development extension is installed.");
@@ -224,7 +295,8 @@ export async function run(): Promise<void> {
     { uri: vscode.Uri.file(reactRoot), name: "react-app" },
     { uri: vscode.Uri.file(servicesRoot), name: "services-app" },
     { uri: vscode.Uri.file(pythonRoot), name: "python-app" },
-    { uri: vscode.Uri.file(sqlRoot), name: "sql-app" }
+    { uri: vscode.Uri.file(sqlRoot), name: "sql-app" },
+    { uri: vscode.Uri.file(commitRoot), name: "commit-preparation-test" }
   ), "The JavaScript, Go, React, services, Python, and SQL fixture folders are added.");
   const jsFile = resolve(jsRoot, "src/checkout.js");
   const jsDocument = await vscode.workspace.openTextDocument(vscode.Uri.file(jsFile));
@@ -547,6 +619,7 @@ export async function run(): Promise<void> {
     await rm(nextBadgePath, { force: true });
   }
   console.log("Downside Up integration tests: review mode explained the changed files.");
+  await testCommitPreparation(api, commitRoot);
 
   const pythonDocument = await vscode.workspace.openTextDocument(vscode.Uri.file(resolve(pythonRoot, "main.py")));
   const pythonCursor = pythonDocument.positionAt(pythonDocument.getText().indexOf("def checkout") + 6);

@@ -79,6 +79,24 @@ and billing.
   comparison, and confirm the number of changed files to explain; each opens in
   VS Code's native diff. The confirmed count remains one comparison per file;
   Added/Removed details are not included or generated in the background.
+- **Prepare a commit.** Run **Downside Up: Prepare Commit Explanations…**,
+  choose a commit (or enter its ID/ref), and confirm the bounded file scope and
+  request count. This compares the immutable commit with its parent, **not**
+  today's working tree; root commits compare with the empty tree, and merges
+  require an explicit parent choice. Keep using Source Control Graph's existing
+  file tree and individual Git diffs: they pick up the same saved comparisons,
+  prioritize the confirmed file being read, and update when preparation finishes.
+  While the preparation session remains open, the graph's single historical
+  documents for additions/deletions also show their confirmed comparison.
+  The preview shows **Commit: 3/8 ready · 1 preparing** with **Stop** (sent
+  requests may finish; **Cancel** aborts uncommitted results). At most 200
+  changed files are considered; exclusions and limits still apply, and failures
+  may retry once. Opening anything outside this scope never adds requests.
+  Added/Removed details are not prepared. VS Code's commit context menu is
+  still proposed-only, so the command palette is the supported entry point:
+  no extra navigator, proposed-API opt-in, or VS Code engine bump is required.
+  The graph defaults to the first merge parent; for another parent, use the
+  existing **Show Changed Files** list to open that exact prepared diff.
 - **Choose models by role.** **Functions** handles explanations and file
   summaries. **Project overview** handles repository context, architecture
   maps, folder summaries, and flows.

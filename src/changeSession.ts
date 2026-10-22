@@ -6,6 +6,7 @@ import {
   describeIdentity,
   readComparison,
   resolveNativeDiff,
+  snapshotSignature,
   type ComparisonRef,
   type ComparisonSnapshot,
   type DiffUri,
@@ -87,6 +88,7 @@ export class ChangeSession {
   private shown: Shown | undefined;
   private epoch = 0;
   private bindingEpoch = 0;
+  private savedEpoch = 0;
   private readonly cards = new Map<string, ChangeCardState>();
   private readonly cardLoads = new Map<string, Promise<ChangeCardState | undefined>>();
   private readonly cardErrors = new Map<string, string>();
@@ -176,12 +178,21 @@ export class ChangeSession {
     if (shown) await this.show(shown.originalUri, shown.modifiedUri, true);
   }
 
+  /** A background review saved this exact pair. Reload cache-only, never starting a request. */
+  async comparisonSaved(snapshot: ComparisonSnapshot): Promise<void> {
+    this.savedEpoch++;
+    const shown = this.shown;
+    if (shown?.snapshot?.root === snapshot.root &&
+        snapshotSignature(shown.snapshot) === snapshotSignature(snapshot)) await this.refresh();
+  }
+
   private async rootFor(uri: vscode.Uri): Promise<string | undefined> {
     const folder = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(uri.fsPath));
     return folder ? findRepositoryRoot(folder.uri.fsPath) : undefined;
   }
 
   private async load(shown: Shown, epoch: number): Promise<void> {
+    let savedEpoch = this.savedEpoch;
     const apply = (value: Partial<Shown>) => {
       if (this.shown === shown && this.epoch === epoch) Object.assign(shown, value);
     };
@@ -202,7 +213,12 @@ export class ChangeSession {
     }
     const snapshot = await readComparison(resolved.ref, snapshotOptions());
     const problem = comparisonProblem(snapshot);
-    const saved = !problem ? await this.host.service.findComparison(snapshot) : undefined;
+    let saved = !problem ? await this.host.service.findComparison(snapshot) : undefined;
+    // A review may persist after the lookup read but before this view is bound.
+    while (!problem && savedEpoch !== this.savedEpoch && this.shown === shown && this.epoch === epoch) {
+      savedEpoch = this.savedEpoch;
+      saved = await this.host.service.findComparison(snapshot);
+    }
     if (this.shown !== shown || this.epoch !== epoch) return;
     if (!saved?.current || (shown.snapshot && JSON.stringify(shown.snapshot) !== JSON.stringify(snapshot))) this.clearCards();
     apply({ root, ref: resolved.ref, snapshot, problem, saved });
