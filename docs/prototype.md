@@ -550,10 +550,18 @@ the missing side of an added or deleted file), which shows the same saved
 comparison. It works regardless of the `downsideUp.prefetch.*` settings.
 When the preview shows a native diff whose repository, both side identities
 (including exact revision IDs), and both paths match an item in the active
-confirmed Review set, a compact **Previous / filename · position of total /
-Next** toolbar steps through the confirmed files in stable path order. Boundary
-buttons are disabled and navigation does not wrap. The filename/position opens
-the existing **Show Changed Files** picker. A renamed comparison must match
+confirmed Review set, a review band above the file header (**‹ Previous /
+filename · position of total / Next ›**) steps through the confirmed files in
+stable path order. The band is mirrored below a divider at the bottom of the
+preview, without progress. Boundary buttons are disabled and navigation does
+not wrap. The filename/position opens the existing **Show Changed Files**
+picker. The top band also holds the single compact progress status
+(**Review:** or **Commit:** ready/total) with **Stop**. A progress update
+changes only that line; it does not re-render the bands or charts. Starting
+Review Changes… or Prepare Commit Explanations… opens one confirmed file's
+native diff in the first editor column, with the preview beside it and focus
+kept on the diff. That file is the active editor's file if it is in the set,
+otherwise the first by path. Opening it starts no request. A renamed comparison must match
 both of its side paths; matching only a label or one path is not sufficient.
 The toolbar is hidden for comparisons outside the active session and for
 single historical documents. Host-issued opaque navigation authority is bound
@@ -582,8 +590,8 @@ new file viewer. Its individual native diffs look up the prepared pair, and a
 comparison already being read reloads cache-only after background persistence.
 Reader movement prioritizes only the confirmed set; cache misses outside it
 do not enqueue work. Independent function/diff prefetch is suppressed while
-Review is present. The preview shows **Commit: 3/8 ready · 1 preparing** and
-**Stop**, scoped to the prepared repository; failed/skipped/outdated items are
+Review is present. The preview's top review band shows **Commit: 3/8 ready ·
+1 preparing** and **Stop**, scoped to the prepared repository; failed/skipped/outdated items are
 not counted ready. Stop prevents new requests but allows sent ones to finish;
 Cancel, closing the preview, replacing the session, clearing the cache, or
 changing models/exclusion settings aborts uncommitted requests. Persistence's

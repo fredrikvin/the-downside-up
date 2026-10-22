@@ -46,6 +46,14 @@ export function reviewNavigation(
   return index < 0 ? undefined : { items: ordered, index };
 }
 
+/** Keeps an exact active comparison when confirmed, otherwise starts in navigation order. */
+export function firstReviewItem(items: readonly ReviewItem[], activeRef?: ComparisonRef): ReviewItem | undefined {
+  const active = activeRef ? reviewNavigation(items, activeRef) : undefined;
+  if (active) return active.items[active.index];
+  const first = items[0];
+  return first ? reviewNavigation(items, first.ref)?.items[0] : undefined;
+}
+
 export interface ReviewHost {
   /** The shared request scheduler. */
   readonly scheduler: {
@@ -90,13 +98,13 @@ export function reviewedDocument(items: readonly ReviewItem[], uri: DiffUri): Re
 }
 
 /** Compact preparation progress; files with failures are never counted as ready. */
-export function commitProgress(session: Pick<Review, "items" | "stopped">): { text: string; canStop: boolean } {
+export function reviewProgress(session: Pick<Review, "items" | "stopped" | "kind">): { text: string; canStop: boolean } {
   const count = (status: ReviewItem["status"]) => session.items.filter((item) => item.status === status).length;
   const preparing = count("explaining");
   const problems = count("failed") + count("skipped") + count("outdated");
   const canStop = !session.stopped && session.items.some((item) => item.status === "pending" || item.status === "explaining");
   return {
-    text: `Commit: ${count("done")}/${session.items.length} ready` +
+    text: `${session.kind === "commit" ? "Commit" : "Review"}: ${count("done")}/${session.items.length} ready` +
       (preparing ? ` · ${preparing} preparing` : "") +
       (problems ? ` · ${problems} not ready` : "") +
       (session.stopped ? " · stopped" : ""),

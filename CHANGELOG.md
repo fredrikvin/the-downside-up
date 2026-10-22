@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.46.0
+
+- Starting **Review Changes…** or **Prepare Commit Explanations…** now opens
+  the first confirmed file's native diff in the first editor column with the
+  preview beside it. The active editor's file is used if it is in the review,
+  otherwise the first file by path. Focus stays on the diff, and opening it
+  starts no provider request.
+- Move review navigation into a band above the file header:
+  - chevron Previous and Next buttons;
+  - the filename and position in the middle, which open the changed-files
+    picker.
+- Repeat the navigation band below a divider at the bottom of the preview.
+- Compact progress with Stop moves from the header into the top band, and now
+  also appears for working reviews (**Review: 3/8 ready**).
+
 ## 0.45.0
 
 - Add Previous/Next review navigation to a native diff preview only when the

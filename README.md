@@ -78,15 +78,20 @@ and billing.
 - **Prepare a review.** Run **Downside Up: Review Changes…**, select a
   comparison, and confirm the number of changed files to explain; each opens in
   VS Code's native diff. The confirmed count remains one comparison per file;
-  Added/Removed details are not included or generated in the background. While
-  a confirmed file's native diff is shown, use **Previous** and **Next** in
-  the preview to step through the review in path order. The filename and
-  position open the existing **Show Changed Files** picker. Navigation stays
+  Added/Removed details are not included or generated in the background. After
+  you confirm, the first file's diff opens on the left with the preview on the
+  right (the active editor's file if it is in the review). While a confirmed
+  file's native diff is shown, the review bands above the file header and at
+  the bottom of the preview offer **‹ Previous** and **Next ›** to step through
+  the review in path order, plus **Review: 3/8 ready** progress at the top.
+  The filename and position open the existing **Show Changed Files** picker.
+  Navigation stays
   within the confirmed review, does not wrap, and only reprioritizes its
   pending work; it does not start requests.
 - **Prepare a commit.** Run **Downside Up: Prepare Commit Explanations…**,
   choose a commit (or enter its ID/ref), and confirm the bounded file scope and
-  request count. This compares the immutable commit with its parent, **not**
+  request count; the first file's diff then opens beside the preview. This
+  compares the immutable commit with its parent, **not**
   today's working tree; root commits compare with the empty tree, and merges
   require an explicit parent choice. Keep using Source Control Graph's existing
   file tree and individual Git diffs: they pick up the same saved comparisons,

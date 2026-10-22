@@ -3,7 +3,7 @@ import { unapprovedModels, withConsent } from "../src/cache/consent";
 import { emptyRepositoryCache } from "../src/cache/store";
 import { snapshotSignature, type ComparisonRef, type ComparisonSnapshot } from "../src/context/comparison";
 import { RequestScheduler } from "../src/presentation/requestScheduler";
-import { Review, commitProgress, reviewNavigation, reviewedDocument, type ReviewHost, type ReviewItem } from "../src/review";
+import { Review, firstReviewItem, reviewProgress, reviewNavigation, reviewedDocument, type ReviewHost, type ReviewItem } from "../src/review";
 
 const root = "/repo";
 
@@ -122,6 +122,17 @@ describe("review navigation matching", () => {
     modified: { path, source: { kind: "revision", hash: "b".repeat(40) } }
   });
 
+  it("starts with the exact active item or the first path-sorted confirmed item without mutating the set", () => {
+    const fixture = new Fixture(1);
+    const items = fixture.items("z.ts", "a.ts", "m.ts");
+    expect(firstReviewItem(items)).toBe(items[1]);
+    expect(firstReviewItem(items, items[2]!.ref)).toBe(items[2]);
+    expect(firstReviewItem(items, { ...items[2]!.ref, root: "/elsewhere" })).toBe(items[1]);
+    expect(firstReviewItem(items, revision("m.ts", "a".repeat(40)))).toBe(items[1]);
+    expect(firstReviewItem([])).toBeUndefined();
+    expect(items.map((item) => item.path)).toEqual(["z.ts", "a.ts", "m.ts"]);
+  });
+
   it("orders confirmed files by path and requires both full side identities, paths, and repository", () => {
     const fixture = new Fixture(1);
     const items = fixture.items("z.ts", "a.ts", "m.ts");
@@ -194,16 +205,19 @@ describe("review mode", () => {
     expect(reviewedDocument([item], { ...document("/repo/a.ts", hash), scheme: "file" })).toBeUndefined();
   });
 
-  it("reports compact commit progress without counting failed/skipped/outdated files as ready", () => {
+  it.each(["commit", "working"] as const)("reports compact %s progress without counting failed/skipped/outdated files as ready", (kind) => {
     const fixture = new Fixture(2);
     const items = fixture.items("a.ts", "b.ts", "c.ts", "d.ts", "e.ts");
     items[0]!.status = "done";
     items[1]!.status = "explaining";
     items[2]!.status = "failed";
-    expect(commitProgress({ items, stopped: false })).toEqual({ text: "Commit: 1/5 ready · 1 preparing · 1 not ready", canStop: true });
-    expect(commitProgress({ items, stopped: true })).toEqual({ text: "Commit: 1/5 ready · 1 preparing · 1 not ready · stopped", canStop: false });
+    items[3]!.status = "skipped";
+    items[4]!.status = "outdated";
+    const prefix = kind === "commit" ? "Commit" : "Review";
+    expect(reviewProgress({ items, stopped: false, kind })).toEqual({ text: `${prefix}: 1/5 ready · 1 preparing · 3 not ready`, canStop: true });
+    expect(reviewProgress({ items, stopped: true, kind })).toEqual({ text: `${prefix}: 1/5 ready · 1 preparing · 3 not ready · stopped`, canStop: false });
     for (const item of items) item.status = "done";
-    expect(commitProgress({ items, stopped: false })).toEqual({ text: "Commit: 5/5 ready", canStop: false });
+    expect(reviewProgress({ items, stopped: false, kind })).toEqual({ text: `${prefix}: 5/5 ready`, canStop: false });
   });
 
   it("explains every confirmed file in the background and stops when done", async () => {

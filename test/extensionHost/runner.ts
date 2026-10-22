@@ -54,6 +54,23 @@ async function waitForPanel(): Promise<vscode.Tab> {
   );
 }
 
+/** Review startup must open the exact confirmed native pair, not an ordinary file tab. */
+async function assertReviewLayout(api: DownsideUpTestApi, path: string): Promise<void> {
+  const pair = api.reviewDiffUris(path);
+  assert.ok(pair, `${path} belongs to the confirmed review.`);
+  await waitFor(async () => {
+    const group = vscode.window.tabGroups.activeTabGroup;
+    const input = group.activeTab?.input;
+    return group.viewColumn === vscode.ViewColumn.One && input instanceof vscode.TabInputTextDiff &&
+      input.original.toString() === pair.original.toString() && input.modified.toString() === pair.modified.toString()
+      ? true : undefined;
+  }, `the exact ${path} diff focused in column One`);
+  const panel = await waitForPanel();
+  assert.equal(panel.group.viewColumn, vscode.ViewColumn.Two, "The preview is beside the review diff.");
+  await waitFor(async () => api.reviewNavigation()?.fileName === path.split("/").at(-1) ? true : undefined,
+    `the preview to render ${path} with review navigation`);
+}
+
 async function findFunctionTarget(document: vscode.TextDocument, position: vscode.Position) {
   return javascriptSupport.findFunction(document, position);
 }
@@ -159,7 +176,13 @@ async function testCommitPreparation(api: DownsideUpTestApi, root: string): Prom
   const commit = git("rev-parse", "HEAD");
   const gitExtension = vscode.extensions.getExtension("vscode.git");
   assert.ok(gitExtension);
-  const gitApi = (await gitExtension.activate() as { getAPI(version: number): { getRepository(uri: vscode.Uri): unknown } }).getAPI(1);
+  const gitApi = (await gitExtension.activate() as {
+    getAPI(version: number): {
+      openRepository(uri: vscode.Uri): Promise<unknown>;
+      getRepository(uri: vscode.Uri): unknown;
+    };
+  }).getAPI(1);
+  await gitApi.openRepository(vscode.Uri.file(root));
   await waitFor(async () => gitApi.getRepository(vscode.Uri.file(root)) || undefined, "Git to discover the disposable commit repository");
   const side = (path: string, hash: string) => {
     const file = vscode.Uri.file(resolve(root, path));
@@ -170,14 +193,17 @@ async function testCommitPreparation(api: DownsideUpTestApi, root: string): Prom
     await vscode.commands.executeCommand("vscode.diff", side("main.ts", parent), side("main.ts", commit), "Commit main (test)");
     await vscode.commands.executeCommand("downsideUp.showFileOverview");
     await waitFor(async () => api.shownChange()?.fileName === "main.ts" && api.shownChange()?.status === "ready" ? true : undefined, "an immutable native graph pair");
+    await vscode.window.tabGroups.close(await waitForPanel());
+    await waitFor(async () => api.shownChange() === undefined ? true : undefined, "the preview to close before commit preparation");
     assert.ok((await vscode.commands.getCommands(true)).includes("downsideUp.prepareCommit"), "The stable commit preparation command is registered.");
     assert.equal(await api.prepareCommit(root, commit), 4, "The committed secret file is excluded from the bounded preparation.");
+    await assertReviewLayout(api, "main.ts");
     assert.deepEqual(api.reviewItems().map((item) => `${item.path} ${item.change}`), [
       "added.ts added", "deleted.ts deleted", "main.ts modified", "renamed.ts renamed"
     ]);
     await waitFor(async () => api.reviewItems().every((item) => item.status === "done") ? true : undefined, "commit comparisons to finish");
     assert.equal(api.shownChange()?.status, "current", "Background completion refreshes the comparison already being read.");
-    assert.deepEqual(api.commitProgress(), { text: "Commit: 4/4 ready", canStop: false });
+    assert.deepEqual(api.reviewProgress(), { text: "Commit: 4/4 ready", canStop: false });
     const shownDiff = (): vscode.TabInputTextDiff | undefined => {
       const tab = vscode.window.tabGroups.all.flatMap((group) => group.tabs).find((candidate) =>
         candidate.isActive && candidate.input instanceof vscode.TabInputTextDiff);
@@ -199,6 +225,7 @@ async function testCommitPreparation(api: DownsideUpTestApi, root: string): Prom
     }, { fileName: "main.ts", position: 3, total: 4, canPrevious: true, canNext: true });
     assert.ok(mainNavigation);
     await api.invokeReviewNavigation("next", mainNavigation.token);
+    await assertReviewLayout(api, "renamed.ts");
     await waitFor(async () => api.shownChange()?.fileName === "renamed.ts" ? true : undefined, "Next to open the confirmed rename pair");
     await assertDiffPair(side("old.ts", parent), side("renamed.ts", commit), "Next opens the exact rename comparison");
     const renameNavigation = await waitFor(async () => api.reviewNavigation(), "the rendered rename navigation state");
@@ -252,8 +279,14 @@ async function testCommitPreparation(api: DownsideUpTestApi, root: string): Prom
     await vscode.window.tabGroups.close(await waitForPanel());
     await waitFor(async () => api.shownChange() === undefined ? true : undefined, "closing a prepared commit to finish cleanup");
     assert.deepEqual(api.previewExplanations(), [], "Closing a commit preview clears its state.");
-    assert.equal(api.commitProgress()?.canStop, false);
+    assert.equal(api.reviewProgress()?.canStop, false);
+    // A working document is not a side of this immutable commit review.
+    await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(resolve(root, "main.ts")), vscode.ViewColumn.One);
     assert.equal(await api.prepareCommit(root, commit), 4, "Preparation can reopen the preview without reloading the window.");
+    await assertReviewLayout(api, "added.ts");
+    const addedPair = api.reviewDiffUris("added.ts")!;
+    assert.equal(addedPair.original.toString(), absentAdded.toString(), "Startup retains the added file's exact absent-side identity.");
+    assert.equal(addedPair.modified.toString(), side("added.ts", commit).toString());
     await vscode.commands.executeCommand("vscode.diff", side("main.ts", parent), side("main.ts", commit), "Reopened commit (test)");
     await vscode.commands.executeCommand("downsideUp.showFileOverview");
     await waitFor(async () => api.shownChange()?.fileName === "main.ts" && api.shownChange()?.status === "current" ? true : undefined, "reopened prepared comparison");
@@ -272,7 +305,7 @@ async function testCommitPreparation(api: DownsideUpTestApi, root: string): Prom
       await vscode.window.tabGroups.close(await waitForPanel());
       await waitFor(async () => api.shownChange() === undefined ? true : undefined, "closing an in-flight preparation to finish cleanup");
       await waitFor(async () => api.reviewItems().every((item) => item.status === "pending") ? true : undefined, "closed preparation requests to abort without saving");
-      assert.equal(api.commitProgress()?.canStop, false);
+      assert.equal(api.reviewProgress()?.canStop, false);
     } finally {
       api.mockDelay(0);
     }
@@ -666,12 +699,19 @@ async function runWithCommitRepository(commitRoot: string): Promise<void> {
 
     await vscode.window.showTextDocument(cartViewDocument, vscode.ViewColumn.One);
     await waitFor(async () => api.shownChange() === undefined ? true : undefined, "an ordinary file to replace the diff in the preview");
+    await vscode.window.tabGroups.close(await waitForPanel());
 
     // Cancel aborts review requests already sent, so none of them is saved.
     api.mockDelay(1_500);
     try {
       assert.equal(await api.reviewChanges("HEAD"), 3);
+      await assertReviewLayout(api, "src/Badge.next.tsx");
+      const pair = api.reviewDiffUris("src/Badge.next.tsx")!;
+      assert.equal(pair.modified.toString(), nextBadgeUri.toString());
+      assert.equal(pair.original.scheme, "downside-up-empty");
+      assert.match(pair.original.query, /^[a-f0-9]{40}$/, "The absent side uses the confirmed immutable base.");
       await waitFor(async () => api.reviewItems().some((item) => item.status === "explaining") ? true : undefined, "review requests in flight");
+      assert.match(api.reviewProgress()?.text ?? "", /^Review: 0\/3 ready · \d preparing$/);
       api.cancel();
       await new Promise((resolveWait) => setTimeout(resolveWait, 2_000));
       assert.deepEqual(api.reviewItems().map((item) => item.status), ["pending", "pending", "pending"], "Cancelled review requests are not saved.");
@@ -681,6 +721,7 @@ async function runWithCommitRepository(commitRoot: string): Promise<void> {
     }
 
     assert.equal(await api.reviewChanges("HEAD"), 3, "The changed file and the two new files are queued.");
+    await assertReviewLayout(api, "src/Badge.next.tsx");
     assert.deepEqual(
       api.reviewItems().map((item) => `${item.path} ${item.change}`).sort(),
       ["src/Badge.next.tsx added", "src/Badge.tsx added", "src/CartItem.tsx modified"]
@@ -689,6 +730,11 @@ async function runWithCommitRepository(commitRoot: string): Promise<void> {
       async () => api.reviewItems().every((item) => item.status === "done") ? true : undefined,
       "the changed files to be explained in review mode"
     );
+    assert.deepEqual(api.reviewProgress(), { text: "Review: 3/3 ready", canStop: false });
+    const navigation = api.reviewNavigation();
+    assert.ok(navigation?.canNext);
+    await api.invokeReviewNavigation("next", navigation.token);
+    await assertReviewLayout(api, "src/Badge.tsx");
     // The diff a review opens for an added file describes the same two versions the batch explained.
     const emptyBadge = badgeUri.with({ scheme: "downside-up-empty", query: "HEAD" });
     await vscode.commands.executeCommand("vscode.diff", emptyBadge, badgeUri, "Badge (test)");
@@ -697,6 +743,31 @@ async function runWithCommitRepository(commitRoot: string): Promise<void> {
     assert.equal(reviewed.explained, true, "A diff opened from review shows the explanation the batch saved.");
     assert.equal(reviewed.status, "current");
     assert.match(reviewed.facts, /added/);
+    // An ordinary working editor in the set takes precedence over path order.
+    await vscode.window.showTextDocument(cartItemDocument, vscode.ViewColumn.One);
+    await waitFor(async () => api.shownChange() === undefined ? true : undefined, "the active reviewed working document");
+    assert.equal(await api.reviewChanges("HEAD"), 3);
+    await assertReviewLayout(api, "src/CartItem.tsx");
+    api.stopReview();
+
+    // Start with the existing preview visible: opening the diff also fires
+    // editor-change routing, independently of startReview's explicit routing.
+    await vscode.window.showTextDocument(cartViewDocument, vscode.ViewColumn.One);
+    await waitFor(async () => api.shownOutline().some((entry) => entry.name === "CartView") ? true : undefined,
+      "the existing visible preview to follow an ordinary editor before starting review");
+    const visiblePanel = await waitForPanel();
+    assert.equal(visiblePanel.group.viewColumn, vscode.ViewColumn.Two);
+    assert.equal(visiblePanel.group.activeTab, visiblePanel, "The preview is already visible before Review starts.");
+    assert.equal(await api.reviewChanges("HEAD"), 3);
+    await assertReviewLayout(api, "src/Badge.next.tsx");
+    assert.equal(await waitForPanel(), visiblePanel, "Review reuses the already-visible preview.");
+    const visiblePanelNavigation = api.reviewNavigation();
+    assert.ok(visiblePanelNavigation, "Concurrent editor routing preserves review navigation.");
+    assert.deepEqual({
+      fileName: visiblePanelNavigation.fileName,
+      position: visiblePanelNavigation.position,
+      total: visiblePanelNavigation.total
+    }, { fileName: "Badge.next.tsx", position: 1, total: 3 });
     api.stopReview();
   } finally {
     await replaceInCartItem(">Delete<", ">Remove<").catch(() => undefined);

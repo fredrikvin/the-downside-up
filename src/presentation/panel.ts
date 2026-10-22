@@ -371,13 +371,27 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
     .stats { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; margin-top: 4px; font-size: 11px; color: var(--vscode-descriptionForeground); }
     .stats .outdated { color: var(--vscode-editorWarning-foreground, var(--vscode-descriptionForeground)); }
     .stats button { font-size: 11px; padding: 2px 6px; min-height: 24px; }
-    .review-navigation { display: flex; align-items: center; gap: 4px; margin: 0 0 10px; padding: 3px 4px; border: 1px solid var(--separator); border-radius: 4px; width: fit-content; max-width: 100%; box-sizing: border-box; }
-    .review-navigation button { min-height: 26px; border: 0; border-radius: 3px; padding: 3px 6px; color: inherit; background: transparent; font: inherit; cursor: pointer; }
+    .review-band { margin: 0 0 12px; padding: 4px 0 8px; border-bottom: 1px solid var(--separator); }
+    .review-navigation { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: center; gap: 4px; width: 100%; min-width: 0; }
+    .review-navigation button { display: inline-flex; align-items: center; justify-content: center; gap: 5px; min-width: 0; min-height: 30px; border: 1px solid transparent; border-radius: 3px; padding: 3px 6px; color: inherit; background: transparent; font: inherit; cursor: pointer; }
     .review-navigation button:not(:disabled):is(:hover, :focus-visible, :active) { background: var(--vscode-toolbar-hoverBackground, rgba(128,128,128,.14)); }
+    .review-navigation button:focus-visible { outline: 1px solid var(--vscode-contrastActiveBorder, var(--vscode-focusBorder)); outline-offset: 1px; }
     .review-navigation button:disabled { opacity: .5; cursor: default; }
-    .review-navigation .review-file { min-width: 0; max-width: min(28em, 60vw); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
-    .review-navigation .review-position { color: var(--vscode-descriptionForeground); font-size: .85em; white-space: nowrap; margin-left: 5px; font-weight: 400; }
-    @media (max-width: 420px) { .review-navigation { width: 100%; } .review-navigation .review-file { max-width: none; flex: 1; text-align: left; } }
+    .review-navigation button:first-child { justify-self: start; }
+    .review-navigation button:last-child { justify-self: end; }
+    .review-navigation .review-file { justify-self: center; max-width: min(28em, 60vw); }
+    .review-navigation .review-file-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; font-weight: 500; }
+    .review-navigation .review-position { color: var(--vscode-descriptionForeground); font-size: .85em; white-space: nowrap; font-weight: 400; }
+    .review-navigation .icon { width: 14px; height: 14px; }
+    .review-progress { display: flex; align-items: center; gap: 6px; margin-top: 2px; font-size: .8em; color: var(--vscode-descriptionForeground); }
+    .review-progress button { border: 0; border-radius: 3px; padding: 2px 6px; color: inherit; background: transparent; font: inherit; cursor: pointer; }
+    .review-progress button:hover { background: var(--vscode-toolbar-hoverBackground, rgba(128,128,128,.14)); }
+    .review-progress button:focus-visible { outline: 1px solid var(--vscode-contrastActiveBorder, var(--vscode-focusBorder)); outline-offset: 1px; }
+    .review-band-bottom { margin: 18px 0 0; padding: 8px 0 0; border-top: 1px solid var(--separator); }
+    @media (max-width: 420px) {
+      .review-navigation .review-action-label { display: none; }
+      .review-navigation .review-file { max-width: 60vw; }
+    }
     @container (max-width: 600px) { .toolbar .spacer { display: none; } }
     @container (max-width: 420px) { .toolbar .btn-label { display: none; } .toolbar .tool-button { width: 28px; padding: 6px; } .model-options { flex-direction: column; } }
     .change-item { margin: 0 0 18px; padding-left: 12px; border-left: 2px solid var(--separator); }
@@ -607,20 +621,23 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
     </nav>
     <div id="stats" class="stats" aria-label="Local cache statistics" hidden></div>
     <div id="activity" class="activity" hidden><span id="activityStage" role="status"></span><span id="activityTime" class="muted small"></span></div>
-    <div id="commitProgress" class="stats" role="status" aria-live="polite" hidden></div>
   </header>
   <p id="notice" class="notice" role="status" aria-live="polite"></p>
   <aside id="prefetchConsent" class="prefetch-consent" aria-label="Background explanation approval" hidden></aside>
   <main id="doc">
+    <section id="reviewBandTop" class="review-band" hidden>
+      <nav id="reviewNavigationTop" class="review-navigation" aria-label="Review files, top" hidden></nav>
+      <div id="reviewProgress" class="review-progress" role="status" aria-live="polite" hidden></div>
+    </section>
     <nav id="crumbs" class="crumbs muted small" aria-label="Location" hidden></nav>
     <div class="page-heading"><h1 id="title">Downside Up</h1><div id="pageActions" class="page-actions"></div></div>
     <p id="facts" class="muted small"></p>
-    <nav id="reviewNavigation" class="review-navigation" aria-label="Changed files in this review" hidden></nav>
     <p id="summary" class="summary" hidden></p>
     <blockquote id="purpose" hidden></blockquote>
     <div id="entries"></div>
     <p id="empty" class="muted" hidden></p>
     <p id="limitations" class="muted small"></p>
+    <nav id="reviewNavigationBottom" class="review-navigation review-band-bottom" aria-label="Review files, bottom" hidden></nav>
     <details id="repo" class="repo" hidden>
       <summary>Repository context used for explanations</summary>
       <div id="repoBody"></div>
@@ -747,6 +764,8 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
     const iconPaths = {
       model: "M8 1 10 6 15 8 10 10 8 15 6 10 1 8 6 6Z",
       chevron: "m4 6 4 4 4-4",
+      "chevron-left": "m10 3-5 5 5 5",
+      "chevron-right": "m6 3 5 5-5 5",
       refresh: "M13 6A5.5 5.5 0 1 0 13.3 10M13 2v4H9",
       callers: "M12 3H8v10h4M8 8H2m3-3L2 8l3 3",
       clear: "M2 4h12M6 4V2h4v2M4 4l1 10h6l1-10M7 6v5M9 6v5",
@@ -2247,7 +2266,6 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
       const folder = file || loading || change ? undefined : next.folder;
       renderCrumbs(next.breadcrumbs);
       renderHeader(next);
-      renderCommitProgress(next.review);
       renderPageActions(next);
       const notice = byId("notice");
       notice.textContent = next.notice ? next.notice.text : "";
@@ -2267,7 +2285,7 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
       byId("facts").textContent = change ? change.facts : file
         ? [file.path, file.languageId, file.lineCount + " lines"].join(" · ")
         : folder ? [folder.path || "repository root", plural(folder.fileCount, "file")].join(" · ") : loading ? "Opening…" : "";
-      renderReviewNavigation(change ? next.reviewNavigation : undefined);
+      renderReviewBands(change ? next.reviewNavigation : undefined, next.review);
       const summary = byId("summary");
       const aiSummary = file ? next.summary : undefined;
       summary.hidden = !aiSummary;
@@ -2417,32 +2435,55 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
       if (entryId) byId(entryId)?.classList.add("current");
     }
 
-    function renderCommitProgress(review) {
-      const progress = byId("commitProgress");
+    let currentReviewNavigation;
+
+    function renderReviewProgress(review, preserveScroll = false) {
+      const band = byId("reviewBandTop");
+      const previousScroll = window.scrollY;
+      const wasHidden = band.hidden;
+      const bandTop = band.getBoundingClientRect().top + previousScroll;
+      const previousHeight = wasHidden ? 0 : band.getBoundingClientRect().height;
+      const progress = byId("reviewProgress");
       progress.hidden = !review;
       progress.replaceChildren();
-      if (!review) return;
-      progress.append(el("span", "", review.text));
-      if (review.canStop) {
-        const stop = el("button", "text-button", "Stop");
-        stop.type = "button";
-        stop.addEventListener("click", () => post({ type: "stopReview" }));
-        stop.title = "Stop preparing new files; requests already sent may finish and be saved";
-        progress.append(" · ", stop);
+      band.hidden = !review && !currentReviewNavigation;
+      if (review) {
+        progress.append(el("span", "", review.text));
+        if (review.canStop) {
+          const stop = el("button", "text-button", "Stop");
+          stop.type = "button";
+          stop.addEventListener("click", () => post({ type: "stopReview" }));
+          stop.title = "Stop preparing new files; requests already sent may finish and be saved";
+          progress.append(" · ", stop);
+        }
+      }
+      // Only compensate when the band lies entirely above the viewport.
+      if (!preserveScroll) return;
+      const nextRect = band.hidden ? undefined : band.getBoundingClientRect();
+      const nextHeight = nextRect ? nextRect.height : 0;
+      const top = wasHidden && nextRect ? nextRect.top + previousScroll : bandTop;
+      const height = wasHidden ? nextHeight : previousHeight;
+      if (top + height > previousScroll || (wasHidden && !nextRect)) return;
+      const heightChange = nextHeight - previousHeight;
+      if (heightChange !== 0) {
+        ignoreScrollUntil = performance.now() + 100;
+        window.scrollBy(0, heightChange);
       }
     }
 
-    function renderReviewNavigation(navigation) {
-      const toolbar = byId("reviewNavigation");
+    function renderReviewNavigation(navigation, id) {
+      const toolbar = byId(id);
       toolbar.hidden = !navigation;
       toolbar.replaceChildren();
       if (!navigation) return;
-      const button = (label, direction, disabled, title) => {
-        const control = el("button", direction === "picker" ? "review-file" : "", label);
+      const button = (label, direction, disabled, title, glyph, className) => {
+        const control = el("button", className || "");
         control.type = "button";
         control.disabled = disabled;
         control.title = title;
         control.setAttribute("aria-label", title);
+        if (glyph) control.append(icon(glyph));
+        control.append(el("span", direction === "picker" ? "review-file-name" : "review-action-label", label));
         control.addEventListener("click", () => post({
           type: "reviewNavigation", token: navigation.token, direction
         }));
@@ -2450,14 +2491,21 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
       };
       const pickerTitle = "Choose " + navigation.fileName + " (" + navigation.position + " of " + navigation.total + ") from changed files";
       toolbar.append(
-        button("Previous", "previous", !navigation.canPrevious, "Previous changed file"),
-        button(navigation.fileName, "picker", false, pickerTitle),
-        button("Next", "next", !navigation.canNext, "Next changed file")
+        button("Previous", "previous", !navigation.canPrevious, "Previous changed file", "chevron-left"),
+        button(navigation.fileName, "picker", false, pickerTitle, undefined, "review-file"),
+        button("Next", "next", !navigation.canNext, "Next changed file", "chevron-right")
       );
       const label = toolbar.children[1];
       const position = el("span", "review-position", navigation.position + " of " + navigation.total);
       position.setAttribute("aria-hidden", "true");
       label.append(position);
+    }
+
+    function renderReviewBands(navigation, review) {
+      currentReviewNavigation = navigation;
+      renderReviewNavigation(navigation, "reviewNavigationTop");
+      renderReviewNavigation(navigation, "reviewNavigationBottom");
+      renderReviewProgress(review);
     }
 
     window.addEventListener("message", (event) => {
@@ -2466,7 +2514,7 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
       if (message.type === "state") render(message.state);
       else if (message.type === "review") {
         if (state) state = { ...state, review: message.review };
-        renderCommitProgress(message.review);
+        renderReviewProgress(message.review, true);
       }
       else if (message.type === "scroll" && typeof message.line === "number") scrollToLine(message.line);
       else if (message.type === "cursor") highlight(typeof message.entryId === "string" ? message.entryId : undefined);

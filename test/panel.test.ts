@@ -80,7 +80,7 @@ function webviewHelpers() {
     scrollBy: vi.fn()
   };
   const listeners = new Map<string, (event: { data: unknown }) => void>();
-  const helpers = new Function("acquireVsCodeApi", "document", "window", "requestAnimationFrame", "cancelAnimationFrame", script + "\n  return { render, layoutFlow, downwardPath, renderPseudocode, renderFlowchart, renderEntry, renderAiBody, missingFormat, renderHeader, renderCrumbs, renderActivity, renderPageActions, renderReviewNavigation, renderChange, highlightSteps, setFormats: (formats) => { state = { formats }; } };")(
+  const helpers = new Function("acquireVsCodeApi", "document", "window", "requestAnimationFrame", "cancelAnimationFrame", script + "\n  return { render, layoutFlow, downwardPath, renderPseudocode, renderFlowchart, renderEntry, renderAiBody, missingFormat, renderHeader, renderCrumbs, renderActivity, renderPageActions, renderReviewNavigation, renderReviewBands, renderChange, highlightSteps, setFormats: (formats) => { state = { formats }; } };")(
     () => ({ getState: () => ({}), postMessage: (message: unknown) => messages.push(message) }),
     {
       getElementById: element,
@@ -106,7 +106,8 @@ function webviewHelpers() {
     renderCrumbs(crumbs: readonly Crumb[]): void;
     renderActivity(state: Pick<PanelState, "busy" | "notice" | "folder" | "stats">): void;
     renderPageActions(state: Partial<PanelState>): void;
-    renderReviewNavigation(navigation: PanelState["reviewNavigation"]): void;
+    renderReviewNavigation(navigation: PanelState["reviewNavigation"], id: string): void;
+    renderReviewBands(navigation: PanelState["reviewNavigation"], review: PanelState["review"]): void;
     renderChange(change: ChangeView): TestElement[];
     highlightSteps(items: { entryId: string; steps: number[]; pseudocode: number[]; nodes: number[] }): void;
     setFormats(formats: PanelState["formats"]): void;
@@ -124,8 +125,8 @@ function webviewHelpers() {
   };
 }
 
-it("renders confirmed review navigation with accessible boundary controls and host-only actions", () => {
-  const { renderReviewNavigation, element, messages } = webviewHelpers();
+it("renders mirrored review navigation with accessible controls and host-only actions", () => {
+  const { renderReviewBands, element, messages } = webviewHelpers();
   const navigation: NonNullable<PanelState["reviewNavigation"]> = {
     token: "opaque-review-token-123456",
     fileName: "src/main.ts",
@@ -134,33 +135,51 @@ it("renders confirmed review navigation with accessible boundary controls and ho
     canPrevious: true,
     canNext: true
   };
-  renderReviewNavigation(navigation);
-  const toolbar = element("reviewNavigation");
-  expect(toolbar.hidden).toBe(false);
-  expect(toolbar.children.map((child) => child instanceof TestElement ? child.textContent : child)).toEqual([
-    "Previous", "src/main.ts", "Next"
-  ]);
-  expect(toolbar.elements().some((node) => node.textContent === "2 of 8")).toBe(true);
-  expect(toolbar.children.filter((child): child is TestElement => child instanceof TestElement).map((button) => button.getAttribute("aria-label"))).toEqual([
+  renderReviewBands(navigation, undefined);
+  const top = element("reviewNavigationTop");
+  const bottom = element("reviewNavigationBottom");
+  expect(top.hidden).toBe(false);
+  expect(bottom.hidden).toBe(false);
+  const buttons = top.children.filter((child): child is TestElement => child instanceof TestElement);
+  const bottomButtons = bottom.children.filter((child): child is TestElement => child instanceof TestElement);
+  expect(buttons.map((button) => button.getAttribute("aria-label"))).toEqual([
     "Previous changed file", "Choose src/main.ts (2 of 8) from changed files", "Next changed file"
   ]);
-  const buttons = toolbar.children.filter((child): child is TestElement => child instanceof TestElement);
+  expect(buttons.map((button) => button.title)).toEqual([
+    "Previous changed file", "Choose src/main.ts (2 of 8) from changed files", "Next changed file"
+  ]);
+  expect(buttons.map((button) => button.elements().some((node) => node.tagName === "svg" && node.getAttribute("class") === "icon"))).toEqual([true, false, true]);
+  expect(buttons[0]!.elements().some((node) => node.tagName === "path" && node.getAttribute("d") === "m10 3-5 5 5 5")).toBe(true);
+  expect(buttons[2]!.elements().some((node) => node.tagName === "path" && node.getAttribute("d") === "m6 3 5 5-5 5")).toBe(true);
+  expect(buttons[1]!.elements().some((node) => node.textContent === navigation.fileName)).toBe(true);
+  expect(buttons[1]!.elements().some((node) => node.textContent === "2 of 8")).toBe(true);
+  expect(bottomButtons.map((button) => button.getAttribute("aria-label"))).toEqual(buttons.map((button) => button.getAttribute("aria-label")));
   const clickEvent = { preventDefault: () => undefined, stopPropagation: () => undefined };
   buttons[0]!.listeners.get("click")?.(clickEvent);
   buttons[1]!.listeners.get("click")?.(clickEvent);
   buttons[2]!.listeners.get("click")?.(clickEvent);
+  bottomButtons[0]!.listeners.get("click")?.(clickEvent);
+  bottomButtons[1]!.listeners.get("click")?.(clickEvent);
+  bottomButtons[2]!.listeners.get("click")?.(clickEvent);
   expect(messages).toEqual([
+    { type: "reviewNavigation", token: navigation.token, direction: "previous" },
+    { type: "reviewNavigation", token: navigation.token, direction: "picker" },
+    { type: "reviewNavigation", token: navigation.token, direction: "next" },
     { type: "reviewNavigation", token: navigation.token, direction: "previous" },
     { type: "reviewNavigation", token: navigation.token, direction: "picker" },
     { type: "reviewNavigation", token: navigation.token, direction: "next" }
   ]);
 
-  renderReviewNavigation({ ...navigation, position: 1, canPrevious: false, canNext: false });
-  const boundary = element("reviewNavigation").children.filter((child): child is TestElement => child instanceof TestElement);
-  expect(boundary[0]!.disabled).toBe(true);
-  expect(boundary[2]!.disabled).toBe(true);
-  renderReviewNavigation(undefined);
-  expect(element("reviewNavigation").hidden).toBe(true);
+  renderReviewBands({ ...navigation, position: 1, canPrevious: false, canNext: false }, undefined);
+  for (const id of ["reviewNavigationTop", "reviewNavigationBottom"]) {
+    const boundary = element(id).children.filter((child): child is TestElement => child instanceof TestElement);
+    expect(boundary[0]!.disabled).toBe(true);
+    expect(boundary[2]!.disabled).toBe(true);
+  }
+  renderReviewBands(undefined, undefined);
+  expect(element("reviewBandTop").hidden).toBe(true);
+  expect(element("reviewNavigationTop").hidden).toBe(true);
+  expect(element("reviewNavigationBottom").hidden).toBe(true);
 });
 
 it("cancels a queued code-driven reveal when a newer highlight must leave the preview still", () => {
@@ -258,7 +277,23 @@ it("shows elapsed activity across updates and clears the timer when work stops",
 });
 
 describe("preview webview document", () => {
-  it("shows compact commit preparation with Stop, without a file navigator or generation action", () => {
+  it("places review bands around file content and removes progress from the header", () => {
+    const html = panelHtml("n");
+    expect(html.indexOf('id="reviewBandTop"')).toBeLessThan(html.indexOf('id="crumbs"'));
+    expect(html.indexOf('id="reviewNavigationBottom"')).toBeGreaterThan(html.indexOf('id="limitations"'));
+    expect(html.indexOf('id="reviewNavigationBottom"')).toBeLessThan(html.indexOf('id="repo"'));
+    const header = html.slice(html.indexOf("<header"), html.indexOf("</header>"));
+    expect(header).not.toContain('id="commitProgress"');
+    expect(html).toContain('aria-label="Review files, top"');
+    expect(html).toContain('aria-label="Review files, bottom"');
+    expect(html).toContain('id="reviewProgress" class="review-progress" role="status" aria-live="polite"');
+    expect(html).toContain(".review-navigation button:focus-visible");
+    expect(html).toContain(".review-navigation .review-action-label { display: none; }");
+    expect(html).toContain("text-overflow: ellipsis");
+    expect(html).toContain("stroke: currentColor");
+  });
+
+  it("shows a progress-only top band with Stop and updates only that live line", () => {
     const { render, element, messages, flushFrames, receive, window } = webviewHelpers();
     const state: PanelState = {
       provider: "mock", models: { explanation: "mock" }, busy: false, hasRepository: false,
@@ -267,25 +302,92 @@ describe("preview webview document", () => {
     };
     render(state);
     flushFrames();
-    const progress = element("commitProgress");
+    const progress = element("reviewProgress");
+    expect(element("reviewBandTop").hidden).toBe(false);
+    expect(element("reviewNavigationTop").hidden).toBe(true);
+    expect(element("reviewNavigationBottom").hidden).toBe(true);
     expect(progress.hidden).toBe(false);
     expect(progress.children[0]).toMatchObject({ textContent: "Commit: 3/8 ready · 1 preparing" });
     const stop = progress.elements().find((entry) => entry.textContent === "Stop")!;
     expect(stop.tagName).toBe("button");
     stop.listeners.get("click")!();
     expect(messages).toEqual([{ type: "stopReview" }]);
+    receive({ type: "state", state: {
+      ...state,
+      change: {
+        key: "diff", fileName: "main.ts", facts: "facts", originalLabel: "Before", modifiedLabel: "After",
+        status: "ready", canExplain: false
+      },
+      reviewNavigation: {
+        token: "opaque-review-token-123456", fileName: "src/main.ts", position: 2, total: 8,
+        canPrevious: true, canNext: true
+      }
+    } });
+    flushFrames();
     const entries = element("entries");
     const replace = vi.spyOn(entries, "replaceChildren");
+    const topNavigation = element("reviewNavigationTop");
+    const bottomNavigation = element("reviewNavigationBottom");
+    const topChildren = [...topNavigation.children];
+    const bottomChildren = [...bottomNavigation.children];
+    const replaceTop = vi.spyOn(topNavigation, "replaceChildren");
+    const replaceBottom = vi.spyOn(bottomNavigation, "replaceChildren");
     window.scrollTo.mockClear();
-    receive({ type: "review", review: { text: "Commit: 8/8 ready", canStop: false } });
+    receive({ type: "review", review: { text: "Review: 8/8 ready", canStop: false } });
     flushFrames();
     expect(replace).not.toHaveBeenCalled();
+    expect(replaceTop).not.toHaveBeenCalled();
+    expect(replaceBottom).not.toHaveBeenCalled();
+    expect(topNavigation.children).toEqual(topChildren);
+    expect(bottomNavigation.children).toEqual(bottomChildren);
     expect(window.scrollTo).not.toHaveBeenCalled();
-    expect(progress.children[0]).toMatchObject({ textContent: "Commit: 8/8 ready" });
+    expect(window.scrollBy).not.toHaveBeenCalled();
+    expect(progress.children[0]).toMatchObject({ textContent: "Review: 8/8 ready" });
     expect(progress.elements().some((entry) => entry.textContent === "Stop")).toBe(false);
     receive({ type: "review", review: undefined });
     flushFrames();
     expect(progress.hidden).toBe(true);
+    expect(element("reviewBandTop").hidden).toBe(false);
+    expect(topNavigation.hidden).toBe(false);
+  });
+
+  it("does not shift the reader when progress text changes above the viewport", () => {
+    const { render, element, flushFrames, receive, window } = webviewHelpers();
+    const state: PanelState = {
+      provider: "mock", models: { explanation: "mock" }, busy: false, hasRepository: false,
+      explanations: [], showDetails: false, formats: { pseudocode: false, flowchart: false, initial: "steps" },
+      change: {
+        key: "diff", fileName: "main.ts", facts: "facts", originalLabel: "Before", modifiedLabel: "After",
+        status: "ready", canExplain: false
+      },
+      reviewNavigation: {
+        token: "opaque-review-token-123456", fileName: "src/main.ts", position: 2, total: 8,
+        canPrevious: true, canNext: true
+      },
+      review: { text: "Review: 1/8 ready", canStop: true }
+    };
+    render(state);
+    flushFrames();
+    const band = element("reviewBandTop");
+    const progress = element("reviewProgress");
+    const bounds = vi.spyOn(TestElement.prototype, "getBoundingClientRect").mockImplementation(function(this: TestElement) {
+      const height = this === band ? 40 + (progress.hidden ? 0 : 20 * Math.min(1, progress.children.length)) : 40;
+      const top = this === band ? 100 - window.scrollY : 0;
+      return { width: 320, height, left: 0, right: 320, top, bottom: top + height };
+    });
+    try {
+      window.scrollY = 800;
+      window.scrollBy.mockClear();
+      receive({ type: "review", review: { text: "Review: 2/8 ready", canStop: true } });
+      flushFrames();
+      expect(window.scrollBy).not.toHaveBeenCalled();
+      receive({ type: "review", review: undefined });
+      flushFrames();
+      expect(window.scrollBy).toHaveBeenCalledWith(0, -20);
+    } finally {
+      bounds.mockRestore();
+      window.scrollY = 0;
+    }
   });
 
   it("omits the shared help footer while keeping contextual notices and limitations", () => {

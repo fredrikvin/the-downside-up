@@ -4,7 +4,7 @@ import { basename, isAbsolute, relative, resolve, sep } from "node:path";
 import * as vscode from "vscode";
 import { hasConsent, unapprovedModels, withConsent } from "./cache/consent";
 import { ChangeSession, snapshotOptions } from "./changeSession";
-import { Review, commitProgress, reviewedDocument, reviewNavigation, type ReviewHost, type ReviewItem } from "./review";
+import { Review, firstReviewItem, reviewProgress, reviewedDocument, reviewNavigation, type ReviewHost, type ReviewItem } from "./review";
 import { graphCommitTarget } from "./context/commitCommand";
 import {
   baseComparisonRef,
@@ -1019,7 +1019,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       ...(preview && !changeView ? { document: { ...preview.overview, entries: shownEntries() } } : {}),
       ...(folder ? { folder } : {}),
       ...(changeView ? { change: changeView } : {}),
-      ...(reviewSession?.kind === "commit" && (!shownRoot || reviewSession.root === shownRoot) ? { review: commitProgress(reviewSession) } : {}),
+      ...(reviewSession && (!shownRoot || reviewSession.root === shownRoot) ? { review: reviewProgress(reviewSession) } : {}),
       ...(reviewNavigationView ? { reviewNavigation: reviewNavigationView } : {}),
       ...(breadcrumbs ? { breadcrumbs } : {}),
       explanations: changeView ? [] : explanations,
@@ -2753,7 +2753,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
   const updateReviewStatus = (): void => {
     const session = reviewSession;
     const root = change.active ? change.root : preview?.root ?? folderPreview?.root;
-    panel?.updateReview(session?.kind === "commit" && (!root || session.root === root) ? commitProgress(session) : undefined);
+    panel?.updateReview(session && (!root || session.root === root) ? reviewProgress(session) : undefined);
     void vscode.commands.executeCommand("setContext", "downsideUp.hasReview", Boolean(session));
     if (!session) {
       reviewStatus.hide();
@@ -2890,10 +2890,33 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     change.stopPrefetch();
     const session = new Review(reviewHost, root, baseLabel, items, committed ? "commit" : "working");
     reviewSession = session;
-    if (committed) ensurePanel();
+    const editor = vscode.window.activeTextEditor ?? lastTextEditor;
+    const diff = diffForEditor(editor);
+    // Prefer an exact native pair, then the document being read (including a
+    // graph's single historical side). Never add a file to the confirmed set.
+    const activeItem = diff?.nativeDiff ? items.find((item) => {
+      const pair = reviewDiffUris(item);
+      return sameUri(pair.original, diff.original) && sameUri(pair.modified, diff.modified);
+    }) : undefined;
+    const documents = [editor?.document.uri, diff?.modified, diff?.original].filter((uri): uri is vscode.Uri => Boolean(uri));
+    const activeDocumentItem = activeItem ?? documents.map((uri) =>
+      reviewedDocument(items, uri) ?? items.find((item) =>
+        [item.ref.modified, item.ref.original].some((side) =>
+          side.source.kind === "working" && sameUri(vscode.Uri.file(resolve(root, side.path)), uri)))
+    ).find((item) => item !== undefined);
+    const first = firstReviewItem(items, activeDocumentItem?.ref)!;
+    await openReviewDiff(session, first);
+    if (reviewSession !== session) return items.length;
+    ensurePanel();
+    // Opening a diff does not open a closed preview on its own. Route the
+    // confirmed pair explicitly, cache-only, before any sharing-consent await.
+    await showChange({ ...reviewDiffUris(first), nativeDiff: true }, false);
+    if (reviewSession !== session) return items.length;
     updateReviewStatus();
     render();
-    if (pending > 0 && !(await reviewSharingAllowed(root))) {
+    const sharingAllowed = pending === 0 || await reviewSharingAllowed(root);
+    if (reviewSession !== session) return items.length;
+    if (!sharingAllowed && !session.stopped) {
       // The first file is an ordinary request, so code sharing is approved the usual way.
       const first = items.find((item) => item.status === "pending")!;
       const explained = session.explainNow(first);
@@ -2944,13 +2967,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       if (details.parents.length > 1 && !parent) return;
       const scope = await commitScope(root, details.hash, parent);
       const label = `in commit ${scope.commit.slice(0, 7)} against ${parent ? `parent ${parent.slice(0, 7)}` : "the empty tree (root commit)"}`;
-      const prepared = await startReview(root, scope.commit, label, true, scope);
-      if (prepared) {
-        const editor = vscode.window.activeTextEditor ?? lastTextEditor;
-        ensurePanel();
-        if (!routeToChange(editor, false) && editor?.document.uri.scheme === "file") await previewDocument(editor.document);
-        render();
-      }
+      await startReview(root, scope.commit, label, true, scope);
     } catch (error) {
       await vscode.window.showWarningMessage(`Commit preparation could not start: ${errorMessage(error)}`);
     }
@@ -2987,11 +3004,6 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       if (!commit) return;
       base = commit.commit.hash;
       label = `since ${commit.commit.shortHash}`;
-    }
-    if (!panel) {
-      const editor = vscode.window.activeTextEditor ?? lastTextEditor;
-      ensurePanel();
-      if (!routeToChange(editor, false) && editor?.document.uri.scheme === "file") await previewDocument(editor.document);
     }
     await startReview(root, base, label, true);
   };
@@ -3898,15 +3910,19 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       if (!link) throw new Error("No checked comparison source link is available.");
       await handlers.get(link.referenceId)!();
     },
-    reviewChanges: (base: string) => {
-      const root = preview?.root ?? change.root;
+    reviewChanges: async (base: string) => {
+      const root = await rootForCommand();
       return root ? startReview(root, base, "for testing", false) : Promise.resolve(0);
     },
     prepareCommit: async (root: string, revision: string, parent?: string) => {
       const scope = await commitScope(root, revision, parent);
       return startReview(root, scope.commit, `in commit ${scope.commit.slice(0, 7)}`, false, scope);
     },
-    commitProgress: () => reviewSession?.kind === "commit" ? commitProgress(reviewSession) : undefined,
+    reviewProgress: () => reviewSession ? reviewProgress(reviewSession) : undefined,
+    reviewDiffUris: (path: string) => {
+      const item = reviewSession?.items.find((item) => item.path === path);
+      return item ? reviewDiffUris(item) : undefined;
+    },
     reviewItems: () => (reviewSession?.items ?? []).map((item) => ({ path: item.path, change: item.file.status, status: item.status })),
     reviewNavigation: () => {
       const owner = activeReviewNavigation;
@@ -3995,7 +4011,8 @@ export interface DownsideUpTestApi {
   previewFolder(path: string): Promise<void>;
   reviewChanges(base: string): Promise<number>;
   prepareCommit(root: string, revision: string, parent?: string): Promise<number>;
-  commitProgress(): { text: string; canStop: boolean } | undefined;
+  reviewProgress(): { text: string; canStop: boolean } | undefined;
+  reviewDiffUris(path: string): { original: vscode.Uri; modified: vscode.Uri } | undefined;
   reviewItems(): Array<{ path: string; change: string; status: string }>;
   reviewNavigation(): { token: string; fileName: string; position: number; total: number; canPrevious: boolean; canNext: boolean } | undefined;
   invokeReviewNavigation(direction: "previous" | "next" | "picker", token: string): Promise<void>;
