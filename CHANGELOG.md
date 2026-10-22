@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.43.3
+
+- Keep the preview at its current scroll offset while flowcharts redraw, then
+  restore its reading anchor after layout. This prevents a brief jump when
+  the next function is visible below a tall flowchart.
+
 ## 0.43.0
 
 - Organize native diff explanations into Added, Changed, Removed, and Other

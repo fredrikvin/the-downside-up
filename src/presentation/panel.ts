@@ -2284,7 +2284,9 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
           const kept = anchorId ? byId(anchorId) : null;
           window.scrollTo(0, kept && anchorTop !== undefined ? window.scrollY + kept.getBoundingClientRect().top - anchorTop : previousScroll);
         };
-        restore();
+        // Following entries are temporarily higher until charts are drawn.
+        // Keep the absolute offset now; only use the entry anchor after layout.
+        window.scrollTo(0, previousScroll);
         // Charts registered their drawing frames during rendering, so they are drawn before this one.
         requestAnimationFrame(() => {
           ignoreScrollUntil = performance.now() + 100;

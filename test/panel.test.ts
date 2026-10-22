@@ -17,7 +17,8 @@ class TestElement {
   readonly style: Record<string, string> = {};
   readonly classList = {
     add: (...names: string[]) => { this.className += " " + names.join(" "); },
-    remove: (...names: string[]) => { this.className = this.className.split(" ").filter((name) => !names.includes(name)).join(" "); }
+    remove: (...names: string[]) => { this.className = this.className.split(" ").filter((name) => !names.includes(name)).join(" "); },
+    toggle: (name: string, force: boolean) => { if (force) this.classList.add(name); else this.classList.remove(name); }
   };
   readonly clientWidth = 400;
   readonly offsetWidth = 320;
@@ -65,21 +66,31 @@ function webviewHelpers() {
   const messages: unknown[] = [];
   const frames: Array<() => void> = [];
   const element = (id: string) => {
+    const rendered = [...elements.values()].flatMap((node) => node.elements()).find((node) => node.id === id);
+    if (rendered) return rendered;
     if (!elements.has(id)) elements.set(id, new TestElement("button"));
     return elements.get(id)!;
   };
-  const helpers = new Function("acquireVsCodeApi", "document", "window", "requestAnimationFrame", script + "\nreturn { layoutFlow, downwardPath, renderPseudocode, renderFlowchart, renderEntry, renderAiBody, missingFormat, renderHeader, renderCrumbs, renderActivity, renderPageActions, renderChange, highlightSteps, setFormats: (formats) => { state = { formats }; } };")(
+  const window = {
+    scrollY: 0, innerHeight: 720,
+    addEventListener: () => undefined,
+    scrollTo: vi.fn((_x: number, y: number) => { window.scrollY = y; })
+  };
+  const helpers = new Function("acquireVsCodeApi", "document", "window", "requestAnimationFrame", "cancelAnimationFrame", script + "\nreturn { render, layoutFlow, downwardPath, renderPseudocode, renderFlowchart, renderEntry, renderAiBody, missingFormat, renderHeader, renderCrumbs, renderActivity, renderPageActions, renderChange, highlightSteps, setFormats: (formats) => { state = { formats }; } };")(
     () => ({ getState: () => ({}), postMessage: (message: unknown) => messages.push(message) }),
     {
       getElementById: element,
       createElement: (tag: string) => new TestElement(tag),
       createElementNS: (_ns: string, tag: string) => new TestElement(tag),
       createTextNode: (text: string) => text,
+      querySelector: (selector: string) => [...elements.values()].flatMap((node) => node.querySelectorAll(selector))[0],
       querySelectorAll: (selector: string) => [...elements.values()].flatMap((node) => node.querySelectorAll(selector))
     },
-    { addEventListener: () => undefined },
-    (callback: () => void) => { frames.push(callback); return frames.length; }
+    window,
+    (callback: () => void) => { frames.push(callback); return frames.length; },
+    () => undefined
   ) as {
+    render(state: PanelState): void;
     layoutFlow(chart: Flowchart, limit?: number): { rows: Flowchart["nodes"][]; back: Set<Flowchart["edges"][number]> };
     downwardPath(points: Array<{ x: number; y: number }>): string;
     renderPseudocode(lines: NonNullable<NonNullable<ExplanationView["explanation"]>["pseudocode"]>, view: ExplanationView): TestElement;
@@ -96,8 +107,49 @@ function webviewHelpers() {
     setFormats(formats: PanelState["formats"]): void;
   };
   messages.length = 0;
-  return { ...helpers, element, messages, flushFrames: () => { while (frames.length) frames.shift()!(); } };
+  return { ...helpers, element, messages, window, flushFrames: () => { while (frames.length) frames.shift()!(); } };
 }
+
+it("does not briefly follow a shifted entry while a tall chart awaits its drawing frame", () => {
+  const { render, element, window, flushFrames } = webviewHelpers();
+  const state: PanelState = {
+    provider: "mock", models: { explanation: "mock" }, busy: false, hasRepository: false,
+    explanations: [], showDetails: false, formats: { pseudocode: true, flowchart: true, initial: "flowchart" },
+    document: {
+      fileName: "example.go", path: "example.go", languageId: "go", lineCount: 100, limitations: [],
+      entries: [{
+        id: "following", name: "Next", qualifiedName: "Next", kind: "function", kindLabel: "Function",
+        depth: 0, startLine: 60, endLine: 80, nameLine: 60, nameStart: 0, nameEnd: 4,
+        explainable: false, description: [], notes: [],
+        reference: { id: "following", path: "example.go", description: "Next", line: 60, startCharacter: 0, endCharacter: 4 }
+      }]
+    }
+  };
+  render(state);
+  flushFrames();
+  window.scrollY = 1000;
+  let waitingForChart = false;
+  const bounds = vi.spyOn(TestElement.prototype, "getBoundingClientRect").mockImplementation(function(this: TestElement) {
+    const top = this.id === "following" ? 1450 - window.scrollY - (waitingForChart ? 1000 : 0) : 0;
+    return { width: 320, height: 40, left: 0, right: 320, top, bottom: top + 40 };
+  });
+  const entries = element("entries");
+  const replace = entries.replaceChildren.bind(entries);
+  vi.spyOn(entries, "replaceChildren").mockImplementation((...children) => {
+    replace(...children);
+    waitingForChart = true;
+  });
+  window.scrollTo.mockClear();
+  try {
+    render({ ...state });
+    expect(window.scrollTo.mock.calls).toEqual([[0, 1000]]);
+    waitingForChart = false;
+    flushFrames();
+    expect(window.scrollTo.mock.calls).toEqual([[0, 1000], [0, 1000]]);
+  } finally {
+    bounds.mockRestore();
+  }
+});
 
 it("shows elapsed activity across updates and clears the timer when work stops", () => {
   vi.useFakeTimers();
