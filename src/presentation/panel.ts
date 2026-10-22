@@ -233,6 +233,8 @@ export interface ChangeView {
   readonly detail?: string;
   readonly message?: string;
   readonly canExplain: boolean;
+  /** The pair is still being resolved and looked up; the body shows a placeholder of its usual shape. */
+  readonly reading?: boolean;
   readonly result?: ChangeResultView;
 }
 
@@ -538,6 +540,8 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
     .skeleton { height: .85em; margin: 10px 0; }
     .skeleton.short { width: 55%; }
     .skeleton.heading { height: 1.3em; width: 30%; margin-top: 26px; }
+    .change-skeleton .skeleton.summary-line { height: 1.1em; margin: 12px 0; }
+    .change-skeleton .skeleton.summary-line.short { width: 70%; }
     .skeleton-map { display: flex; flex-direction: column; align-items: center; gap: 30px; margin: 18px 0 24px; }
     .skeleton-row { display: flex; gap: 24px; }
     .skeleton-box { width: 124px; height: 46px; }
@@ -2074,7 +2078,24 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
       return section;
     }
 
+    /** Placeholder shaped like a change explanation, so the page keeps its height while the next pair is read. */
+    function renderChangeSkeleton() {
+      const box = el("div", "skeleton-block change-skeleton");
+      box.setAttribute("aria-hidden", "true");
+      box.append(el("div", "skeleton short"), el("div", "skeleton summary-line"), el("div", "skeleton summary-line"), el("div", "skeleton summary-line short"));
+      for (const lines of [3, 2]) {
+        box.append(el("div", "skeleton heading"));
+        for (let index = 0; index < lines; index++) box.append(el("div", index === lines - 1 ? "skeleton short" : "skeleton"));
+      }
+      return box;
+    }
+
     function renderChange(change) {
+      if (change.reading) {
+        const status = el("p", "muted small", "Reading the change…");
+        status.setAttribute("role", "status");
+        return [status, renderChangeSkeleton()];
+      }
       const parts = [el("p", "muted small", change.originalLabel + " → " + change.modifiedLabel)];
       if (change.status === "loading") {
         parts.push(explanationSkeleton(change.detail || "Explaining the changes…", () => post({ type: "cancel" })));

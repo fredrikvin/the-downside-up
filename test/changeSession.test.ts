@@ -294,7 +294,10 @@ describe("commit preparation in the shared review queue", () => {
     const entered = gate();
     const release = gate();
     const { review, changes, provider, service, sent, scope, completed, gitSide } = await prepare(async () => { entered.release(); await release.promise; });
-    await changes.show(gitSide("a.txt", scope.parent), gitSide("a.txt", scope.commit));
+    const showing = changes.show(gitSide("a.txt", scope.parent), gitSide("a.txt", scope.commit));
+    expect(changes.view(() => "link")?.reading).toBe(true);
+    await showing;
+    expect(changes.view(() => "link")?.reading).toBeUndefined();
     expect(changes.view(() => "link")?.status).toBe("ready");
     review.start();
     await entered.promise;

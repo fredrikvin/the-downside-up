@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.47.1
+
+- While the next diff is read, show a placeholder shaped like a change
+  explanation instead of an almost empty page. This keeps the page's height
+  and stops the bottom review band jumping.
+
 ## 0.47.0
 
 - Opening a file outside the confirmed review ends review mode:

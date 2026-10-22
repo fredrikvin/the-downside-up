@@ -534,6 +534,7 @@ export class ChangeSession {
       ...(shown.detail ? { detail: shown.detail } : {}),
       ...(shown.problem ?? shown.error ? { message: shown.problem ?? shown.error } : {}),
       canExplain: Boolean(shown.ref) && !shown.problem && !shown.controller,
+      ...(!shown.ref && !shown.problem && !shown.error && !shown.controller ? { reading: true } : {}),
       ...(saved ? {
         result: {
           summary: saved.comparison.summary,

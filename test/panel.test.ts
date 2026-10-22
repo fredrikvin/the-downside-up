@@ -838,6 +838,17 @@ describe("change view", () => {
     key: "k", fileName: "a.txt", facts: "", originalLabel: "Last commit", modifiedLabel: "Working copy",
     status: "ready", canExplain: true
   };
+  it("keeps the page's shape with a placeholder while the next pair is read", () => {
+    const { renderChange } = webviewHelpers();
+    const parts = renderChange({ ...base, canExplain: false, reading: true });
+    expect(parts[0]!.textContent).toBe("Reading the change…");
+    expect(parts[0]!.getAttribute("role")).toBe("status");
+    const skeleton = parts[1]!;
+    expect(skeleton.className).toContain("change-skeleton");
+    expect(skeleton.getAttribute("aria-hidden")).toBe("true");
+    expect(skeleton.elements().filter((node) => node.className.startsWith("skeleton")).length).toBeGreaterThanOrEqual(8);
+    expect(parts.flatMap((node) => node.elements()).some((node) => node.tagName === "button")).toBe(false);
+  });
   const texts = (nodes: TestElement[]) => nodes.flatMap((node) => node.elements()).flatMap((node) => [node.textContent, ...node.children.filter((child) => typeof child === "string")]);
   const event = { preventDefault: () => undefined, stopPropagation: () => undefined };
   const visualScope = (): ComparisonVisualScope => {
