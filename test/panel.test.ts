@@ -80,7 +80,7 @@ function webviewHelpers() {
     scrollBy: vi.fn()
   };
   const listeners = new Map<string, (event: { data: unknown }) => void>();
-  const helpers = new Function("acquireVsCodeApi", "document", "window", "requestAnimationFrame", "cancelAnimationFrame", script + "\nreturn { render, layoutFlow, downwardPath, renderPseudocode, renderFlowchart, renderEntry, renderAiBody, missingFormat, renderHeader, renderCrumbs, renderActivity, renderPageActions, renderChange, highlightSteps, setFormats: (formats) => { state = { formats }; } };")(
+  const helpers = new Function("acquireVsCodeApi", "document", "window", "requestAnimationFrame", "cancelAnimationFrame", script + "\n  return { render, layoutFlow, downwardPath, renderPseudocode, renderFlowchart, renderEntry, renderAiBody, missingFormat, renderHeader, renderCrumbs, renderActivity, renderPageActions, renderReviewNavigation, renderChange, highlightSteps, setFormats: (formats) => { state = { formats }; } };")(
     () => ({ getState: () => ({}), postMessage: (message: unknown) => messages.push(message) }),
     {
       getElementById: element,
@@ -106,6 +106,7 @@ function webviewHelpers() {
     renderCrumbs(crumbs: readonly Crumb[]): void;
     renderActivity(state: Pick<PanelState, "busy" | "notice" | "folder" | "stats">): void;
     renderPageActions(state: Partial<PanelState>): void;
+    renderReviewNavigation(navigation: PanelState["reviewNavigation"]): void;
     renderChange(change: ChangeView): TestElement[];
     highlightSteps(items: { entryId: string; steps: number[]; pseudocode: number[]; nodes: number[] }): void;
     setFormats(formats: PanelState["formats"]): void;
@@ -122,6 +123,45 @@ function webviewHelpers() {
     }
   };
 }
+
+it("renders confirmed review navigation with accessible boundary controls and host-only actions", () => {
+  const { renderReviewNavigation, element, messages } = webviewHelpers();
+  const navigation: NonNullable<PanelState["reviewNavigation"]> = {
+    token: "opaque-review-token-123456",
+    fileName: "src/main.ts",
+    position: 2,
+    total: 8,
+    canPrevious: true,
+    canNext: true
+  };
+  renderReviewNavigation(navigation);
+  const toolbar = element("reviewNavigation");
+  expect(toolbar.hidden).toBe(false);
+  expect(toolbar.children.map((child) => child instanceof TestElement ? child.textContent : child)).toEqual([
+    "Previous", "src/main.ts", "Next"
+  ]);
+  expect(toolbar.elements().some((node) => node.textContent === "2 of 8")).toBe(true);
+  expect(toolbar.children.filter((child): child is TestElement => child instanceof TestElement).map((button) => button.getAttribute("aria-label"))).toEqual([
+    "Previous changed file", "Choose src/main.ts (2 of 8) from changed files", "Next changed file"
+  ]);
+  const buttons = toolbar.children.filter((child): child is TestElement => child instanceof TestElement);
+  const clickEvent = { preventDefault: () => undefined, stopPropagation: () => undefined };
+  buttons[0]!.listeners.get("click")?.(clickEvent);
+  buttons[1]!.listeners.get("click")?.(clickEvent);
+  buttons[2]!.listeners.get("click")?.(clickEvent);
+  expect(messages).toEqual([
+    { type: "reviewNavigation", token: navigation.token, direction: "previous" },
+    { type: "reviewNavigation", token: navigation.token, direction: "picker" },
+    { type: "reviewNavigation", token: navigation.token, direction: "next" }
+  ]);
+
+  renderReviewNavigation({ ...navigation, position: 1, canPrevious: false, canNext: false });
+  const boundary = element("reviewNavigation").children.filter((child): child is TestElement => child instanceof TestElement);
+  expect(boundary[0]!.disabled).toBe(true);
+  expect(boundary[2]!.disabled).toBe(true);
+  renderReviewNavigation(undefined);
+  expect(element("reviewNavigation").hidden).toBe(true);
+});
 
 it("cancels a queued code-driven reveal when a newer highlight must leave the preview still", () => {
   const { element, receive, flushFrames, window } = webviewHelpers();

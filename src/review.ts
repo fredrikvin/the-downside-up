@@ -21,6 +21,31 @@ export interface ReviewItem {
   status: "pending" | "explaining" | "done" | "failed" | "skipped" | "outdated";
 }
 
+/**
+ * Returns the confirmed review files in stable path order only when the
+ * currently displayed comparison is the exact pair from that review.
+ */
+export function reviewNavigation(
+  items: readonly ReviewItem[],
+  comparison: ComparisonRef
+): { readonly items: readonly ReviewItem[]; readonly index: number } | undefined {
+  const sameSide = (left: ComparisonRef["original"], right: ComparisonRef["original"]): boolean =>
+    left.path === right.path &&
+    left.source.kind === right.source.kind &&
+    (left.source.kind !== "revision" || (right.source.kind === "revision" && left.source.hash === right.source.hash));
+  const matches = (item: ReviewItem): boolean =>
+    item.ref.root === comparison.root &&
+    sameSide(item.ref.original, comparison.original) &&
+    sameSide(item.ref.modified, comparison.modified);
+  const ordered = [...items].sort((left, right) =>
+    left.path < right.path ? -1 : left.path > right.path ? 1 :
+      left.ref.original.path < right.ref.original.path ? -1 : left.ref.original.path > right.ref.original.path ? 1 :
+        left.ref.modified.path < right.ref.modified.path ? -1 : left.ref.modified.path > right.ref.modified.path ? 1 : 0
+  );
+  const index = ordered.findIndex(matches);
+  return index < 0 ? undefined : { items: ordered, index };
+}
+
 export interface ReviewHost {
   /** The shared request scheduler. */
   readonly scheduler: {

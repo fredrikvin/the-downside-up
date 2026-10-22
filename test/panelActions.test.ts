@@ -104,11 +104,19 @@ describe("header action validation", () => {
       { type: "showCallers", entryId: 4 },
       { type: "chooseModels" },
       { type: "explainChanges", path: "/untrusted" },
+      { type: "reviewNavigation", token: "opaque-token-1234567890", direction: "next", path: "/untrusted" },
+      { type: "reviewNavigation", token: "short", direction: "next" },
+      { type: "reviewNavigation", token: "opaque-token-1234567890", direction: "jump", path: "/untrusted" },
       { type: "unknown" },
       { type: ["regenerateOutdated"] },
       null
     ]) harness.receive(message);
-    expect(actions).toEqual([{ type: "chooseModel" }, { type: "chooseOverviewModel" }, { type: "regenerateOutdated" }, { type: "clearCache" }, { type: "stopReview" }, { type: "showCallers", entryId: "entry-1" }, { type: "explainChanges" }]);
+    expect(actions).toEqual([
+      { type: "chooseModel" }, { type: "chooseOverviewModel" }, { type: "regenerateOutdated" },
+      { type: "clearCache" }, { type: "stopReview" }, { type: "showCallers", entryId: "entry-1" },
+      { type: "explainChanges" },
+      { type: "reviewNavigation", token: "opaque-token-1234567890", direction: "next" }
+    ]);
     panel.dispose();
   });
 });

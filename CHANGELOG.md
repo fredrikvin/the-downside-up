@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.45.0
+
+- Add Previous/Next review navigation to a native diff preview only when the
+  exact repository, side identities/revisions, and both paths belong to the
+  active confirmed review. Files follow stable path order; boundary buttons do
+  not wrap, and filename/position opens the existing changed-files picker.
+- Bind navigation messages to opaque session/pair authority and route stepping
+  through the existing native diff opener. Navigation only reprioritizes the
+  confirmed queue; it does not start provider requests or expose model paths.
+
 ## 0.44.1
 
 - Fix closing a commit-preparation preview leaving a disposed webview attached

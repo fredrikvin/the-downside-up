@@ -1,9 +1,10 @@
 import { readFile, stat } from "node:fs/promises";
+import { randomBytes } from "node:crypto";
 import { basename, isAbsolute, relative, resolve, sep } from "node:path";
 import * as vscode from "vscode";
 import { hasConsent, unapprovedModels, withConsent } from "./cache/consent";
 import { ChangeSession, snapshotOptions } from "./changeSession";
-import { Review, commitProgress, reviewedDocument, type ReviewHost, type ReviewItem } from "./review";
+import { Review, commitProgress, reviewedDocument, reviewNavigation, type ReviewHost, type ReviewItem } from "./review";
 import { graphCommitTarget } from "./context/commitCommand";
 import {
   baseComparisonRef,
@@ -95,7 +96,8 @@ import {
   type FormatSettings,
   type LinkedKind,
   type PanelNotice,
-  type PanelState
+  type PanelState,
+  type ReviewNavigationView
 } from "./presentation/panel";
 import { innermostRangeAt } from "./presentation/scrollSync";
 
@@ -238,6 +240,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
   const mockProvider = new MockProvider();
   let panel: ExplanationPanel | undefined;
   let preview: PreviewFile | undefined;
+  let changeIsNativeDiff = false;
   const functions = new Map<string, FunctionAi>();
   /** The latest repository overview, kept with the root it describes. */
   let repositoryContext: { root: string; overview: RepositoryOverview } | undefined;
@@ -259,6 +262,8 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
   const savedLookupDone = new Set<string>();
   let prefetchSession: PrefetchSession | undefined;
   let reviewSession: Review | undefined;
+  /** Opaque authority for the currently rendered exact review comparison. */
+  let activeReviewNavigation: { readonly session: Review; readonly item: ReviewItem; readonly token: string } | undefined;
   /** The folder shown instead of a file, until the active editor changes. */
   let folderPreview: FolderPreview | undefined;
   /**
@@ -981,6 +986,28 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     const summary = preview && !changeView && fileSummary?.uri === preview.document.uri.toString() ? fileSummary : undefined;
     const approval = pendingPrefetchConsent();
     const stats = statsForPanel();
+    let reviewNavigationView: ReviewNavigationView | undefined;
+    const navigationSession = reviewSession;
+    const comparisonRef = change.comparisonRef;
+    const navigation = navigationSession && changeView && changeIsNativeDiff && comparisonRef
+      ? reviewNavigation(navigationSession.items, comparisonRef)
+      : undefined;
+    if (navigation && navigationSession) {
+      const item = navigation.items[navigation.index]!;
+      if (activeReviewNavigation?.session !== navigationSession || activeReviewNavigation.item !== item) {
+        activeReviewNavigation = { session: navigationSession, item, token: randomBytes(24).toString("hex") };
+      }
+      reviewNavigationView = {
+        token: activeReviewNavigation.token,
+        fileName: basename(item.path),
+        position: navigation.index + 1,
+        total: navigation.items.length,
+        canPrevious: navigation.index > 0,
+        canNext: navigation.index + 1 < navigation.items.length
+      };
+    } else {
+      activeReviewNavigation = undefined;
+    }
     panel.update({
       provider: descriptor.kind,
       models: {
@@ -993,6 +1020,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       ...(folder ? { folder } : {}),
       ...(changeView ? { change: changeView } : {}),
       ...(reviewSession?.kind === "commit" && (!shownRoot || reviewSession.root === shownRoot) ? { review: commitProgress(reviewSession) } : {}),
+      ...(reviewNavigationView ? { reviewNavigation: reviewNavigationView } : {}),
       ...(breadcrumbs ? { breadcrumbs } : {}),
       explanations: changeView ? [] : explanations,
       ...(summary ? { summary: { text: summary.text, current: summary.current } } : {}),
@@ -1925,28 +1953,30 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
   };
 
   /** The native diff an editor belongs to, taken from the tab that shows it. */
-  const diffForEditor = (editor: vscode.TextEditor | undefined): { original: vscode.Uri; modified: vscode.Uri } | undefined => {
+  const diffForEditor = (editor: vscode.TextEditor | undefined): { original: vscode.Uri; modified: vscode.Uri; nativeDiff: boolean } | undefined => {
     if (!editor) return undefined;
     for (const group of vscode.window.tabGroups.all) {
       if (editor.viewColumn !== undefined && group.viewColumn !== editor.viewColumn) continue;
       const input = group.activeTab?.input;
       if (input instanceof vscode.TabInputTextDiff &&
         (sameUri(input.modified, editor.document.uri) || sameUri(input.original, editor.document.uri))) {
-        return { original: input.original, modified: input.modified };
+        return { original: input.original, modified: input.modified, nativeDiff: true };
       }
     }
     // The graph opens additions/deletions as one Git document, not a diff.
     // Bind only an exact immutable side of this confirmed commit set.
     if (reviewSession?.kind === "commit") {
       const item = reviewedDocument(reviewSession.items, editor.document.uri);
-      if (item) return reviewDiffUris(item);
+      if (item) return { ...reviewDiffUris(item), nativeDiff: false };
     }
     return undefined;
   };
 
   /** Shows a native diff, using the same opt-in background generation as file previews. */
-  const showChange = async (diff: { original: vscode.Uri; modified: vscode.Uri }, force: boolean): Promise<void> => {
+  const showChange = async (diff: { original: vscode.Uri; modified: vscode.Uri; nativeDiff: boolean }, force: boolean): Promise<void> => {
     if (!panel) return;
+    const surfaceChanged = changeIsNativeDiff !== diff.nativeDiff;
+    changeIsNativeDiff = diff.nativeDiff;
     regeneration?.abort();
     stopPrefetch();
     clearReveal();
@@ -1959,6 +1989,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     folderPreview = undefined;
     panel.setFileReferenceHandlers(new Map());
     await change.show(diff.original, diff.modified, force);
+    if (surfaceChanged && change.shows(diff.original, diff.modified)) render();
     reviewSession?.wakeUp();
     if (!panel || !change.active) return;
     const root = change.root;
@@ -2755,7 +2786,9 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
   const dismissReview = (): void => {
     cancelReview();
     reviewSession = undefined;
+    activeReviewNavigation = undefined;
     updateReviewStatus();
+    render();
   };
 
   /** The file being read, when it is in the review's repository: the one shown or its diff. */
@@ -2859,6 +2892,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     reviewSession = session;
     if (committed) ensurePanel();
     updateReviewStatus();
+    render();
     if (pending > 0 && !(await reviewSharingAllowed(root))) {
       // The first file is an ordinary request, so code sharing is approved the usual way.
       const first = items.find((item) => item.status === "pending")!;
@@ -2983,8 +3017,11 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
   };
 
   /** Lists the changed files with their state; choosing one opens its diff, and the preview follows. */
-  const showChangedFunctionsCommand = async (): Promise<void> => {
+  const showChangedFunctionsCommand = async (expectedSession?: Review, expectedToken?: string): Promise<void> => {
     const session = reviewSession;
+    if (expectedSession && session !== expectedSession) return;
+    const navigationOwner = activeReviewNavigation;
+    if (expectedToken && (!navigationOwner || navigationOwner.session !== session || navigationOwner.token !== expectedToken)) return;
     if (!session) {
       await vscode.window.showInformationMessage("No changes are being reviewed. Run \"Downside Up: Review Changes…\" first.");
       return;
@@ -3014,6 +3051,8 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       { title: `Changed files ${session.base}`, placeHolder: "Open the diff of a changed file", matchOnDescription: true }
     );
     if (!picked) return;
+    if (reviewSession !== session ||
+        (expectedToken && activeReviewNavigation?.token !== expectedToken)) return;
     if (picked.action === "stop") stopReview();
     else if (picked.action === "dismiss") dismissReview();
     else if (picked.action === "resume") {
@@ -3032,6 +3071,21 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       case "navigate":
         await panel?.navigate(action.referenceId);
         return;
+      case "reviewNavigation": {
+        const owner = activeReviewNavigation;
+        if (!owner || owner.session !== reviewSession || owner.token !== action.token || !changeIsNativeDiff) return;
+        const comparison = change.comparisonRef;
+        const current = comparison ? reviewNavigation(owner.session.items, comparison) : undefined;
+        if (!current || current.items[current.index] !== owner.item) return;
+        if (action.direction === "picker") {
+          await showChangedFunctionsCommand(owner.session, owner.token);
+          return;
+        }
+        const targetIndex = current.index + (action.direction === "next" ? 1 : -1);
+        const target = current.items[targetIndex];
+        if (target) await openReviewDiff(owner.session, target);
+        return;
+      }
       case "expand": {
         if (change.hasCard(action.entryId)) {
           if (await ensureLanguageModelSelected()) await change.explainCard(action.entryId);
@@ -3595,7 +3649,13 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     if (selectionTimer) clearTimeout(selectionTimer);
     // Returning focus to a shown document does not change its outline or explanation.
     const diff = diffForEditor(editor);
-    if (diff && change.shows(diff.original, diff.modified)) return;
+    if (diff && change.shows(diff.original, diff.modified)) {
+      if (changeIsNativeDiff !== diff.nativeDiff) {
+        changeIsNativeDiff = diff.nativeDiff;
+        render();
+      }
+      return;
+    }
     if (preview && !change.active && sameUri(preview.document.uri, editor.document.uri) && !diff) return;
     if (outlineTimer) clearTimeout(outlineTimer);
     if (panel?.panel.visible && !routeToChange(editor, true)) void previewDocument(editor.document);
@@ -3604,7 +3664,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
   const onTabsChange = vscode.window.tabGroups.onDidChangeTabs(() => {
     const editor = vscode.window.activeTextEditor ?? lastTextEditor;
     const diff = panel?.panel.visible ? diffForEditor(editor) : undefined;
-    if (diff && !change.shows(diff.original, diff.modified)) routeToChange(editor, false);
+    if (diff && (!change.shows(diff.original, diff.modified) || changeIsNativeDiff !== diff.nativeDiff)) routeToChange(editor, false);
   });
 
   // Staging and other Git changes happen outside the editor, so look again when the window regains focus.
@@ -3848,6 +3908,24 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     },
     commitProgress: () => reviewSession?.kind === "commit" ? commitProgress(reviewSession) : undefined,
     reviewItems: () => (reviewSession?.items ?? []).map((item) => ({ path: item.path, change: item.file.status, status: item.status })),
+    reviewNavigation: () => {
+      const owner = activeReviewNavigation;
+      const current = owner && change.comparisonRef
+        ? reviewNavigation(owner.session.items, change.comparisonRef)
+        : undefined;
+      return owner && owner.session === reviewSession && current && current.items[current.index] === owner.item
+        ? {
+            token: owner.token,
+            fileName: basename(owner.item.path),
+            position: current.index + 1,
+            total: current.items.length,
+            canPrevious: current.index > 0,
+            canNext: current.index + 1 < current.items.length
+          }
+        : undefined;
+    },
+    invokeReviewNavigation: (direction: "previous" | "next" | "picker", token: string) =>
+      handlePanelAction({ type: "reviewNavigation", direction, token }),
     stopReview: () => dismissReview(),
     commandRoot: () => rootForCommand(),
     mockDelay: (ms: number) => { mockProvider.delayMs = ms; },
@@ -3919,6 +3997,8 @@ export interface DownsideUpTestApi {
   prepareCommit(root: string, revision: string, parent?: string): Promise<number>;
   commitProgress(): { text: string; canStop: boolean } | undefined;
   reviewItems(): Array<{ path: string; change: string; status: string }>;
+  reviewNavigation(): { token: string; fileName: string; position: number; total: number; canPrevious: boolean; canNext: boolean } | undefined;
+  invokeReviewNavigation(direction: "previous" | "next" | "picker", token: string): Promise<void>;
   /** The native diff shown in the preview, or undefined. */
   shownChange(): { fileName: string; facts: string; status: string; explained: boolean; links: number;
     added: readonly ChangeFunctionCardView[]; removed: readonly ChangeFunctionCardView[] } | undefined;

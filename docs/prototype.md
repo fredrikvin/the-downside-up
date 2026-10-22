@@ -548,6 +548,19 @@ status bar item shows progress and opens a list of the changed files with
 their state; choosing one opens its native diff (with an empty document for
 the missing side of an added or deleted file), which shows the same saved
 comparison. It works regardless of the `downsideUp.prefetch.*` settings.
+When the preview shows a native diff whose repository, both side identities
+(including exact revision IDs), and both paths match an item in the active
+confirmed Review set, a compact **Previous / filename · position of total /
+Next** toolbar steps through the confirmed files in stable path order. Boundary
+buttons are disabled and navigation does not wrap. The filename/position opens
+the existing **Show Changed Files** picker. A renamed comparison must match
+both of its side paths; matching only a label or one path is not sufficient.
+The toolbar is hidden for comparisons outside the active session and for
+single historical documents. Host-issued opaque navigation authority is bound
+to the active session and exact pair, so stale webview messages cannot navigate
+a replacement session. Moving between review files only reorders pending
+requests already in the confirmed set; it never starts a provider request or
+expands that set.
 
 **Prepare Commit Explanations…** reuses this Review queue, scheduler, consent,
 comparison request and cache. The command palette offers the last 50 commits

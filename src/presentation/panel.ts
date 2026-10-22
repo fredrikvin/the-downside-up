@@ -36,6 +36,16 @@ export interface ExplanationView {
   readonly formatError?: string;
 }
 
+/** Host-authorized navigation within the exact confirmed review set. */
+export interface ReviewNavigationView {
+  readonly token: string;
+  readonly fileName: string;
+  readonly position: number;
+  readonly total: number;
+  readonly canPrevious: boolean;
+  readonly canNext: boolean;
+}
+
 export interface LinkedItems {
   readonly steps: readonly boolean[];
   readonly pseudocode: readonly boolean[];
@@ -255,6 +265,8 @@ export interface PanelState {
   readonly prefetchConsent?: { readonly models: readonly string[]; readonly approving: boolean };
   /** Commit preparation only; the existing Git graph remains the navigator. */
   readonly review?: { readonly text: string; readonly canStop: boolean };
+  /** Present only when the shown native diff is an exact member of the active review. */
+  readonly reviewNavigation?: ReviewNavigationView;
   /** A folder being opened; its placeholder is shown until it is listed. */
   readonly loading?: { readonly name: string };
   readonly busy: boolean;
@@ -270,6 +282,7 @@ export type PanelAction =
   | { readonly type: "cancelEntry"; readonly entryId: string }
   | { readonly type: "cancel" }
   | { readonly type: "stopReview" }
+  | { readonly type: "reviewNavigation"; readonly token: string; readonly direction: "previous" | "next" | "picker" }
   | { readonly type: "explainChanges" }
   | { readonly type: "summarizeFolder" }
   | { readonly type: "summarizeTree" }
@@ -358,6 +371,13 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
     .stats { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; margin-top: 4px; font-size: 11px; color: var(--vscode-descriptionForeground); }
     .stats .outdated { color: var(--vscode-editorWarning-foreground, var(--vscode-descriptionForeground)); }
     .stats button { font-size: 11px; padding: 2px 6px; min-height: 24px; }
+    .review-navigation { display: flex; align-items: center; gap: 4px; margin: 0 0 10px; padding: 3px 4px; border: 1px solid var(--separator); border-radius: 4px; width: fit-content; max-width: 100%; box-sizing: border-box; }
+    .review-navigation button { min-height: 26px; border: 0; border-radius: 3px; padding: 3px 6px; color: inherit; background: transparent; font: inherit; cursor: pointer; }
+    .review-navigation button:not(:disabled):is(:hover, :focus-visible, :active) { background: var(--vscode-toolbar-hoverBackground, rgba(128,128,128,.14)); }
+    .review-navigation button:disabled { opacity: .5; cursor: default; }
+    .review-navigation .review-file { min-width: 0; max-width: min(28em, 60vw); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+    .review-navigation .review-position { color: var(--vscode-descriptionForeground); font-size: .85em; white-space: nowrap; margin-left: 5px; font-weight: 400; }
+    @media (max-width: 420px) { .review-navigation { width: 100%; } .review-navigation .review-file { max-width: none; flex: 1; text-align: left; } }
     @container (max-width: 600px) { .toolbar .spacer { display: none; } }
     @container (max-width: 420px) { .toolbar .btn-label { display: none; } .toolbar .tool-button { width: 28px; padding: 6px; } .model-options { flex-direction: column; } }
     .change-item { margin: 0 0 18px; padding-left: 12px; border-left: 2px solid var(--separator); }
@@ -595,6 +615,7 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
     <nav id="crumbs" class="crumbs muted small" aria-label="Location" hidden></nav>
     <div class="page-heading"><h1 id="title">Downside Up</h1><div id="pageActions" class="page-actions"></div></div>
     <p id="facts" class="muted small"></p>
+    <nav id="reviewNavigation" class="review-navigation" aria-label="Changed files in this review" hidden></nav>
     <p id="summary" class="summary" hidden></p>
     <blockquote id="purpose" hidden></blockquote>
     <div id="entries"></div>
@@ -2246,6 +2267,7 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
       byId("facts").textContent = change ? change.facts : file
         ? [file.path, file.languageId, file.lineCount + " lines"].join(" · ")
         : folder ? [folder.path || "repository root", plural(folder.fileCount, "file")].join(" · ") : loading ? "Opening…" : "";
+      renderReviewNavigation(change ? next.reviewNavigation : undefined);
       const summary = byId("summary");
       const aiSummary = file ? next.summary : undefined;
       summary.hidden = !aiSummary;
@@ -2410,6 +2432,34 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
       }
     }
 
+    function renderReviewNavigation(navigation) {
+      const toolbar = byId("reviewNavigation");
+      toolbar.hidden = !navigation;
+      toolbar.replaceChildren();
+      if (!navigation) return;
+      const button = (label, direction, disabled, title) => {
+        const control = el("button", direction === "picker" ? "review-file" : "", label);
+        control.type = "button";
+        control.disabled = disabled;
+        control.title = title;
+        control.setAttribute("aria-label", title);
+        control.addEventListener("click", () => post({
+          type: "reviewNavigation", token: navigation.token, direction
+        }));
+        return control;
+      };
+      const pickerTitle = "Choose " + navigation.fileName + " (" + navigation.position + " of " + navigation.total + ") from changed files";
+      toolbar.append(
+        button("Previous", "previous", !navigation.canPrevious, "Previous changed file"),
+        button(navigation.fileName, "picker", false, pickerTitle),
+        button("Next", "next", !navigation.canNext, "Next changed file")
+      );
+      const label = toolbar.children[1];
+      const position = el("span", "review-position", navigation.position + " of " + navigation.total);
+      position.setAttribute("aria-hidden", "true");
+      label.append(position);
+    }
+
     window.addEventListener("message", (event) => {
       const message = event.data;
       if (!message || typeof message !== "object") return;
@@ -2495,6 +2545,13 @@ export class ExplanationPanel {
         } else if (type === "navigate") {
           const referenceId = stringField("referenceId");
           if (referenceId) onAction({ type, referenceId });
+        } else if (type === "reviewNavigation") {
+          const token = stringField("token");
+          const direction = fields.direction;
+          if (token && token.length >= 16 &&
+              (direction === "previous" || direction === "next" || direction === "picker")) {
+            onAction({ type, token, direction });
+          }
         } else if (type === "revealItem") {
           const entryId = stringField("entryId");
           const kind = fields.kind;

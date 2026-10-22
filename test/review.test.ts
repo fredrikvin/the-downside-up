@@ -3,7 +3,7 @@ import { unapprovedModels, withConsent } from "../src/cache/consent";
 import { emptyRepositoryCache } from "../src/cache/store";
 import { snapshotSignature, type ComparisonRef, type ComparisonSnapshot } from "../src/context/comparison";
 import { RequestScheduler } from "../src/presentation/requestScheduler";
-import { Review, commitProgress, reviewedDocument, type ReviewHost, type ReviewItem } from "../src/review";
+import { Review, commitProgress, reviewNavigation, reviewedDocument, type ReviewHost, type ReviewItem } from "../src/review";
 
 const root = "/repo";
 
@@ -114,6 +114,59 @@ const until = async (check: () => boolean, what: string): Promise<void> => {
   }
   throw new Error(`Timed out waiting for ${what}`);
 };
+
+describe("review navigation matching", () => {
+  const revision = (path: string, hash: string, root = "/repo"): ComparisonRef => ({
+    root,
+    original: { path, source: { kind: "revision", hash } },
+    modified: { path, source: { kind: "revision", hash: "b".repeat(40) } }
+  });
+
+  it("orders confirmed files by path and requires both full side identities, paths, and repository", () => {
+    const fixture = new Fixture(1);
+    const items = fixture.items("z.ts", "a.ts", "m.ts");
+    // The changed comparison is a rename: both paths and immutable revisions must match.
+    const rename: ComparisonRef = {
+      root,
+      original: { path: "old.ts", source: { kind: "revision", hash: "a".repeat(40) } },
+      modified: { path: "new.ts", source: { kind: "revision", hash: "b".repeat(40) } }
+    };
+    const added: ReviewItem = {
+      path: "new.ts", file: { status: "renamed", path: "new.ts" }, ref: rename,
+      confirmed: "confirmed", status: "done"
+    };
+    const mixed = [items[0]!, added, items[1]!, items[2]!];
+    const matched = reviewNavigation(mixed, { ...rename, original: { ...rename.original }, modified: { ...rename.modified } });
+    expect(matched?.items.map((item) => item.path)).toEqual(["a.ts", "m.ts", "new.ts", "z.ts"]);
+    expect(matched?.index).toBe(2);
+    expect(reviewNavigation(mixed, { ...rename, original: { ...rename.original, path: "other.ts" } })).toBeUndefined();
+    expect(reviewNavigation(mixed, { ...rename, original: { path: "old.ts", source: { kind: "revision", hash: "c".repeat(40) } } })).toBeUndefined();
+    expect(reviewNavigation(mixed, { ...rename, root: "/another-repo" })).toBeUndefined();
+    expect(reviewNavigation(mixed, { ...rename, modified: { path: "new.ts", source: { kind: "working" } } })).toBeUndefined();
+  });
+
+  it("matches working and commit comparisons only to their exact pair, not matching names", () => {
+    const fixture = new Fixture(1);
+    const working = fixture.items("same.ts")[0]!;
+    const ref = working.ref;
+    expect(reviewNavigation([working], ref)?.index).toBe(0);
+    expect(reviewNavigation([working], {
+      ...ref,
+      original: { ...ref.original, source: { kind: "revision", hash: "2".repeat(40) } }
+    })).toBeUndefined();
+
+    const commit: ReviewItem = {
+      ...working,
+      ref: {
+        root,
+        original: { path: "same.ts", source: { kind: "revision", hash: "3".repeat(40) } },
+        modified: { path: "same.ts", source: { kind: "revision", hash: "4".repeat(40) } }
+      }
+    };
+    expect(reviewNavigation([commit], commit.ref)?.index).toBe(0);
+    expect(reviewNavigation([commit], ref)).toBeUndefined();
+  });
+});
 
 describe("review mode", () => {
   it("does not allow an explicit request to add an unconfirmed file to the queue", async () => {

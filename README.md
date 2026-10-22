@@ -78,7 +78,12 @@ and billing.
 - **Prepare a review.** Run **Downside Up: Review Changes…**, select a
   comparison, and confirm the number of changed files to explain; each opens in
   VS Code's native diff. The confirmed count remains one comparison per file;
-  Added/Removed details are not included or generated in the background.
+  Added/Removed details are not included or generated in the background. While
+  a confirmed file's native diff is shown, use **Previous** and **Next** in
+  the preview to step through the review in path order. The filename and
+  position open the existing **Show Changed Files** picker. Navigation stays
+  within the confirmed review, does not wrap, and only reprioritizes its
+  pending work; it does not start requests.
 - **Prepare a commit.** Run **Downside Up: Prepare Commit Explanations…**,
   choose a commit (or enter its ID/ref), and confirm the bounded file scope and
   request count. This compares the immutable commit with its parent, **not**

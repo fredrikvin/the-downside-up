@@ -178,6 +178,55 @@ async function testCommitPreparation(api: DownsideUpTestApi, root: string): Prom
     await waitFor(async () => api.reviewItems().every((item) => item.status === "done") ? true : undefined, "commit comparisons to finish");
     assert.equal(api.shownChange()?.status, "current", "Background completion refreshes the comparison already being read.");
     assert.deepEqual(api.commitProgress(), { text: "Commit: 4/4 ready", canStop: false });
+    const shownDiff = (): vscode.TabInputTextDiff | undefined => {
+      const tab = vscode.window.tabGroups.all.flatMap((group) => group.tabs).find((candidate) =>
+        candidate.isActive && candidate.input instanceof vscode.TabInputTextDiff);
+      return tab?.input instanceof vscode.TabInputTextDiff ? tab.input : undefined;
+    };
+    const assertDiffPair = async (original: vscode.Uri, modified: vscode.Uri, description: string): Promise<void> => {
+      const diff = await waitFor(async () => {
+        const current = shownDiff();
+        return current?.original.toString() === original.toString() && current.modified.toString() === modified.toString()
+          ? current : undefined;
+      }, description);
+      assert.equal(diff.original.toString(), original.toString(), `${description}: exact original side`);
+      assert.equal(diff.modified.toString(), modified.toString(), `${description}: exact modified side`);
+    };
+    const mainNavigation = api.reviewNavigation();
+    assert.deepEqual(mainNavigation && {
+      fileName: mainNavigation.fileName, position: mainNavigation.position, total: mainNavigation.total,
+      canPrevious: mainNavigation.canPrevious, canNext: mainNavigation.canNext
+    }, { fileName: "main.ts", position: 3, total: 4, canPrevious: true, canNext: true });
+    assert.ok(mainNavigation);
+    await api.invokeReviewNavigation("next", mainNavigation.token);
+    await waitFor(async () => api.shownChange()?.fileName === "renamed.ts" ? true : undefined, "Next to open the confirmed rename pair");
+    await assertDiffPair(side("old.ts", parent), side("renamed.ts", commit), "Next opens the exact rename comparison");
+    const renameNavigation = await waitFor(async () => api.reviewNavigation(), "the rendered rename navigation state");
+    await api.invokeReviewNavigation("next", mainNavigation.token);
+    assert.equal(api.shownChange()?.fileName, "renamed.ts", "A stale webview token cannot move within the current review.");
+    assert.ok(renameNavigation?.canPrevious);
+    await api.invokeReviewNavigation("previous", renameNavigation.token);
+    await waitFor(async () => api.shownChange()?.fileName === "main.ts" ? true : undefined, "Previous to return to main");
+    await assertDiffPair(side("main.ts", parent), side("main.ts", commit), "Previous opens the exact main comparison");
+
+    const absentAdded = vscode.Uri.file(resolve(root, "added.ts")).with({ scheme: "downside-up-empty", query: parent });
+    await vscode.commands.executeCommand("vscode.diff", absentAdded, side("added.ts", commit), "Added boundary (test)");
+    await vscode.commands.executeCommand("downsideUp.showFileOverview");
+    await waitFor(async () => api.shownChange()?.fileName === "added.ts" ? true : undefined, "the first review comparison");
+    const firstNavigation = api.reviewNavigation();
+    assert.equal(firstNavigation?.position, 1);
+    assert.equal(firstNavigation?.canPrevious, false, "The first item has no wrapping Previous action.");
+    assert.ok(firstNavigation);
+    await assertDiffPair(absentAdded, side("added.ts", commit), "The first item remains the exact native pair");
+    await api.invokeReviewNavigation("previous", firstNavigation.token);
+    await assertDiffPair(absentAdded, side("added.ts", commit), "A boundary action is rejected by the host");
+    await api.invokeReviewNavigation("next", firstNavigation.token);
+    await waitFor(async () => api.shownChange()?.fileName === "deleted.ts" ? true : undefined, "Next from the first item to deleted");
+    await assertDiffPair(side("deleted.ts", parent), vscode.Uri.file(resolve(root, "deleted.ts")).with({ scheme: "downside-up-empty", query: commit }),
+      "Next opens the exact deleted-file comparison");
+    const deletedNavigation = await waitFor(async () => api.reviewNavigation(), "the rendered deleted-file navigation state");
+    assert.equal(deletedNavigation?.position, 2);
+
     await vscode.commands.executeCommand("vscode.diff", side("old.ts", parent), side("renamed.ts", commit), "Commit rename (test)");
     await vscode.commands.executeCommand("downsideUp.showFileOverview");
     await waitFor(async () => api.shownChange()?.fileName === "renamed.ts" && api.shownChange()?.status === "current" ? true : undefined, "the graph rename pair to reuse its prepared cache");
@@ -187,10 +236,16 @@ async function testCommitPreparation(api: DownsideUpTestApi, root: string): Prom
       const editor = await vscode.window.showTextDocument(document, vscode.ViewColumn.One);
       await vscode.commands.executeCommand("downsideUp.showFileOverview");
       await waitFor(async () => api.shownChange()?.fileName === path && api.shownChange()?.status === "current" ? true : undefined, `the graph's single ${path} document to reuse its prepared comparison`);
+      assert.equal(api.reviewNavigation(), undefined, "A graph historical single document is not a native diff navigation surface.");
       assert.ok([...api.shownChange()!.added, ...api.shownChange()!.removed].every((card) => !card.explanation), "No Added/Removed detail was generated by preparation.");
       await api.revealChange(sourceSide);
       assert.equal(editor.document.uri.toString(), document.uri.toString(), "Source navigation reuses the graph's historical editor.");
       assert.ok(!editor.selection.isEmpty);
+      if (path === "added.ts") {
+        await vscode.commands.executeCommand("vscode.diff", absentAdded, side(path, revision), "Same addition as a native diff (test)");
+        await vscode.commands.executeCommand("downsideUp.showFileOverview");
+        await waitFor(async () => api.reviewNavigation()?.fileName === path ? true : undefined, "navigation to appear when the same historical pair becomes a native diff");
+      }
     }
     assert.equal(await api.prepareCommit(root, commit), 4);
     assert.ok(api.reviewItems().every((item) => item.status === "done"), "Preparing again reuses exact revision comparisons without another request.");
@@ -202,6 +257,11 @@ async function testCommitPreparation(api: DownsideUpTestApi, root: string): Prom
     await vscode.commands.executeCommand("vscode.diff", side("main.ts", parent), side("main.ts", commit), "Reopened commit (test)");
     await vscode.commands.executeCommand("downsideUp.showFileOverview");
     await waitFor(async () => api.shownChange()?.fileName === "main.ts" && api.shownChange()?.status === "current" ? true : undefined, "reopened prepared comparison");
+    const freshNavigation = api.reviewNavigation();
+    assert.ok(freshNavigation);
+    assert.notEqual(freshNavigation.token, mainNavigation.token, "A replacement review receives new opaque navigation authority.");
+    await api.invokeReviewNavigation("next", mainNavigation.token);
+    assert.equal(api.shownChange()?.fileName, "main.ts", "A stale message from a closed review cannot navigate the replacement session.");
 
     await writeFile(resolve(root, "main.ts"), "export function main() { return 3; }\n");
     git("add", "."); git("commit", "-q", "-m", "next");
