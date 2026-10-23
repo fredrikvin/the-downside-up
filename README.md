@@ -169,6 +169,14 @@ It does not start generation or require a restart. **Tokens in current cache**
 expands into input/output totals by role and model. These are retained-record
 totals, not lifetime usage or billing.
 
+**Max Project Context Request Size** (`downsideUp.maxProjectContextRequestSize`)
+caps repository context requests at 256 KiB by default (128–1024 KiB, user
+settings only), including the previous overview and map. Raising it does not
+scan more files or start generation. If a review would exceed that budget,
+the same action rebuilds context from current bounded evidence instead,
+without an extra request. Any further
+inventory truncation is disclosed in the overview's limitations.
+
 ## Privacy and control
 
 Generation normally requires an explicit action. Opening files, moving the

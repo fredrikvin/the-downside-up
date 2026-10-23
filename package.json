@@ -275,8 +275,16 @@
             "minimum": 32,
             "maximum": 512,
             "scope": "application",
-            "markdownDescription": "The largest request, in KiB, for an explanation, an added pseudocode or flowchart view, a file or folder summary, or main flows. A request that would be larger is not sent, and you are told its size. Large functions with much related code need more; a smaller limit caps what each request costs. The model's own input limit also applies. Mapping the project has its own limit of 128 KiB.",
+            "markdownDescription": "The largest request, in KiB, for an explanation, an added pseudocode or flowchart view, a file or folder summary, or main flows. A request that would be larger is not sent, and you are told its size. Large functions with much related code need more; a smaller limit caps what each request costs. The model's own input limit also applies. Repository context uses #downsideUp.maxProjectContextRequestSize# instead.",
             "order": 0
+          },
+          "downsideUp.maxProjectContextRequestSize": {
+            "type": "integer",
+            "default": 256,
+            "minimum": 128,
+            "maximum": 1024,
+            "scope": "application",
+            "markdownDescription": "The largest repository overview and project map request, in KiB, including previous context during reviews. If a review exceeds this budget, rebuilds from current bounded evidence in one request; inventory is shortened further if needed, with disclosed limitations. Raising this ceiling does not scan more files or start generation. The model's own input limit still applies. Can only be set in user settings."
           },
           "downsideUp.maxConcurrentRequests": {
             "type": "integer",

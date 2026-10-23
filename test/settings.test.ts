@@ -17,6 +17,14 @@ function sources(directory: string): string[] {
 }
 
 describe("extension settings", () => {
+  it("declares a bounded user-only project context budget", () => {
+    expect(declaredSettings()["downsideUp.maxProjectContextRequestSize"]).toMatchObject({
+      type: "integer", scope: "application", default: 256, minimum: 128, maximum: 1024
+    });
+    const extension = readFileSync(resolve("src/extension.ts"), "utf8");
+    expect(extension).toContain('inspect<number>("maxProjectContextRequestSize")?.globalValue');
+  });
+
   it("enables explanation formats by default while keeping prefetch opt-in", () => {
     const properties = declaredSettings();
     expect(properties["downsideUp.explanations.formats"]?.default).toEqual({

@@ -804,7 +804,18 @@ configuration. Explaining another function in an unchanged repository reuses the
 same overview; a bounded review/re-prime happens only when tracked repository
 changes make the existing overview potentially stale.
 Priming and explanation inputs are bounded by byte budgets; the complete
-priming/review request is limited to 128 KiB. Every other request (an
+priming/review request is limited by `downsideUp.maxProjectContextRequestSize`
+(user settings only; default 256 KiB, 128 to 1024 KiB), measured after JSON serialization
+and including the prompt instructions. If including the previous overview,
+map, and changed paths would exceed that budget, the same explicit action
+re-primes from current bounded evidence instead; no oversized request is sent
+and no extra provider call is made. If fresh priming still exceeds the budget,
+the inventory is shortened at whole-line boundaries with an explicit truncation
+marker, preserving the folder outline. Rebuilding and truncation are recorded
+in the overview's limitations. Sharing consent uses the final complete request
+size. Changing the ceiling neither expands the scanner's bounds nor invalidates
+saved results or triggers generation; it applies on the next requested generation.
+Every other request (an
 explanation, an added view, a file or folder summary, or main flows) is
 limited by `downsideUp.maxRequestSize` (user settings only; default 96 KiB,
 32 to 512 KiB), checked before anything is sent; a larger request fails with
@@ -840,7 +851,8 @@ facts reduced to names (`deploymentFacts`: resource kinds and names, Compose
 services and their dependencies, images, ports, environment variable names,
 ConfigMap and Secret keys, and Kustomize resources), never values. Up to
 16 KiB go to the symbol outline and up to 12 KiB to the folder outline.
-Excessive complete prompts fail before source is sent.
+If the remaining priming metadata alone cannot fit, the request fails before
+source is sent.
 
 The scanner honors `.gitignore`, `.copilotignore` (including `.copilotignore`
 files in folders above the repository, with patterns relative to their own

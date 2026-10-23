@@ -6,6 +6,7 @@ import { FileRepositoryCacheStore, MemoryRepositoryCacheStore } from "../src/cac
 import type { FunctionTarget, RepositoryCache } from "../src/core/types";
 import { ExplanationService } from "../src/controller";
 import { MockProvider } from "../src/generation/mock";
+import { overviewPrompt, reviewPrompt } from "../src/generation/prompts";
 import { COMPONENT_GUIDANCE } from "../src/languages/javascript/guidance";
 import { initializeJavaScriptParsersAt } from "../src/languages/javascript/syntax";
 import { javascriptSupport } from "../src/languages/javascript";
@@ -143,14 +144,16 @@ function createService(
   store: MemoryRepositoryCacheStore | FileRepositoryCacheStore,
   provider: MockProvider,
   authorized = true,
-  formats: Array<"pseudocode" | "flowchart"> = []
+  formats: Array<"pseudocode" | "flowchart"> = [],
+  projectContextLimit?: () => number
 ): ExplanationService {
   return new ExplanationService({
     store,
     describeProvider: () => ({ kind: "mock", modelId: provider.modelId }),
     createProvider: async () => provider,
     authorizeExternalData: async () => authorized,
-    explanationFormats: () => formats
+    explanationFormats: () => formats,
+    maxProjectContextRequestBytes: projectContextLimit
   });
 }
 
@@ -500,6 +503,131 @@ describe("ExplanationService", () => {
     const other = await service.explain(root, otherTarget(), fakeDocument);
     expect(other.cached).toBe(false);
     expect(provider.requests).toBe(calls + 2);
+  });
+
+  it("re-primes within budget when the previous map makes a repository review too large", async () => {
+    const provider = new MockProvider();
+    const prime = vi.spyOn(provider, "explainRepository");
+    const review = vi.spyOn(provider, "reviewRepository");
+    const store = new MemoryRepositoryCacheStore();
+    const service = createService(store, provider, true, [], () => 128 * 1024);
+    await service.explain(root, target(), fakeDocument);
+    await store.update(root, (cache) => ({
+      ...cache,
+      projectMap: {
+        ...cache.projectMap!,
+        value: { ...cache.projectMap!.value, summary: '"'.repeat(70 * 1024) }
+      }
+    }));
+    const previous = await store.read(root);
+    harness.gitHeadHash = "head-feature";
+    const oversized = reviewPrompt({
+      ...prime.mock.calls[0]![0],
+      previous: previous.overview!.value,
+      previousMap: previous.projectMap!.value,
+      changedPaths: ["[Git branch/HEAD]"]
+    });
+    expect(Buffer.byteLength(oversized.join(""), "utf8")).toBeGreaterThan(128 * 1024);
+
+    const result = await service.explain(root, otherTarget(), fakeDocument);
+    expect(result.cached).toBe(false);
+    expect(prime).toHaveBeenCalledTimes(2);
+    expect(review).not.toHaveBeenCalled();
+    expect(Buffer.byteLength(overviewPrompt(prime.mock.calls[1]![0]).join(""), "utf8")).toBeLessThanOrEqual(128 * 1024);
+    expect(result.overview?.limitations).toContainEqual(expect.stringContaining("rebuilt from current bounded evidence"));
+    expect((await service.savedProjectMap(root))?.current).toBe(true);
+    expect((await service.explain(root, otherTarget(), fakeDocument)).cached).toBe(true);
+    expect(provider.requests).toBe(4);
+  });
+
+  it("bounds the serialized priming request, marks omitted inventory, and reports its full size for consent", async () => {
+    const inventoryText = `--- README.md ---\n${`${'\t"\\'.repeat(100)}\n`.repeat(230)}`;
+    expect(Buffer.byteLength(inventoryText, "utf8")).toBeLessThan(128 * 1024);
+    harness.gatherInventory = () => ({ ...makeInventory(root), inventoryText });
+    const provider = new MockProvider();
+    const prime = vi.spyOn(provider, "explainRepository");
+    const authorize = vi.fn(async () => true);
+    const service = new ExplanationService({
+      store: new MemoryRepositoryCacheStore(),
+      describeProvider: () => ({ kind: "openai", modelId: provider.modelId }),
+      createProvider: async () => provider,
+      authorizeExternalData: authorize,
+      maxProjectContextRequestBytes: () => 128 * 1024
+    });
+    const { overview } = await service.refreshRepositoryContext(root);
+    const input = prime.mock.calls[0]![0];
+    expect(Buffer.byteLength(overviewPrompt({ ...input, inventory: inventoryText }).join(""), "utf8")).toBeGreaterThan(128 * 1024);
+    const bytes = Buffer.byteLength(overviewPrompt(input).join(""), "utf8");
+    expect(bytes).toBeLessThanOrEqual(128 * 1024);
+    expect(input.inventory).toMatch(/^--- README.md ---\n/);
+    expect(input.inventory).toContain("[Repository inventory truncated");
+    expect(inventoryText.startsWith(input.inventory.slice(0, input.inventory.lastIndexOf("\n") + 1))).toBe(true);
+    expect(overview.limitations).toContain("Repository inventory was truncated to fit the complete 128 KiB request budget.");
+    expect(authorize).toHaveBeenCalledWith(root, expect.anything(), bytes, undefined);
+    expect(provider.requests).toBe(1);
+  });
+
+  it("sends nothing if priming metadata alone cannot fit the request budget", async () => {
+    harness.gatherInventory = () => ({ ...makeInventory(root), name: "x".repeat(128 * 1024) });
+    const provider = new MockProvider();
+    const authorize = vi.fn(async () => true);
+    const createProvider = vi.fn(async () => provider);
+    const service = new ExplanationService({
+      store: new MemoryRepositoryCacheStore(),
+      describeProvider: () => ({ kind: "openai", modelId: provider.modelId }),
+      createProvider,
+      authorizeExternalData: authorize,
+      maxProjectContextRequestBytes: () => 128 * 1024
+    });
+    await expect(service.refreshRepositoryContext(root)).rejects.toThrow("metadata exceeds 128 KiB; no code was sent");
+    expect(authorize).not.toHaveBeenCalled();
+    expect(createProvider).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { configured: undefined, expected: 256 },
+    { configured: NaN, expected: 256 },
+    { configured: Infinity, expected: 256 },
+    { configured: 0, expected: 128 },
+    { configured: 512 * 1024, expected: 512 },
+    { configured: 2048 * 1024, expected: 1024 }
+  ])("bounds project context to $expected KiB for configured value $configured", async ({ configured, expected }) => {
+    const inventoryText = `${'"'.repeat(500)}\n`.repeat(1200);
+    harness.gatherInventory = () => ({ ...makeInventory(root), inventoryText });
+    const provider = new MockProvider();
+    const prime = vi.spyOn(provider, "explainRepository");
+    const service = createService(new MemoryRepositoryCacheStore(), provider, true, [],
+      configured === undefined ? undefined : () => configured);
+    const { overview } = await service.refreshRepositoryContext(root);
+    const bytes = Buffer.byteLength(overviewPrompt(prime.mock.calls[0]![0]).join(""), "utf8");
+    expect(bytes).toBeLessThanOrEqual(expected * 1024);
+    expect(bytes).toBeGreaterThan((expected - 2) * 1024);
+    expect(overview.limitations).toContain(`Repository inventory was truncated to fit the complete ${expected} KiB request budget.`);
+    expect(provider.requests).toBe(1);
+  });
+
+  it("uses a raised project context limit on the next request without invalidating saved results", async () => {
+    const provider = new MockProvider();
+    const prime = vi.spyOn(provider, "explainRepository");
+    const review = vi.spyOn(provider, "reviewRepository");
+    const store = new MemoryRepositoryCacheStore();
+    let limit = 128 * 1024;
+    const service = createService(store, provider, true, [], () => limit);
+    await service.explain(root, target(), fakeDocument);
+    await store.update(root, (cache) => ({
+      ...cache,
+      projectMap: { ...cache.projectMap!, value: { ...cache.projectMap!.value, summary: '"'.repeat(70 * 1024) } }
+    }));
+    limit = 256 * 1024;
+    expect((await service.explain(root, target(), fakeDocument)).cached).toBe(true);
+    expect(provider.requests).toBe(2);
+    harness.gitHeadHash = "head-feature";
+    await service.explain(root, otherTarget(), fakeDocument);
+    expect(prime).toHaveBeenCalledTimes(1);
+    expect(review).toHaveBeenCalledTimes(1);
+    const bytes = Buffer.byteLength(reviewPrompt(review.mock.calls[0]![0]).join(""), "utf8");
+    expect(bytes).toBeGreaterThan(128 * 1024);
+    expect(bytes).toBeLessThanOrEqual(256 * 1024);
   });
 
   it("sends nothing when an explanation request is over the size limit, and says which setting raises it", async () => {

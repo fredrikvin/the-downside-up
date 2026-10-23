@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.48.0
+
+- Add user-only **Max Project Context Request Size**, defaulting to 256 KiB
+  and adjustable from 128 KiB to 1 MiB, without expanding repository scanning
+  or invalidating saved results.
+- Rebuild oversized repository-context reviews from current bounded evidence
+  instead of failing. Fit serialized priming inputs within the budget and
+  disclose rebuilding or truncation in the overview's limitations.
+
 ## 0.47.1
 
 - While the next diff is read, show a placeholder shaped like a change

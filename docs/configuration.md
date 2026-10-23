@@ -493,7 +493,16 @@ tools/*
 flows request. A request that would be larger is not sent, and the error
 says how large it would be. Raise it for very large functions with much
 related code; lower it to cap what each request costs. The model's own input
-limit still applies, and mapping the project has its own limit of 128 KiB.
+limit still applies. **Max Project Context Request Size**
+(`downsideUp.maxProjectContextRequestSize`, default 256 KiB, 128 to 1024,
+user settings only) separately caps repository overview and project map requests.
+Increasing it does not expand the scanner's bounds, start generation, or
+invalidate saved results; the next requested generation uses the new limit.
+That limit includes the previous overview and map when reviewing repository
+context, not just the file being explained. If a review would be too large,
+the same action rebuilds context from current bounded evidence in one request.
+Inventory is shortened further if needed to fit the complete serialized prompt;
+the overview's limitations disclose rebuilding and truncation.
 
 ### Prefetching (optional)
 

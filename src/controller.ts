@@ -149,6 +149,8 @@ export interface ExplanationServiceOptions {
   readonly projectMapDetail?: () => ProjectMapDetail;
   /** The largest explanation, added view, summary, or flows request, in bytes; DEFAULT_MAX_REQUEST_BYTES when omitted. */
   readonly maxRequestBytes?: () => number;
+  /** Complete repository priming/review budget; defaults to 256 KiB. */
+  readonly maxProjectContextRequestBytes?: () => number;
 }
 
 /** Default limit for every request but priming, which has its own. */
@@ -164,7 +166,7 @@ function tooLarge(what: string, bytes: number, limit: number): Error {
 }
 
 /** Priming holds the bounded inventory, symbol and folder outlines, and, when reviewing, the previous overview and map. */
-const MAX_PRIMING_BYTES = 128 * 1024;
+export const DEFAULT_MAX_PROJECT_CONTEXT_REQUEST_BYTES = 256 * 1024;
 const MAX_FILE_SUMMARY_SOURCE_BYTES = 24 * 1024;
 
 function fileSummaryKey(path: string, descriptor: ProviderDescriptor): string {
@@ -284,6 +286,28 @@ function inputToOverview(inventory: RepositoryInventory, mapDetail: ProjectMapDe
     folders: outlineText(inventory.outline),
     mapDetail
   };
+}
+
+function boundedPrimingInput(input: RepositoryPromptInput, limit: number): RepositoryPromptInput {
+  const bytes = (candidate: RepositoryPromptInput) => Buffer.byteLength(overviewPrompt(candidate).join(""), "utf8");
+  if (bytes(input) <= limit) return input;
+  const lines = input.inventory.split("\n");
+  const note = `[Repository inventory truncated to fit the complete ${kib(limit)} request budget.]`;
+  const candidate = (count: number): RepositoryPromptInput => ({
+    ...input,
+    inventory: [...lines.slice(0, count), note].join("\n")
+  });
+  if (bytes(candidate(0)) > limit) {
+    throw new Error(`The repository-priming metadata exceeds ${kib(limit)}; no code was sent. Raise “Downside Up: Max Project Context Request Size” (downsideUp.maxProjectContextRequestSize) to send it.`);
+  }
+  let low = 0;
+  let high = lines.length;
+  while (low < high) {
+    const mid = Math.ceil((low + high) / 2);
+    if (bytes(candidate(mid)) <= limit) low = mid;
+    else high = mid - 1;
+  }
+  return candidate(low);
 }
 
 function isOverviewRelevantPath(path: string): boolean {
@@ -636,9 +660,6 @@ export class ExplanationService {
       const baseInventory = await gatherInventory(root, cache.overview?.checkedSnapshot);
       const inventory = await addLocalSymbolOutline(baseInventory);
       const context = await this.functionContext(target, document, inventory);
-      if (Buffer.byteLength(inventory.inventoryText, "utf8") > MAX_PRIMING_BYTES) {
-        throw new Error("Repository inventory exceeds the priming budget; no code was sent.");
-      }
       const contextBytes = Buffer.byteLength(context.text, "utf8") + Buffer.byteLength(target.source, "utf8");
       if (contextBytes > this.maxRequestBytes()) throw tooLarge("explanation", contextBytes, this.maxRequestBytes());
       assertNotCancelled(signal);
@@ -818,6 +839,13 @@ export class ExplanationService {
     return limit !== undefined && Number.isFinite(limit) && limit > 0 ? limit : DEFAULT_MAX_REQUEST_BYTES;
   }
 
+  private maxProjectContextRequestBytes(): number {
+    const limit = this.options.maxProjectContextRequestBytes?.();
+    return limit !== undefined && Number.isFinite(limit)
+      ? Math.min(1024 * 1024, Math.max(128 * 1024, Math.round(limit)))
+      : DEFAULT_MAX_PROJECT_CONTEXT_REQUEST_BYTES;
+  }
+
   /** The model for the repository overview and folder summaries. */
   private overviewDescriptor(): ProviderDescriptor {
     return this.options.describeOverviewProvider?.() ?? this.options.describeProvider();
@@ -835,15 +863,12 @@ export class ExplanationService {
     const cache = await this.options.store.read(root);
     const baseInventory = await gatherInventory(root, cache.overview?.checkedSnapshot);
     const inventory = await addLocalSymbolOutline(baseInventory);
-    if (Buffer.byteLength(inventory.inventoryText, "utf8") > MAX_PRIMING_BYTES) {
-      throw new Error("Repository inventory exceeds the priming budget; no code was sent.");
-    }
-    const authorize = async () => {
+    const authorize = async (bytes: number) => {
       if (descriptor.kind !== "mock") {
         const accepted = await this.options.authorizeExternalData(
           root,
           descriptor,
-          Buffer.byteLength(inventory.inventoryText, "utf8"),
+          bytes,
           signal
         );
         if (!accepted) throw new DOMException("External code sharing was not authorized.", "AbortError");
@@ -855,8 +880,8 @@ export class ExplanationService {
       inventory,
       cache,
       descriptor,
-      async (_bytes, request) => {
-        await authorize();
+      async (bytes, request) => {
+        await authorize(bytes);
         return request(await this.options.createProvider(descriptor));
       },
       (stage) => onProgress?.({
@@ -896,10 +921,12 @@ export class ExplanationService {
     const overviewConfig = `${descriptor.kind}:${descriptor.modelId}:${PROMPT_VERSION}`;
     const mapConfig = this.mapConfig(descriptor);
     const prompt = inputToOverview(inventory, this.options.projectMapDetail?.() ?? "brief");
+    const limit = this.maxProjectContextRequestBytes();
     const previous = cache.overview;
-    let generated: GenerationResult<RepositoryPriming>;
+    let review: OverviewReviewPromptInput | undefined;
+    const limitations: string[] = [];
     if (previous && previous.config === overviewConfig) {
-      const review: OverviewReviewPromptInput = {
+      review = {
         ...prompt,
         previous: previous.value,
         ...(cache.projectMap?.config === mapConfig ? { previousMap: cache.projectMap.value } : {}),
@@ -907,25 +934,33 @@ export class ExplanationService {
       };
       const [system, user] = reviewPrompt(review);
       const requestBytes = Buffer.byteLength(system + user, "utf8");
-      if (requestBytes > MAX_PRIMING_BYTES) {
-        throw new Error("The complete repository-review request exceeds 128 KiB; no code was sent.");
+      if (requestBytes > limit) {
+        review = undefined;
+        limitations.push(`The repository overview and map were rebuilt from current bounded evidence because including the previous versions exceeded the ${kib(limit)} request budget.`);
       }
+    }
+    let generated: GenerationResult<RepositoryPriming>;
+    const reviewInput = review;
+    if (reviewInput) {
+      const requestBytes = Buffer.byteLength(reviewPrompt(reviewInput).join(""), "utf8");
       onStage("reviewing");
-      generated = await send(requestBytes, (provider) => provider.reviewRepository(review, signal));
+      generated = await send(requestBytes, (provider) => provider.reviewRepository(reviewInput, signal));
     } else {
-      const [system, user] = overviewPrompt(prompt);
-      const requestBytes = Buffer.byteLength(system + user, "utf8");
-      if (requestBytes > MAX_PRIMING_BYTES) {
-        throw new Error("The complete repository-priming request exceeds 128 KiB; no code was sent.");
+      const bounded = boundedPrimingInput(prompt, limit);
+      if (bounded !== prompt) {
+        limitations.push(`Repository inventory was truncated to fit the complete ${kib(limit)} request budget.`);
       }
+      const [system, user] = overviewPrompt(bounded);
+      const requestBytes = Buffer.byteLength(system + user, "utf8");
       onStage("priming");
-      generated = await send(requestBytes, (provider) => provider.explainRepository(prompt, signal));
+      generated = await send(requestBytes, (provider) => provider.explainRepository(bounded, signal));
     }
     assertNotCancelled(signal);
     if (this.fence(root) !== startingFence) {
       throw new Error("The repository cache was cleared while context was being refreshed.");
     }
-    const value = normalizedOverview(generated.value.overview, descriptor.kind);
+    const normalized = normalizedOverview(generated.value.overview, descriptor.kind);
+    const value = { ...normalized, limitations: [...new Set([...normalized.limitations, ...limitations])] };
     const version = overviewFingerprint(value);
     const overview = withOverview(
       value,
