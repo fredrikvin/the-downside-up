@@ -25,7 +25,7 @@ Before a model is configured, the preview offers **Choose model** and
 available. Choosing a model does not send code or generate explanations.
 Requests use your provider's subscription and usage limits; they are not free
 or unlimited. OpenAI API access is also supported with a separate key and
-billing; see [configuration](docs/configuration.md).
+billing; see `docs/configuration.md` in the extension package.
 
 ## Read and explore
 
@@ -219,7 +219,7 @@ In the repository and extension package:
 - `CHANGELOG.md`: release notes.
 
 For a locally built package, install the current version with
-`code --install-extension the-downside-up-0.48.2.vsix`.
+`code --install-extension the-downside-up-0.49.0.vsix`.
 
 ## License
 
