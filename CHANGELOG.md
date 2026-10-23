@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.48.1
+
+- Make Changed function names prominent monospace headings, matching other
+  function cards, with behavior titles underneath. Saved comparisons gain
+  the styling without regeneration.
+
 ## 0.48.0
 
 - Add user-only **Max Project Context Request Size**, defaulting to 256 KiB

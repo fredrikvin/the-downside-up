@@ -403,6 +403,7 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
     @container (max-width: 420px) { .toolbar .btn-label { display: none; } .toolbar .tool-button { width: 28px; padding: 6px; } .model-options { flex-direction: column; } }
     .change-item { margin: 0 0 18px; padding-left: 12px; border-left: 2px solid var(--separator); }
     .change-item h3 { margin: 0 0 6px; }
+    .change-item .change-title { margin: 0 0 6px; font-size: 1em; }
     .change-sides { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 4px 16px; margin: 6px 0; }
     .change-sides h5, .change-item h5 { margin: 6px 0 2px; font-size: .8em; text-transform: uppercase; letter-spacing: .04em; color: var(--vscode-descriptionForeground); }
     .change-sides p, .change-item p { margin: 0 0 4px; }
@@ -2173,8 +2174,16 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
       const usedScopes = new Set();
       for (const [index, item] of result.changes.entries()) {
         const section = el("section", "change-item");
-        if (item.functionName && item.functionName !== item.title) section.append(el("p", "muted small", item.functionName));
-        section.append(inline(el("h3"), item.title));
+        if (item.functionName) {
+          const heading = el("h3");
+          const name = el("span", "heading-name");
+          name.append(el("code", "", item.functionName));
+          heading.append(name);
+          section.append(heading);
+          if (item.functionName !== item.title) section.append(inline(el("h4", "change-title"), item.title));
+        } else {
+          section.append(inline(el("h3"), item.title));
+        }
         if (item.links.length) {
           const links = el("div", "change-links");
           for (const link of item.links) links.append(action(link.caption, () => post({ type: "navigate", referenceId: link.referenceId })));

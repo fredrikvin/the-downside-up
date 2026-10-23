@@ -908,13 +908,36 @@ describe("change view", () => {
     expect(nodes.filter((node) => node.tagName === "h2").map((node) => node.textContent)).toEqual([
       "Added", "Changed", "Removed", "Other changes", "Possible consequences"
     ]);
-    expect(nodes.filter((node) => node.className === "muted small" && node.textContent === "validate")).toHaveLength(1);
-    expect(nodes.filter((node) => node.className === "muted small" && node.textContent === "Retry")).toHaveLength(0);
+    const functionHeadings = nodes.filter((node) => node.tagName === "h3" && node.elements().some((part) => part.tagName === "code"));
+    expect(functionHeadings.some((node) => node.elements().some((part) => part.textContent === "validate"))).toBe(true);
+    expect(nodes.filter((node) => node.tagName === "code" && node.textContent === "Retry")).toHaveLength(1);
+    const behaviorTitles = nodes.filter((node) => node.className === "change-title");
+    expect(behaviorTitles).toHaveLength(1);
+    expect(texts(behaviorTitles)).toContain("Validation");
+    expect(nodes.filter((node) => node.className === "muted small" && node.textContent === "validate")).toHaveLength(0);
     expect(texts(cards)).toContain("The source is unavailable.");
     expect(texts(cards)).toContain("Updates a setting.");
 
     const legacy = renderChange({ ...view, result: { ...view.result!, outside: "" } });
     expect(legacy.flatMap((card) => card.elements()).filter((node) => node.tagName === "h2").map((node) => node.textContent)).toEqual(["Changed"]);
+  });
+
+  it("renders changed function names literally as code headings, without inventing navigation", () => {
+    const { renderChange, messages } = webviewHelpers();
+    const view = withVisual();
+    const name = "Controller.<script>validate</script>";
+    const nodes = renderChange({
+      ...view,
+      result: {
+        ...view.result!,
+        changes: [{ ...view.result!.changes[0]!, functionName: name, title: "Validate input" }]
+      }
+    }).flatMap((node) => node.elements());
+    expect(nodes.find((node) => node.className === "heading-name")?.elements().some((part) =>
+      part.tagName === "code" && part.textContent === name)).toBe(true);
+    expect(nodes.some((node) => node.tagName === "script")).toBe(false);
+    expect(nodes.find((node) => node.className === "heading-name")?.listeners.has("click")).toBe(false);
+    expect(messages).toEqual([]);
   });
 
   it("renders added and removed function cards with text, explicit Explain actions, and host-owned navigation", () => {

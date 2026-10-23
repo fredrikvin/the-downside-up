@@ -424,7 +424,10 @@ targets or source ranges can be used; unavailable/mismatched documents disable
 detail actions with a notice.
 
 Changed items retain before/after behavior, when it differs, and its effect on
-flow. Other changes covers non-function edits and explicitly unclassified
+flow. Their function names use prominent monospace headings like other function
+cards, with each behavior title below; legacy items without a function name
+retain their behavior-title heading. This is display-only and works with saved
+comparisons without generation. Other changes covers non-function edits and explicitly unclassified
 regions. Possible consequences and limitations stay separate. Textual comparison
 still works for any eligible text file when function classification is unavailable.
 Everything renders as text; evidence links go
