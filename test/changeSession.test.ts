@@ -232,7 +232,8 @@ function session(onGenerate?: () => Promise<void>, options: Partial<Pick<ChangeS
     sent.push(input);
     await onGenerate?.();
     const result = await explain(input, signal);
-    const change = { title: "Value", before: "1", after: "2", when: "always", flow: "", original: { start: 1, end: 1 }, modified: { start: 1, end: 1 } };
+    const functionId = input.catalogue?.entries.find((entry) => entry.category === "changed")?.id;
+    const change = { functionId, title: "Value", before: "1", after: "2", when: "always", flow: "", original: { start: 1, end: 1 }, modified: { start: 1, end: 1 } };
     return { ...result, value: { ...result.value, changes: [change] } };
   });
   const service = new ExplanationService({
@@ -590,9 +591,17 @@ describe("the shown native diff", () => {
     expect(visual.modifiedLinks[modifiedStep.occurrenceId]).toBeTruthy();
     await callbacks.get(visual.modifiedLinks[modifiedStep.occurrenceId]!)?.();
     expect(opened).toEqual(["original:git:1-3", "modified:file:1-3"]);
+    const changed = view?.result?.changes[0];
+    expect(changed).toMatchObject({ functionName: "a", kindLabel: "Function" });
+    const functionReference = changed?.functionLink?.referenceId;
+    if (!functionReference) throw new Error("Expected a host-owned changed function link.");
+    await callbacks.get(functionReference)?.();
+    expect(opened.at(-1)).toBe("modified:file:1-3");
 
     await writeFile(join(root, "a.ts"), "export function a() {\n return 3;\n}\n");
+    await expect(callbacks.get(functionReference)?.()).rejects.toThrow("comparison changed");
     await changes.refresh();
     expect(changes.view(() => "stale")?.result?.visualScopes?.[0]?.originalLinks).toEqual({});
+    expect(changes.view(() => "stale")?.result?.changes[0]?.functionLink).toBeUndefined();
   });
 });

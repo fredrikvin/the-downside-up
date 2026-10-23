@@ -1,10 +1,14 @@
 # Changelog
 
-## 0.48.1
+## 0.48.2
 
-- Make Changed function names prominent monospace headings, matching other
-  function cards, with behavior titles underneath. Saved comparisons gain
-  the styling without regeneration.
+- Match Changed headers to Added/Removed cards with kind labels, prominent
+  monospace names, sticky headings, and clickable names that reveal the modified
+  function. Source links are disabled for outdated comparisons and rechecked
+  on click.
+- Put behavior titles underneath and add whitespace between behavioral changes,
+  evidence, and paired views. Saved comparisons gain the styling without
+  regeneration.
 
 ## 0.48.0
 

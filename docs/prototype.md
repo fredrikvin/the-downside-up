@@ -424,8 +424,12 @@ targets or source ranges can be used; unavailable/mismatched documents disable
 detail actions with a notice.
 
 Changed items retain before/after behavior, when it differs, and its effect on
-flow. Their function names use prominent monospace headings like other function
-cards, with each behavior title below; legacy items without a function name
+flow. Their function names use the same kind labels, monospace headings, sticky
+header styling, and host-owned source navigation as Added/Removed cards, with
+each behavior title below. Changed headings reveal the whole modified function;
+links disappear for outdated comparisons and revalidate the exact pair on click.
+Behavior sections have extra whitespace between evidence, before/after,
+conditions, and paired visuals. Legacy items without a function name
 retain their behavior-title heading. This is display-only and works with saved
 comparisons without generation. Other changes covers non-function edits and explicitly unclassified
 regions. Possible consequences and limitations stay separate. Textual comparison

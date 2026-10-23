@@ -540,12 +540,23 @@ export class ChangeSession {
           summary: saved.comparison.summary,
           added: cards("added"),
           removed: cards("removed"),
-          changes: saved.comparison.changes.map((change) => ({
-            id: change.id,
-            ...(change.functionId ? { functionName: saved.catalogue?.entries.find((entry) => entry.id === change.functionId)?.name } : {}),
-            title: change.title, before: change.before, after: change.after, when: change.when, flow: change.flow, links: links(change),
-            ...(change.visualScopeId ? { visualScopeId: change.visualScopeId } : {})
-          })),
+          changes: saved.comparison.changes.map((change) => {
+            const entry = saved.catalogue?.entries.find((entry) => entry.id === change.functionId && entry.category === "changed");
+            const range = entry?.modified;
+            return {
+              id: change.id,
+              ...(entry ? {
+                functionName: entry.name,
+                kindLabel: capitalized(entry.kind),
+                ...(saved.current && range ? {
+                  functionLink: { caption: entry.name, referenceId: register(() =>
+                    revealCurrent(shown.modifiedUri, range.startLine + 1, range.endLine + 1, "modified")) }
+                } : {})
+              } : {}),
+              title: change.title, before: change.before, after: change.after, when: change.when, flow: change.flow, links: links(change),
+              ...(change.visualScopeId ? { visualScopeId: change.visualScopeId } : {})
+            };
+          }),
           visualScopes: (saved.comparison.visualScopes ?? []).map((scope) => ({
             scope,
             originalLinks: visualLinks(scope, "original", shown.originalUri),

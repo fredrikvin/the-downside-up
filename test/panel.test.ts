@@ -940,6 +940,27 @@ describe("change view", () => {
     expect(messages).toEqual([]);
   });
 
+  it.each([false, true])("uses matching Changed headers and only current host-owned navigation (outdated: %s)", (outdated) => {
+    const { renderChange, messages } = webviewHelpers();
+    const view = withVisual();
+    const nodes = renderChange({
+      ...view,
+      result: {
+        ...view.result!, outdated,
+        changes: [{
+          ...view.result!.changes[0]!, functionName: "validate", kindLabel: "Method",
+          functionLink: { referenceId: "host-function", caption: "validate" }
+        }]
+      }
+    }).flatMap((node) => node.elements());
+    expect(nodes.some((node) => node.className === "entry depth-0 kind-function change-item")).toBe(true);
+    expect(texts(nodes.filter((node) => node.className === "kind"))).toContain("Method");
+    const heading = nodes.find((node) => node.className === "heading-name");
+    expect(heading?.tagName).toBe(outdated ? "span" : "a");
+    heading?.listeners.get("click")?.(event);
+    expect(messages).toEqual(outdated ? [] : [{ type: "navigate", referenceId: "host-function" }]);
+  });
+
   it("renders added and removed function cards with text, explicit Explain actions, and host-owned navigation", () => {
     const { renderChange, messages } = webviewHelpers();
     const added = functionCard({

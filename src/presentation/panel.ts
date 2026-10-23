@@ -197,6 +197,8 @@ export interface ChangeResultView {
     readonly visualScopeId?: string;
     /** The changed function's name, when the change belongs to one. */
     readonly functionName?: string;
+    readonly kindLabel?: string;
+    readonly functionLink?: ChangeLinkView;
     readonly title: string;
     readonly before: string;
     readonly after: string;
@@ -401,14 +403,14 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
     }
     @container (max-width: 600px) { .toolbar .spacer { display: none; } }
     @container (max-width: 420px) { .toolbar .btn-label { display: none; } .toolbar .tool-button { width: 28px; padding: 6px; } .model-options { flex-direction: column; } }
-    .change-item { margin: 0 0 18px; padding-left: 12px; border-left: 2px solid var(--separator); }
-    .change-item h3 { margin: 0 0 6px; }
-    .change-item .change-title { margin: 0 0 6px; font-size: 1em; }
-    .change-sides { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 4px 16px; margin: 6px 0; }
-    .change-sides h5, .change-item h5 { margin: 6px 0 2px; font-size: .8em; text-transform: uppercase; letter-spacing: .04em; color: var(--vscode-descriptionForeground); }
-    .change-sides p, .change-item p { margin: 0 0 4px; }
-    .change-links { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: .85em; margin-bottom: 4px; }
-    .comparison-visual { margin-top: 12px; overflow-wrap: anywhere; }
+    .change-item, .entry.change-item { margin: 0 0 28px; padding-left: 12px; border-left: 2px solid var(--separator); }
+    .change-item:not(.entry) h3 { margin: 0 0 10px; }
+    .change-item .change-title { margin: 12px 0 10px; font-size: 1em; font-weight: 600; }
+    .change-sides { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px 24px; margin: 16px 0; }
+    .change-sides h5, .change-item h5 { margin: 14px 0 6px; font-size: .8em; text-transform: uppercase; letter-spacing: .04em; color: var(--vscode-descriptionForeground); }
+    .change-sides p, .change-item p { margin: 0 0 10px; }
+    .change-links { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: .85em; margin-bottom: 12px; }
+    .comparison-visual { margin-top: 20px; overflow-wrap: anywhere; }
     .comparison-visual > .tabs { margin: 8px 0; }
     .comparison-sides { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; }
     .comparison-side { min-width: 0; }
@@ -2173,14 +2175,18 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
       const visualScopes = result.visualScopes || [];
       const usedScopes = new Set();
       for (const [index, item] of result.changes.entries()) {
-        const section = el("section", "change-item");
+        const section = el("section", item.functionName ? "entry depth-0 kind-function change-item" : "change-item");
         if (item.functionName) {
           const heading = el("h3");
-          const name = el("span", "heading-name");
+          if (item.kindLabel) heading.append(el("span", "kind", item.kindLabel));
+          const name = item.functionLink && !outdated
+            ? action("", () => post({ type: "navigate", referenceId: item.functionLink.referenceId }), "heading-name")
+            : el("span", "heading-name");
+          if (item.functionLink && !outdated) name.title = "Go to source: " + item.functionName;
           name.append(el("code", "", item.functionName));
           heading.append(name);
           section.append(heading);
-          if (item.functionName !== item.title) section.append(inline(el("h4", "change-title"), item.title));
+          if (item.functionName !== item.title) section.append(inline(el("p", "change-title"), item.title));
         } else {
           section.append(inline(el("h3"), item.title));
         }
