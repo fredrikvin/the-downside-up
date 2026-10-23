@@ -19,6 +19,7 @@ async function setup(store = new MemoryRepositoryCacheStore()) {
   const provider = new MockProvider();
   let model = "model-a";
   const service = new ExplanationService({
+    allowMock: true,
     store, describeProvider: () => ({ kind: "mock", modelId: model }), createProvider: async () => provider,
     authorizeExternalData: async () => true
   });
@@ -99,6 +100,7 @@ describe("isolated snapshot function explanations", () => {
     const { provider, target, scope } = await setup();
     const authorize = vi.fn(async () => false);
     const service = new ExplanationService({
+      allowMock: true,
       store: new MemoryRepositoryCacheStore(),
       describeProvider: () => ({ kind: "openai", modelId: "historical-model" }),
       createProvider: async () => provider,
@@ -108,6 +110,7 @@ describe("isolated snapshot function explanations", () => {
     expect(authorize).toHaveBeenCalledWith(root, { kind: "openai", modelId: "historical-model" }, expect.any(Number), undefined);
     expect(provider.requests).toBe(0);
     const small = new ExplanationService({
+      allowMock: true,
       store: new MemoryRepositoryCacheStore(), describeProvider: () => ({ kind: "mock", modelId: "mock" }),
       createProvider: async () => provider, authorizeExternalData: authorize, maxRequestBytes: () => 100
     });
@@ -119,6 +122,7 @@ describe("isolated snapshot function explanations", () => {
     const { provider, target, scope } = await setup();
     let changed = false;
     const service = new ExplanationService({
+      allowMock: true,
       store: new MemoryRepositoryCacheStore(), describeProvider: () => ({ kind: "mock", modelId: "mock" }),
       createProvider: async () => { changed = true; return provider; }, authorizeExternalData: async () => true
     });

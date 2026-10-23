@@ -96,6 +96,7 @@ describe("header action validation", () => {
     const panel = new ExplanationPanel("Test", (action) => actions.push(action));
     for (const message of [
       { type: "chooseModel" },
+      { type: "setupOpenAI", command: "untrusted", url: "https://untrusted" },
       { type: "chooseOverviewModel" },
       { type: "regenerateOutdated", paths: ["/untrusted/path"], model: "untrusted" },
       { type: "clearCache" },
@@ -112,7 +113,7 @@ describe("header action validation", () => {
       null
     ]) harness.receive(message);
     expect(actions).toEqual([
-      { type: "chooseModel" }, { type: "chooseOverviewModel" }, { type: "regenerateOutdated" },
+      { type: "chooseModel" }, { type: "setupOpenAI" }, { type: "chooseOverviewModel" }, { type: "regenerateOutdated" },
       { type: "clearCache" }, { type: "stopReview" }, { type: "showCallers", entryId: "entry-1" },
       { type: "explainChanges" },
       { type: "reviewNavigation", token: "opaque-token-1234567890", direction: "next" }

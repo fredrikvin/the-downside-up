@@ -237,6 +237,7 @@ function session(onGenerate?: () => Promise<void>, options: Partial<Pick<ChangeS
     return { ...result, value: { ...result.value, changes: [change] } };
   });
   const service = new ExplanationService({
+    allowMock: true,
     store: new MemoryRepositoryCacheStore(),
     describeProvider: () => ({ kind: "mock", modelId: provider.modelId }),
     createProvider: async () => provider,

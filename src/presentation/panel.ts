@@ -241,6 +241,8 @@ export interface ChangeView {
 }
 
 export interface PanelState {
+  /** No production model selected. Local outlines remain usable; generation waits for a new request. */
+  readonly welcome?: boolean;
   readonly provider: string;
   readonly models: { readonly explanation: string; readonly overview?: string };
   readonly stats?: {
@@ -298,6 +300,7 @@ export type PanelAction =
   | { readonly type: "refreshContext" }
   | { readonly type: "clearCache" }
   | { readonly type: "chooseModel" }
+  | { readonly type: "setupOpenAI" }
   | { readonly type: "chooseOverviewModel" }
   | { readonly type: "regenerateOutdated" }
   | { readonly type: "navigate"; readonly referenceId: string }
@@ -460,6 +463,7 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
     .prefetch-consent { max-width: 860px; box-sizing: border-box; margin: 12px 0; padding: 10px 14px; border: 1px solid var(--vscode-textLink-foreground); border-radius: 4px; }
     .prefetch-consent p { margin-bottom: 6px; }
     .prefetch-consent button { font: inherit; cursor: pointer; }
+    .welcome-actions { display: flex; flex-wrap: wrap; gap: 8px; }
     .ai-body {
       margin: 6px 0 4px; padding: 10px 16px 4px;
       border-left: 2px solid var(--vscode-textLink-foreground);
@@ -637,6 +641,7 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
   <p id="notice" class="notice" role="status" aria-live="polite"></p>
   <aside id="prefetchConsent" class="prefetch-consent" aria-label="Background explanation approval" hidden></aside>
   <main id="doc">
+    <section id="welcome" class="prefetch-consent" aria-label="Welcome to Downside Up" hidden></section>
     <section id="reviewBandTop" class="review-band" hidden>
       <div id="reviewProgress" class="review-progress" role="status" aria-live="polite" hidden></div>
       <nav id="reviewNavigationTop" class="review-navigation" aria-label="Review files, top" hidden></nav>
@@ -817,7 +822,7 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
         byId("modelsIcon").replaceChildren(icon("model"));
         for (const [id, role, name, purpose] of [
           ["chooseOverviewModel", "Project overview", models.overview || models.explanation, "Project priming and repository context reviews, architecture maps, folder summaries, and main flows."],
-          ["chooseModel", "Functions", models.explanation, "Function explanations, added explanation formats, and file summaries."]
+          ["chooseModel", "Functions", models.explanation, "Function explanations, comparisons, added explanation formats, and file summaries."]
         ]) {
           const button = byId(id);
           const model = next.provider === "mock" ? "Mock mode" : name;
@@ -829,7 +834,7 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
         }
       }
       byId("cancel").hidden = !next.busy;
-      byId("initializeProject").hidden = !next.hasRepository || !next.needsInitialization;
+      byId("initializeProject").hidden = next.welcome || !next.hasRepository || !next.needsInitialization;
       byId("initializeProject").disabled = next.busy;
       byId("clearCache").hidden = !next.hasRepository;
       byId("clearCache").disabled = next.busy;
@@ -886,7 +891,7 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
     function renderPageActions(next) {
       const container = byId("pageActions");
       container.replaceChildren();
-      if (next.loading || (!next.document && !next.folder)) return;
+      if (next.welcome || next.loading || (!next.document && !next.folder)) return;
       const count = next.stats?.outdatedHere || 0;
       const needsMap = next.folder?.level === "project" && next.folder.mapState !== "current";
       if (count) {
@@ -1470,7 +1475,7 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
           callers.addEventListener("click", () => post({ type: "showCallers", entryId: entry.id }));
           heading.append(callers);
         }
-        if (entry.explainable && !view) {
+        if (entry.explainable && !view && !(state && state.welcome)) {
           const explain = el("button", "explain", "Explain");
           explain.type = "button";
           explain.setAttribute("aria-label", "Explain " + entry.name + " with AI");
@@ -2310,6 +2315,22 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
       renderCrumbs(next.breadcrumbs);
       renderHeader(next);
       renderPageActions(next);
+      const welcome = byId("welcome");
+      welcome.hidden = !next.welcome;
+      welcome.replaceChildren();
+      if (next.welcome) {
+        welcome.append(el("h2", "", "Welcome to Downside Up"),
+          el("p", "", "Choose a model to get AI explanations. Local code outlines are available without one."),
+          el("p", "", "Choosing a model sends no code and generates nothing. Then request an explanation or map the project; sharing requires your approval for this repository and model."));
+        const actions = el("div", "welcome-actions");
+        for (const [type, label] of [["chooseModel", "Choose model"], ["setupOpenAI", "OpenAI setup"]]) {
+          const button = el("button", "", label);
+          button.type = "button";
+          button.addEventListener("click", () => post({ type }));
+          actions.append(button);
+        }
+        welcome.append(actions, el("p", "small muted", "For OpenAI, set Provider to openai in settings and run Downside Up: Set OpenAI API Key. The key stays in VS Code SecretStorage; API billing is separate."));
+      }
       const notice = byId("notice");
       notice.textContent = next.notice ? next.notice.text : "";
       notice.className = "notice" + (next.notice && next.notice.tone === "error" ? " error" : "");
@@ -2631,7 +2652,7 @@ export class ExplanationPanel {
         const type = fields.type;
         if (type === "ready") {
           this.replay();
-        } else if (type === "cancel" || type === "stopReview" || type === "refreshContext" || type === "clearCache" || type === "chooseModel" || type === "chooseOverviewModel" || type === "regenerateOutdated" || type === "summarizeFolder" || type === "summarizeTree" || type === "describeFlows" || type === "approveSharing" || type === "explainChanges") {
+        } else if (type === "cancel" || type === "stopReview" || type === "refreshContext" || type === "clearCache" || type === "chooseModel" || type === "setupOpenAI" || type === "chooseOverviewModel" || type === "regenerateOutdated" || type === "summarizeFolder" || type === "summarizeTree" || type === "describeFlows" || type === "approveSharing" || type === "explainChanges") {
           onAction({ type });
         } else if (type === "expand" || type === "regenerate" || type === "cancelEntry" || type === "showCallers") {
           const entryId = stringField("entryId");

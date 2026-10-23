@@ -17,6 +17,11 @@ function sources(directory: string): string[] {
 }
 
 describe("extension settings", () => {
+  it("defaults to setup and never offers mock as a production provider choice", () => {
+    expect(declaredSettings()["downsideUp.provider"]).toMatchObject({
+      default: "none", enum: ["none", "vscode-lm", "openai"]
+    });
+  });
   it("declares a bounded user-only project context budget", () => {
     expect(declaredSettings()["downsideUp.maxProjectContextRequestSize"]).toMatchObject({
       type: "integer", scope: "application", default: 256, minimum: 128, maximum: 1024

@@ -109,17 +109,17 @@
           "downsideUp.provider": {
             "type": "string",
             "enum": [
-              "mock",
+              "none",
               "vscode-lm",
               "openai"
             ],
             "enumDescriptions": [
-              "Deterministic placeholder output; no external requests.",
+              "Not configured. The preview offers model setup and local outlines; no AI requests.",
               "A VS Code language model, such as GitHub Copilot, using your existing subscription. No API key needed; choose a model with “Downside Up: Choose Language Model”.",
               "OpenAI Responses API with your own API key and separate API billing."
             ],
-            "default": "mock",
-            "description": "Where explanations and project summaries come from. Each provider has its own settings section below (VS Code Language Models, OpenAI). External providers require explicit per-repository and per-model consent before code is shared.",
+            "default": "none",
+            "description": "Choose a model in the preview to enable AI explanations, comparisons and project summaries, or configure OpenAI below. Choosing a model sends no code and does not generate anything. Legacy mock settings require setup; placeholder generation is only available in extension development/test hosts. External requests require a trusted workspace and explicit per-repository and per-model consent.",
             "order": 0
           },
           "downsideUp.preview.include": {
@@ -373,7 +373,7 @@
   "capabilities": {
     "untrustedWorkspaces": {
       "supported": "limited",
-      "description": "Local mock explanations and bounded source inspection are available. External code sharing requires a trusted workspace and explicit repository consent."
+      "description": "Local code outlines and model setup are available without AI requests. External code sharing requires a trusted workspace, a configured model and explicit per-repository and per-model consent."
     }
   },
   "activationEvents": [

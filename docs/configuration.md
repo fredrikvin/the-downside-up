@@ -8,7 +8,8 @@ AI explanation under a function when you ask for one, written for someone who
 wants to know what the code does without knowing the language. More local
 detail (imports, types, values, and so on) can be turned on in settings.
 Explanations are generated only when requested (or prefetched, if you turn
-that on), and mock mode is the default and makes no external requests.
+that on). New installations start with model setup, not placeholder responses.
+Local outlines work without a model.
 
 For a quick start, see the root `README.md`. Contributor setup and packaging
 instructions are in `docs/development.md` (paths are relative to the repository
@@ -234,13 +235,13 @@ folders, plain folders, and files using the saved project map. Project, group,
 and component crumbs are tinted chips to highlight their richer pages; hover
 for the level and saved description. Without a map, only the root is marked
 as a project and other directories use plain folder icons. Loading the icons
-is cache-only; opening the project page still requests a map when none is current.
+is cache-only; opening the configured project page requests a map when none is current.
 
 **The project map: one zoom level at a time.** When the repository is primed
 (with the first explanation, when the project preview opens without a current
 map, or with **Refresh Repository Context**), the overview model also maps
 the project: its parts, the level of each folder, and how the parts connect.
-Opening the project preview is the request: the first time in a repository
+Opening the configured project preview is the request: the first time in a repository
 it asks for code-sharing approval like an explanation, and the page shows a
 placeholder while the map is made. If you decline, cancel, or it fails, it is
 not tried again on its own until VS Code restarts; choose **Map project**
@@ -340,17 +341,32 @@ stage, and elapsed time. Slower models may take several minutes; VS Code
 language-model requests allow up to ten minutes, and you can cancel at any time.
 Elapsed time is not an estimate of completion time.
 
-The `downsideUp.provider` setting defaults to `mock`. Mock output is
-deterministic placeholder content, not semantic analysis. There are two live
-providers, each with its own section in the extension's settings (**VS Code
-Language Models** and **OpenAI**) holding its explanation model and its
-optional overview model.
+The `downsideUp.provider` setting defaults to `none`. The existing preview shows
+**Welcome to Downside Up**, with **Choose model** and **OpenAI setup** actions.
+**Choose model** opens the existing VS Code model picker; **OpenAI setup** opens
+Downside Up settings. There are two production providers, each with its own
+settings section (**VS Code Language Models** and **OpenAI**).
+
+Choosing or cancelling a model sends no code and generates nothing: it does not
+map an already-open project, regenerate explanations, or start prefetch requests.
+After choosing, explicitly explain a function, choose **Map project**, refresh
+repository context, or reopen the project preview to request its map.
+An unconfigured project preview neither requests consent nor consumes an
+automatic-map attempt. Prefetch remains opt-in and needs existing sharing
+approval; approval UI may refresh after model selection without making requests.
+
+Existing `vscode-lm` and OpenAI configurations are retained. A legacy
+`provider=mock` installation instead gets setup; it never silently switches to a
+real model. Old mock results are hidden, not migrated or presented as real
+explanations. Mock generation is available only to extension development/test
+harnesses, not as a production setting choice. If no VS Code models are
+available, install/sign in to a model extension or choose the OpenAI setup path.
 
 ### GitHub Copilot or another VS Code language model (no API key)
 
 1. Sign in to GitHub Copilot in VS Code (or install another extension that
    provides language models).
-2. Run **Downside Up: Choose Language Model** and pick a model. This sets
+2. Click **Choose model** in the preview, or run **Downside Up: Choose Language Model**, and pick a model. This sets
    `downsideUp.provider` to `vscode-lm` and saves the model's name, for
    example `Claude Opus 4.5`, in `downsideUp.languageModel.model`. In the
    settings, the **Choose…** link under the setting opens the same picker.
@@ -365,7 +381,7 @@ provider's data-handling terms and your organization's policies.
 
 ### OpenAI API key
 
-1. Set `downsideUp.provider` to `openai`, and pick the model in
+1. Click **OpenAI setup** in the preview to open settings. Set `downsideUp.provider` to `openai`, and pick the model in
    `downsideUp.openai.model`.
 2. Run **Downside Up: Set OpenAI API Key**. The key is stored in VS Code
    SecretStorage.

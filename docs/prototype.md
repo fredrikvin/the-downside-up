@@ -984,8 +984,9 @@ The map is saved in the cache next to the overview, but apart from it
 (`projectMap`, with the overview model, prompt version, and detail setting it
 was made with), so changing it never outdates explanations. It is reviewed
 whenever the overview is (the previous map is part of the review request),
-made again when the detail setting or overview model changed, and never
-generated on its own: opening a preview only reads it. A map made with other
+made again when explicitly requested after the detail setting or overview model
+changed. File and non-root folder previews only read it; the configured project
+root has the explicit opening exception below. A map made with other
 settings is still shown, with a note offering to refresh it.
 
 A folder's level (`folderLevel`) is the project at the root, its own level
@@ -1008,6 +1009,8 @@ level:
   the map is made, the page shows a shimmering placeholder of the summary
   and map with what is happening; a folder that is still being listed shows
   a placeholder page too. Until there is a map, the project has no flows.
+  Skipping while unconfigured does not consume an attempt, and choosing a model
+  never resumes that opening request.
 - **Group**: its sentence, its members, and a map of its components with the
   parts elsewhere they connect to.
 - **Component**: its sentence (or its folder summary, with what it offers
@@ -1166,8 +1169,30 @@ either way).
 
 ## Providers and data handling
 
-Mock mode is the default and returns deterministic placeholder content. It is
-useful for development and tests, but it is not a semantic explanation.
+Production starts unconfigured (`downsideUp.provider=none`). The existing preview
+shows **Welcome to Downside Up**, **Choose model** (the existing VS Code model
+picker), and **OpenAI setup** (Downside Up settings), alongside available local
+outlines. Choosing or cancelling a model sends no code and generates nothing.
+It never auto-maps the project already open, regenerates content, or starts paid
+prefetch requests. After setup, an explanation, **Map project**, repository
+refresh, or another explicit project opening can request generation, subject to
+the existing trust and per-repository/model sharing consent.
+
+Legacy production `provider=mock` and unknown values require the same setup,
+never silently selecting a real provider. Existing real-provider configurations
+are preserved. No usable VS Code models means actionable install/sign-in advice
+and an OpenAI settings path, not a mock fallback. The service gates every
+generation API before context/cache work, including comparisons/review,
+historical function cards, extra formats, summaries, refresh and prefetch.
+Unconfigured project opening does not consume a mapping attempt, including when
+setup finishes during its local listing. Model configuration refreshes are
+cache-only and cancel ongoing work.
+
+`MockProvider` is available only with explicit opt-in in extension
+development/test harnesses. Production does not construct it and hides old mock
+records from generated content and statistics without rewriting caches or
+changing real-model consent. Mock output remains deterministic placeholder
+content, not semantic analysis.
 
 OpenAI is a live provider, using the Responses API with structured output,
 request-size limits, timeout/cancellation handling, and `store:false`. Actual
@@ -1183,11 +1208,11 @@ limits. **Downside Up: Choose Language Model** lists the available models and
 saves the chosen model's name (for example `Claude Opus 4.5`) in
 `downsideUp.languageModel.model`; there is no separate vendor setting. VS
 Code settings cannot list runtime choices, so the setting is a text field
-whose description links to the same picker. If no model is set, Explain asks
-for one first. A setting is matched against the available models by name,
+whose description links to the same picker. If no model is set, Explain shows
+setup; choosing a model never resumes that request. A setting is matched against the available models by name,
 then by model ID, then by name in any letter case. If several match, Copilot's
 model wins, then the vendors in alphabetical order. A name that matches no
-available model asks for a new choice. Copilot's internal `copilotcli` models
+available model asks for a new choice; generation waits for another explicit request. Copilot's internal `copilotcli` models
 are listed by VS Code but only serve Copilot CLI sessions and never return
 output, so they are never offered or matched. Cached results are keyed by the
 model name. Consent is keyed by the matched model's `vendor/name`, so a
@@ -1232,7 +1257,7 @@ For VS Code language models it is chosen with **Choose Overview Model**
 explanation model's `downsideUp.languageModel.model`); with OpenAI it is
 `downsideUp.openai.overviewModel`, next to `downsideUp.openai.model`. The
 settings are grouped in sections per provider. Empty settings use the
-explanation model, and the mock provider ignores it. Explanations, pseudocode and flowchart
+explanation model, and the development-only mock provider ignores it. Explanations, pseudocode and flowchart
 views, and file summaries always use the explanation model. The overview and
 folder summaries are cached per overview model, so changing it means the next
 explanation reviews or primes the overview with the new model and folder
@@ -1378,12 +1403,15 @@ npm run package
 
 Open the project in VS Code and press F5 to launch the Extension Development
 Host. Open a fixture source file and run **Downside Up: Open Preview to the
-Side**, then click a function in the preview (or select text inside a
-function before opening the preview). For live generation, either run **Downside
+Side**. The welcome offers model setup without generation. For deterministic
+development-only mock generation, explicitly set `downsideUp.provider=mock`
+in that host's settings JSON; unit service harnesses must pass `allowMock: true`.
+For live generation, either run **Downside
 Up: Choose Language Model** to use GitHub Copilot or another VS Code
 language model, or configure `downsideUp.provider` as `openai` and store an
 API key using **Downside Up: Set OpenAI API Key**. Then explicitly accept the
-per-repository sharing prompt.
+per-repository sharing prompt on a subsequent explicit explanation or project
+mapping request, not during model selection.
 
 The deterministic unit suite covers cache reuse across restart, batched
 saved-explanation lookup, request scheduling with priorities and a reserved
@@ -1420,7 +1448,7 @@ preview, steps that follow the cursor and select their lines when clicked, a flo
 added on request whose nodes follow the cursor and select their lines,
 the persistent prefetch approval state for separate explanation and overview
 models without starting generation, and clearing that state when prefetch is
-disabled or mock mode is selected, prefetching that starts at the cursor, stays within its window, and
+disabled or development/test mock mode is selected, prefetching that starts at the cursor, stays within its window, and
 follows the cursor, prefetching of a called function in another package,
 saved-explanation hovers that appear only when an explanation is saved and
 never generate, a folder preview of the Go repository root (excluded
@@ -1619,7 +1647,8 @@ webview's content-security policy.
 - The prototype supports local file workspaces. Remote workspaces and binary,
   generated, vendored, ignored, secret-like, oversized, or out-of-budget inputs
   are omitted.
-- Mock output is deliberately placeholder text. No live OpenAI credentials were
+- Development/test mock output is deliberately placeholder text and is unavailable
+  to production users. No live OpenAI credentials were
   supplied, so live OpenAI generation has not been verified. The VS Code
   language-model provider is covered by unit tests with a simulated model;
   live generation through a signed-in Copilot account has not been verified,

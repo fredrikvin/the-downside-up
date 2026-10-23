@@ -16,7 +16,17 @@ npm run test:extension
 
 Open the project in VS Code and press **F5** to launch an Extension Development
 Host. Open a source file there and run **Downside Up: Open Preview to the
-Side**. Mock mode is the default and makes no external requests.
+Side**. The default is model setup with local outlines and no AI requests.
+Choose a real model for manual production-path testing; choosing alone never
+generates or shares code.
+
+Deterministic mock generation is restricted to Extension Development/Test hosts.
+For an F5 development host, explicitly set `"downsideUp.provider": "mock"` in that
+host's settings JSON (it is intentionally absent from the production picker).
+The extension-host suite explicitly opts in after checking the default setup
+path. Unit harnesses using `ExplanationService` must pass `allowMock: true`.
+Production rejects legacy mock configuration and hides saved mock content without
+rewriting caches or changing real-model sharing approvals.
 
 The fixtures are in `fixtures/rust-app`, `fixtures/go-app`, `fixtures/js-app`,
 `fixtures/react-app`, `fixtures/python-app`, `fixtures/sql-app`, and `fixtures/services-app`
@@ -69,6 +79,16 @@ and post-commit successful cancellation with deterministic gates, not sleeps.
 Comparison catalogue version 1 and prompt versions `downside-up-changes-6` /
 `downside-up-plain-10` invalidate changed records without migrating them or
 changing repository envelope schema 2/consent.
+
+Provider selection is normalized in `generation/selection.ts`: no setting,
+`none`, legacy production `mock`, and unknown values yield an unusable empty
+language-model descriptor, never a fallback model. All generating service APIs
+check configuration before context/cache work. The preview's welcome actions
+use the same host-validated messages as other actions; the model picker only
+writes settings. Model-setting refreshes are cache-only: they cancel ongoing
+work and cannot map a project or restart paid prefetch. Opening an unconfigured
+root captures no mapping request, even if model setup finishes during its local
+listing; a later explicit project request still works.
 
 ## Git graph integration contract
 

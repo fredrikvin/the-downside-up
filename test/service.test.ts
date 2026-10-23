@@ -148,6 +148,7 @@ function createService(
   projectContextLimit?: () => number
 ): ExplanationService {
   return new ExplanationService({
+    allowMock: true,
     store,
     describeProvider: () => ({ kind: "mock", modelId: provider.modelId }),
     createProvider: async () => provider,
@@ -548,6 +549,7 @@ describe("ExplanationService", () => {
     const prime = vi.spyOn(provider, "explainRepository");
     const authorize = vi.fn(async () => true);
     const service = new ExplanationService({
+      allowMock: true,
       store: new MemoryRepositoryCacheStore(),
       describeProvider: () => ({ kind: "openai", modelId: provider.modelId }),
       createProvider: async () => provider,
@@ -573,6 +575,7 @@ describe("ExplanationService", () => {
     const authorize = vi.fn(async () => true);
     const createProvider = vi.fn(async () => provider);
     const service = new ExplanationService({
+      allowMock: true,
       store: new MemoryRepositoryCacheStore(),
       describeProvider: () => ({ kind: "openai", modelId: provider.modelId }),
       createProvider,
@@ -635,6 +638,7 @@ describe("ExplanationService", () => {
     const store = new MemoryRepositoryCacheStore();
     let limit = 8 * 1024;
     const service = new ExplanationService({
+      allowMock: true,
       store,
       describeProvider: () => ({ kind: "mock", modelId: provider.modelId }),
       createProvider: async () => provider,
@@ -681,6 +685,7 @@ describe("ExplanationService", () => {
     const provider = new MockProvider();
     let detail: "brief" | "detailed" = "brief";
     const service = new ExplanationService({
+      allowMock: true,
       store: new MemoryRepositoryCacheStore(),
       describeProvider: () => ({ kind: "mock", modelId: provider.modelId }),
       createProvider: async () => provider,
@@ -1073,11 +1078,13 @@ describe("ExplanationService", () => {
       await expect(service.explainComparison(excluded, async () => excluded)).rejects.toThrow("was not sent because it is a secret");
       await expect(service.explainComparison(snapshot("same", "same"), async () => snapshot("same", "same"))).rejects.toThrow("identical");
       const small = new ExplanationService({
+        allowMock: true,
         store: new MemoryRepositoryCacheStore(), describeProvider: () => ({ kind: "mock", modelId: "m" }),
         createProvider: async () => provider, authorizeExternalData: async () => true, maxRequestBytes: () => 1_000
       });
       await expect(small.explainComparison(snapshot(), async () => snapshot())).rejects.toThrow("Max Request Size");
       const declined = new ExplanationService({
+        allowMock: true,
         store: new MemoryRepositoryCacheStore(), describeProvider: () => ({ kind: "openai", modelId: "m" }),
         createProvider: async () => provider, authorizeExternalData: async () => false
       });
@@ -1115,6 +1122,7 @@ describe("ExplanationService", () => {
       const provider = new MockProvider();
       const authorizations: string[] = [];
       const externalService = new ExplanationService({
+        allowMock: true,
         store,
         describeProvider: () => descriptor,
         createProvider: async () => provider,

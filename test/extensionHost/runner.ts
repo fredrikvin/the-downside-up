@@ -329,6 +329,9 @@ async function runWithCommitRepository(commitRoot: string): Promise<void> {
   await vscode.workspace.getConfiguration("downsideUp").update(
     "explanations.formats", { pseudocode: false, flowchart: false }, vscode.ConfigurationTarget.Global
   );
+  await vscode.commands.executeCommand("downsideUp.showFileOverview");
+  assert.equal((extension.exports as DownsideUpTestApi).setupState().welcome, true,
+    "Setup is available even before a source file is opened.");
 
   const rustRoot = resolve(__dirname, "../../fixtures/rust-app");
   const rustFile = resolve(rustRoot, "src/main.rs");
@@ -356,6 +359,29 @@ async function runWithCommitRepository(commitRoot: string): Promise<void> {
       .some((tab) => tab.label === "Downside Up" || tab.label.startsWith("Downside Up:")),
     "The local file preview opens without selecting a function."
   );
+  const setupApi = extension.exports as DownsideUpTestApi;
+  assert.deepEqual(setupApi.setupState(), { welcome: true, skippedAutoMaps: 0 }, "A fresh installation requires model setup.");
+  assert.equal(setupApi.allExplanations().length, 0, "Opening an unconfigured file never generates placeholders.");
+  assert.ok(setupApi.shownOutline().some((entry) => entry.name === "checkout"), "Local outlines remain available during setup.");
+  await vscode.commands.executeCommand("downsideUp.previewProject");
+  assert.equal(setupApi.shownFolder()?.mapping, false);
+  assert.equal(setupApi.shownFolder()?.mapState, "missing");
+  for (const command of ["downsideUp.refreshRepositoryContext", "downsideUp.reviewChanges", "downsideUp.prepareCommit"]) {
+    await vscode.commands.executeCommand(command);
+  }
+  assert.deepEqual(setupApi.setupState(), { welcome: true, skippedAutoMaps: 0 }, "Unconfigured requests do not consume an automatic mapping attempt.");
+  assert.equal(setupApi.allExplanations().length, 0);
+  // Mock is deliberately available only to this test/development host, never production.
+  await vscode.workspace.getConfiguration("downsideUp").update("provider", "mock", vscode.ConfigurationTarget.Global);
+  await setupApi.modelConfigurationSettled();
+  assert.equal(setupApi.setupState().welcome, false);
+  assert.equal(setupApi.shownFolder()?.mapping, false, "Selecting a model must not start project mapping.");
+  assert.equal(setupApi.shownFolder()?.mapState, "missing");
+  assert.equal(setupApi.allExplanations().length, 0, "Selecting a model must not generate explanations.");
+  await vscode.commands.executeCommand("downsideUp.refreshRepositoryContext");
+  assert.equal(setupApi.shownFolder()?.mapState, "current", "A later explicit project request still works.");
+  assert.equal(setupApi.setupState().skippedAutoMaps, 0);
+  await vscode.commands.executeCommand("downsideUp.showFileOverview");
   const rustTarget = await findRustFunction(rustDocument, rustCursor);
   console.log("Downside Up integration tests: Rust function lookup completed.");
   const implDocument = await vscode.workspace.openTextDocument({

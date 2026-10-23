@@ -194,6 +194,42 @@ it("renders mirrored review navigation with accessible controls and host-only ac
   expect(element("reviewNavigationBottom").hidden).toBe(true);
 });
 
+it("offers setup with host-only actions while retaining local outlines, then hides it when configured", () => {
+  const { render, element, messages } = webviewHelpers();
+  const state: PanelState = {
+    welcome: true, provider: "vscode-lm", models: { explanation: "no model selected" },
+    busy: false, hasRepository: true, explanations: [], showDetails: false,
+    formats: { pseudocode: false, flowchart: false, initial: "steps" },
+    document: {
+      fileName: "example.go", path: "example.go", languageId: "go", lineCount: 5, limitations: [],
+      entries: [{
+        id: "local", name: "Local", qualifiedName: "Local", kind: "function", kindLabel: "Function",
+        depth: 0, startLine: 0, endLine: 4, nameLine: 0, nameStart: 0, nameEnd: 5,
+        explainable: true, description: [], notes: [],
+        reference: { id: "local", path: "example.go", description: "Local", line: 0, startCharacter: 0, endCharacter: 5 }
+      }]
+    }
+  };
+  render(state);
+  const welcome = element("welcome");
+  expect(welcome.hidden).toBe(false);
+  const text = welcome.elements().map((node) => node.textContent).join(" ");
+  expect(text).toContain("Welcome to Downside Up");
+  expect(text).toContain("Choosing a model sends no code and generates nothing");
+  expect(text).toContain("API billing is separate");
+  expect(element("entries").elements().some((node) => node.textContent === "Local")).toBe(true);
+  expect(element("entries").elements().some((node) => node.textContent === "Explain")).toBe(false);
+  expect(element("pageActions").children).toHaveLength(0);
+  const buttons = welcome.elements().slice(1).filter((node) => node.tagName === "button");
+  expect(buttons.map((button) => button.textContent)).toEqual(["Choose model", "OpenAI setup"]);
+  messages.length = 0;
+  for (const button of buttons) button.listeners.get("click")?.();
+  expect(messages).toEqual([{ type: "chooseModel" }, { type: "setupOpenAI" }]);
+  render({ ...state, welcome: false, models: { explanation: "Real model" } });
+  expect(welcome.hidden).toBe(true);
+  expect(welcome.children).toHaveLength(0);
+});
+
 it("cancels a queued code-driven reveal when a newer highlight must leave the preview still", () => {
   const { element, receive, flushFrames, window } = webviewHelpers();
   const step = new TestElement("li");

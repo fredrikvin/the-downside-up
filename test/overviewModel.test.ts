@@ -55,6 +55,7 @@ describe("the overview model", () => {
     const prime = vi.spyOn(planner, "explainRepository");
     const asked: string[] = [];
     const service = new ExplanationService({
+      allowMock: true,
       store: new MemoryRepositoryCacheStore(),
       describeProvider: () => ({ kind: "mock", modelId: "fast" }),
       describeOverviewProvider: () => ({ kind: "mock", modelId: "strong" }),

@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.49.0
+
+- Replace production mock responses with welcome/setup in the existing preview:
+  **Choose model** and **OpenAI setup**, with local outlines still available.
+  Legacy mock settings require setup; configured real providers are preserved.
+- Choosing a model sends no code and starts no generation, mapping or prefetch
+  requests. Gate every generation API until configured; hide old mock content
+  without rewriting caches. Mocks require explicit development/test-host opt-in.
+- Refresh the README for production setup, current diff/review features,
+  model roles, and request-size controls.
+
 ## 0.48.2
 
 - Match Changed headers to Added/Removed cards with kind labels, prominent

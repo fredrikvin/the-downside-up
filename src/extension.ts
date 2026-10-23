@@ -69,7 +69,6 @@ import { OpenAIProvider } from "./generation/openai";
 import {
   languageModelConsentId,
   LanguageModelProvider,
-  orderLanguageModels,
   resolveLanguageModel
 } from "./generation/languageModel";
 import { formatUsage } from "./generation/provider";
@@ -100,6 +99,8 @@ import {
   type ReviewNavigationView
 } from "./presentation/panel";
 import { innermostRangeAt } from "./presentation/scrollSync";
+import { ModelSetupRequired, modelBoundTask, providerConfigured, selectedProvider } from "./generation/selection";
+import { availableLanguageModels, chooseLanguageModel as pickLanguageModel, languageModelItem, openAISetup } from "./presentation/modelPicker";
 
 const API_KEY_SECRET = "theDownsideUp.openai.apiKey";
 const MOCK_LIMITATION = "Mock mode is deterministic placeholder output, not a real code explanation.";
@@ -237,7 +238,8 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
   const cacheStore = new FileRepositoryCacheStore(context.globalStorageUri.fsPath, (root) => {
     if (panel && (preview?.root ?? folderPreview?.root) === root) void loadHeaderData(root);
   });
-  const mockProvider = new MockProvider();
+  const allowMock = context.extensionMode === vscode.ExtensionMode.Test || context.extensionMode === vscode.ExtensionMode.Development;
+  const mockProvider = allowMock ? new MockProvider() : undefined;
   let panel: ExplanationPanel | undefined;
   let preview: PreviewFile | undefined;
   let changeIsNativeDiff = false;
@@ -295,9 +297,12 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
   let headerData: { root: string; stats: CacheStats; initialized: boolean; map?: ProjectMap } | undefined;
   let headerError: { root: string; text: string } | undefined;
   let headerEpoch = 0;
+  /** Cache-only model-setting refresh, also exposed as a deterministic test gate. */
+  let modelConfigurationRefresh: Promise<void> = Promise.resolve();
   let regeneration: AbortController | undefined;
   let regenerationRoot: string | undefined;
   const summaryRuns = new Map<string, Promise<void>>();
+  const summaryControllers = new Set<AbortController>();
   let selectionTimer: ReturnType<typeof setTimeout> | undefined;
   let outlineTimer: ReturnType<typeof setTimeout> | undefined;
   let recheckTimer: ReturnType<typeof setTimeout> | undefined;
@@ -312,16 +317,13 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
 
   const describeProvider = (): ProviderDescriptor => {
     const settings = vscode.workspace.getConfiguration("downsideUp");
-    const configured = settings.get<string>("provider", "mock");
-    if (configured === "vscode-lm") {
-      return { kind: "vscode-lm", modelId: settings.get<string>("languageModel.model", "").trim() };
-    }
-    if (configured === "openai") {
-      const model = settings.get<string>("openai.model", "gpt-4.1-mini").trim();
-      return { kind: "openai", modelId: model || "gpt-4.1-mini" };
-    }
-    return { kind: "mock", modelId: mockProvider.modelId };
+    return selectedProvider({
+      provider: settings.get<string>("provider", "none"),
+      languageModel: settings.get<string>("languageModel.model", ""),
+      openaiModel: settings.get<string>("openai.model", "gpt-4.1-mini")
+    }, allowMock);
   };
+  const modelConfigured = (): boolean => providerConfigured(describeProvider(), allowMock);
 
   /**
    * The model for project-level work: the repository overview and folder
@@ -330,6 +332,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
    */
   const describeOverviewProvider = (): ProviderDescriptor => {
     const base = describeProvider();
+    if (!providerConfigured(base, allowMock)) return base;
     const settings = vscode.workspace.getConfiguration("downsideUp");
     if (base.kind === "vscode-lm") {
       const model = settings.get<string>("languageModel.overviewModel", "").trim();
@@ -426,11 +429,13 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
   });
 
   const service = new ExplanationService({
+    allowMock,
     store: cacheStore,
     describeProvider,
     describeOverviewProvider,
     createProvider: async (descriptor) => {
-      if (descriptor.kind === "mock") return mockProvider;
+      if (!providerConfigured(descriptor, allowMock)) throw new ModelSetupRequired();
+      if (descriptor.kind === "mock") return mockProvider!;
       if (descriptor.kind === "vscode-lm") {
         const model = await findLanguageModel(descriptor.modelId);
         if (!model) throw new Error(missingLanguageModelMessage(descriptor.modelId));
@@ -507,14 +512,6 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     });
   };
 
-  const availableLanguageModels = async (): Promise<vscode.LanguageModelChat[]> => {
-    try {
-      return orderLanguageModels(await vscode.lm.selectChatModels());
-    } catch {
-      return [];
-    }
-  };
-
   /** The available model a setting names, or undefined; never prompts. */
   const findLanguageModel = async (setting: string): Promise<vscode.LanguageModelChat | undefined> =>
     setting ? resolveLanguageModel(await availableLanguageModels(), setting) : undefined;
@@ -531,51 +528,15 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     return model ? languageModelConsentId(model) : undefined;
   };
 
-  const languageModelItem = (model: vscode.LanguageModelChat, current: vscode.LanguageModelChat | undefined) => ({
-    label: model.name,
-    description: `${model.vendor}${current?.vendor === model.vendor && current.id === model.id ? " · current" : ""}`,
-    detail: `Up to ${model.maxInputTokens.toLocaleString()} input tokens · ${model.id}`,
-    model
-  });
-
-  const chooseLanguageModel = async (): Promise<boolean> => {
-    const models = await availableLanguageModels();
-    if (models.length === 0) {
-      await vscode.window.showWarningMessage(
-        "No VS Code language models are available. Install and sign in to GitHub Copilot, or install another extension that provides language models, then try again."
-      );
-      return false;
-    }
-    const descriptor = describeProvider();
-    const current = descriptor.kind === "vscode-lm" ? resolveLanguageModel(models, descriptor.modelId) : undefined;
-    const picked = await vscode.window.showQuickPick(
-      models.map((model) => languageModelItem(model, current)),
-      {
-        title: "Choose the language model for Downside Up",
-        placeHolder: "Uses your existing subscription with the model's provider. No code is sent until you explain a function and accept the sharing prompt.",
-        matchOnDescription: true,
-        matchOnDetail: true
-      }
-    );
-    if (!picked) return false;
-    const settings = vscode.workspace.getConfiguration("downsideUp");
-    await settings.update("languageModel.model", picked.model.name, vscode.ConfigurationTarget.Global);
-    await settings.update("provider", "vscode-lm", vscode.ConfigurationTarget.Global);
-    const effective = describeProvider();
-    if (effective.kind !== "vscode-lm" || resolveLanguageModel(models, effective.modelId) !== picked.model) {
-      await vscode.window.showWarningMessage(
-        "The model was saved in user settings, but workspace settings for downsideUp.provider or downsideUp.languageModel override it. Update or remove those workspace settings to use the chosen model."
-      );
-      return false;
-    }
-    await vscode.window.showInformationMessage(
-      `Downside Up will use ${picked.model.name} (${picked.model.vendor}) through VS Code. Explain a function to use it; you will be asked before any code is shared.`
-    );
-    return true;
-  };
+  const chooseLanguageModel = (): Promise<boolean> => pickLanguageModel(describeProvider);
 
   /** Picks the language model for the repository overview and folder summaries, or the explanation model. */
   const chooseOverviewModel = async (): Promise<void> => {
+    if (!modelConfigured()) {
+      ensurePanel();
+      render();
+      return;
+    }
     if (describeProvider().kind !== "vscode-lm") {
       await vscode.window.showInformationMessage(
         describeProvider().kind === "openai"
@@ -607,6 +568,11 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
   };
 
   const ensureLanguageModelSelected = async (): Promise<boolean> => {
+    if (!modelConfigured()) {
+      ensurePanel();
+      render();
+      return false;
+    }
     const descriptor = describeProvider();
     if (descriptor.kind !== "vscode-lm") return true;
     if (descriptor.modelId && (await findLanguageModel(descriptor.modelId))) return true;
@@ -615,7 +581,9 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
         `The language model “${descriptor.modelId}” is not available. Choose another model.`
       );
     }
-    return chooseLanguageModel();
+    // Picking a replacement configures future requests; never resume this request.
+    await chooseLanguageModel();
+    return false;
   };
 
   const filePath = (root: string, uri: vscode.Uri): string =>
@@ -850,6 +818,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
 
   /** Generates one missing view for a current saved explanation, on the reader's request. */
   const addFormat = async (entryId: string, format: ExplanationFormat): Promise<void> => {
+    if (!(await ensureLanguageModelSelected())) return;
     if (change.hasCard(entryId)) { await change.explainCard(entryId, format); return; }
     const state = existingStateForEntry(entryId);
     if (!state || !state.result || state.controller || state.loadingFormat || state.view.status !== "current") return;
@@ -1029,6 +998,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     if (renderedReviewNavigation.length > 50) renderedReviewNavigation.shift();
     panel.update({
       provider: descriptor.kind,
+      welcome: !modelConfigured(),
       models: {
         explanation: descriptor.modelId || "no model selected",
         overview: describeOverviewProvider().modelId || "no model selected"
@@ -1248,7 +1218,9 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
    * files with their saved summaries, and the import structure between them,
    * which is filled in when found. Local only; nothing is generated.
    */
-  const showFolder = async (root: string, path: string): Promise<void> => {
+  const showFolder = async (root: string, path: string, autoMap = true): Promise<void> => {
+    // Capture the opening request, not settings selected while its local listing is in flight.
+    const mappingModel = modelConfigured() && autoMap ? JSON.stringify(describeOverviewProvider()) : undefined;
     regeneration?.abort();
     ensurePanel();
     change.clear();
@@ -1291,7 +1263,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     };
     void loadHeaderData(root);
     // The project page maps the project when it has no current map.
-    if (!path && !savedMap?.current) void mapProjectAutomatically(root);
+    if (mappingModel && mappingModel === JSON.stringify(describeOverviewProvider()) && !path && !savedMap?.current) void mapProjectAutomatically(root);
     panel.panel.title = `Downside Up: ${path ? basename(path) : basename(root)}`;
     // The project preview shows the saved repository overview near the top.
     if (!path && repositoryContext?.root !== root) {
@@ -1834,12 +1806,19 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     if (summaryRuns.has(key)) return;
     const controller = new AbortController();
     prefetchSignals.add(controller.signal);
-    const run = scheduler.schedule(priority, () => service.summarizeFile(root, document, controller.signal))
+    summaryControllers.add(controller);
+    const run = scheduler.schedule(priority, modelBoundTask(describeProvider, async () => {
+      if (controller.signal.aborted) throw new DOMException("The request was cancelled.", "AbortError");
+      return service.summarizeFile(root, document, controller.signal);
+    }))
       .then(async (result) => {
         if (result && preview && sameUri(preview.document.uri, document.uri)) await loadFileSummary(document, root);
       })
       .catch(() => undefined)
-      .finally(() => summaryRuns.delete(key));
+      .finally(() => {
+        summaryRuns.delete(key);
+        summaryControllers.delete(controller);
+      });
     summaryRuns.set(key, run);
   };
 
@@ -2491,7 +2470,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
 
   /** Whether comparisons may send code now, without any prompt; they use only the Functions model. */
   const reviewSharingAllowed = async (root: string): Promise<boolean> => {
-    return vscode.workspace.isTrusted && (await unapprovedPrefetchModels(root, [describeProvider()])).length === 0;
+    return modelConfigured() && vscode.workspace.isTrusted && (await unapprovedPrefetchModels(root, [describeProvider()])).length === 0;
   };
 
   const prefetchModelKey = (): string =>
@@ -2504,7 +2483,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
   ): Promise<ProviderDescriptor[]> => unapprovedModels(await cacheStore.read(root), descriptors, consentModelId);
 
   const pendingPrefetchConsent = () =>
-    prefetchConsent && preview?.root === prefetchConsent.root && !preview.exclusion
+    modelConfigured() && prefetchConsent && preview?.root === prefetchConsent.root && !preview.exclusion
     && prefetchConsent.key === prefetchModelKey() && prefetchSettings().enabled && vscode.workspace.isTrusted
       ? prefetchConsent : undefined;
 
@@ -2720,10 +2699,10 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
   };
 
   /** Starts prefetching for the shown file when the user setting allows it. */
-  const startPrefetch = (document: vscode.TextDocument, root: string): void => {
+  const startPrefetch = (document: vscode.TextDocument, root: string, run = true): void => {
     stopPrefetch();
     prefetchConsent = undefined;
-    if (!panel || !preview || !sameUri(preview.document.uri, document.uri) || preview.exclusion || reviewSession || !prefetchSettings().enabled) return;
+    if (!modelConfigured() || !panel || !preview || !sameUri(preview.document.uri, document.uri) || preview.exclusion || reviewSession || !prefetchSettings().enabled) return;
     const names = new Set(preview.overview.entries.filter((entry) => entry.explainable).map((entry) => entry.qualifiedName));
     if (names.size === 0) return;
     const session: PrefetchSession = {
@@ -2750,6 +2729,12 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       if (prefetchSession !== session || modelKey !== prefetchModelKey()) return;
       if (descriptors.length) {
         prefetchConsent = { root, key: modelKey, descriptors };
+        stopPrefetch();
+        render();
+        return;
+      }
+      // Model selection may refresh approval UI, but is never a generation request.
+      if (!run) {
         stopPrefetch();
         render();
         return;
@@ -2901,6 +2886,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
    * the first file is explained as an ordinary request, which asks.
    */
   const startReview = async (root: string, base: string, baseLabel: string, confirm: boolean, committed?: CommitScope): Promise<number> => {
+    if (!(await ensureLanguageModelSelected())) return 0;
     if (!vscode.workspace.isTrusted) throw new Error("Preparing explanations requires a trusted workspace. Nothing was sent.");
     const model = JSON.stringify(describeProvider());
     const { files, truncated } = committed ?? await changedFilesSince(root, base, MAX_REVIEW_FILES);
@@ -3004,6 +2990,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
 
   /** Stable palette fallback; graph arguments, when supplied, must name one exact local commit. */
   const prepareCommitCommand = async (sourceControl?: unknown, historyItem?: unknown): Promise<void> => {
+    if (!(await ensureLanguageModelSelected())) return;
     try {
       if (!vscode.workspace.isTrusted) throw new Error("Preparing explanations requires a trusted workspace. Nothing was sent.");
       let root: string | undefined;
@@ -3049,6 +3036,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
 
   /** Asks which changes to review and starts review mode. */
   const reviewChangesCommand = async (): Promise<void> => {
+    if (!(await ensureLanguageModelSelected())) return;
     const root = await rootForCommand() ?? (vscode.workspace.workspaceFolders?.length === 1
       ? await findRepositoryRoot(vscode.workspace.workspaceFolders[0]!.uri.fsPath).catch(() => undefined)
       : undefined);
@@ -3150,6 +3138,14 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
   };
 
   async function handlePanelAction(action: PanelAction): Promise<void> {
+    // A stale or forged generation action gets setup, not a picker loop or provider error.
+    if (["expand", "regenerate", "addFormat", "explainChanges", "summarizeFolder", "summarizeTree",
+      "describeFlows", "refreshContext", "regenerateOutdated", "approveSharing"].includes(action.type)
+      && !modelConfigured()) {
+      ensurePanel();
+      render();
+      return;
+    }
     switch (action.type) {
       case "approveSharing":
         await approvePrefetchSharing();
@@ -3316,6 +3312,9 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
         await chooseLanguageModel();
         render();
         return;
+      case "setupOpenAI":
+        await openAISetup();
+        return;
       case "chooseOverviewModel":
         await chooseOverviewModel();
         render();
@@ -3453,7 +3452,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
    * Map this project).
    */
   const mapProjectAutomatically = async (root: string): Promise<void> => {
-    if (repositoryJob || autoMapSkipped.has(autoMapKey(root)) || !vscode.workspace.isTrusted) return;
+    if (!modelConfigured() || repositoryJob || autoMapSkipped.has(autoMapKey(root)) || !vscode.workspace.isTrusted) return;
     const model = describeOverviewProvider();
     if (model.kind === "vscode-lm" && !(await findLanguageModel(model.modelId))) return;
     if (model.kind === "openai" && !(await context.secrets.get(API_KEY_SECRET))) return;
@@ -3603,6 +3602,11 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       ? await findRepositoryRoot(vscode.workspace.workspaceFolders[0]!.uri.fsPath).catch(() => undefined)
       : undefined);
     if (!root) {
+      if (!modelConfigured()) {
+        ensurePanel();
+        render();
+        return;
+      }
       await vscode.window.showInformationMessage("Open a source file in the repository to preview first.");
       return;
     }
@@ -3641,6 +3645,13 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       if (editor) lastTextEditor = editor;
     }
     if (!document || document.uri.scheme !== "file") {
+      if (!modelConfigured()) {
+        const existing = panel;
+        ensurePanel();
+        if (existing) existing.panel.reveal(undefined, true);
+        render();
+        return;
+      }
       await vscode.window.showWarningMessage("Open a local source file to preview it with Downside Up.");
       return;
     }
@@ -3663,6 +3674,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     regeneration?.abort();
     change.cancel();
     for (const job of folderJobs.values()) job.abort();
+    for (const controller of summaryControllers) controller.abort();
     stopPrefetch();
     cancelReview();
     repositoryJob?.abort();
@@ -3817,6 +3829,8 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
   const onTextSelectionChange = vscode.window.onDidChangeTextEditorSelection(handleTextSelectionChange);
 
   const onConfigChange = vscode.workspace.onDidChangeConfiguration((event) => {
+    if (["downsideUp.provider", "downsideUp.languageModel", "downsideUp.openai"]
+      .some((key) => event.affectsConfiguration(key))) cancelExplanations();
     // A confirmed preparation belongs to the selected model and sharing policy.
     // Never continue it under another configuration without a new confirmation.
     if (reviewSession && ["downsideUp.provider", "downsideUp.languageModel", "downsideUp.openai", "downsideUp.exclusion", "files.exclude", "search.exclude"]
@@ -3831,7 +3845,8 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       const root = preview?.root ?? folderPreview?.root;
       if (panel && root) void loadHeaderData(root);
       // Folder summaries are saved per overview model, which falls back to the explanation model, so look again.
-      if (panel && folderPreview && !preview) void showFolder(folderPreview.root, folderPreview.path);
+      // Configuration is not a request to map the project.
+      if (panel && folderPreview && !preview) modelConfigurationRefresh = showFolder(folderPreview.root, folderPreview.path, false);
     }
     if (event.affectsConfiguration("downsideUp.exclusion")) {
       regeneration?.abort();
@@ -3858,7 +3873,8 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       render();
     }
     if (event.affectsConfiguration("downsideUp.languageModel.overviewModel") || event.affectsConfiguration("downsideUp.openai.overviewModel")) {
-      if (panel && preview) startPrefetch(preview.document, preview.root);
+      stopPrefetch();
+      if (panel && preview) startPrefetch(preview.document, preview.root, false);
       render();
     }
     if (
@@ -3867,14 +3883,14 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       !event.affectsConfiguration("downsideUp.languageModel.model")
     ) return;
     scheduleRecheck();
-    // Saved explanations and file summaries are per model, so other ones may now apply.
+    // Cache-only refresh: choosing a model must not start paid background work.
     savedLookupDone.clear();
     if (preview) void loadFileSummary(preview.document, preview.root);
     stopPrefetch();
     if (panel && preview) {
       const { document, root } = preview;
-      void markSavedExplanations(document, root).catch(() => undefined).then(() => {
-        if (preview && sameUri(preview.document.uri, document.uri)) startPrefetch(document, root);
+      modelConfigurationRefresh = markSavedExplanations(document, root).catch(() => undefined).then(() => {
+        if (preview && sameUri(preview.document.uri, document.uri)) startPrefetch(document, root, false);
       });
     }
     render();
@@ -3929,6 +3945,8 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
   // Read-only hooks for the extension-host tests; other extensions never receive them.
   if (context.extensionMode !== vscode.ExtensionMode.Test) return undefined;
   return {
+    setupState: () => ({ welcome: !modelConfigured(), skippedAutoMaps: autoMapSkipped.size }),
+    modelConfigurationSettled: () => modelConfigurationRefresh,
     previewExplanations: () => previewStates().map(({ state }) => ({
       functionName: state.view.functionName,
       status: state.view.status
@@ -4036,7 +4054,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     stopReview: () => dismissReview(),
     pauseReview: () => { stopReview(); updateReviewStatus(); },
     commandRoot: () => rootForCommand(),
-    mockDelay: (ms: number) => { mockProvider.delayMs = ms; },
+    mockDelay: (ms: number) => { if (mockProvider) mockProvider.delayMs = ms; },
     shownFolder: () => folderPreview && !preview
       ? {
           path: folderPreview.path,
@@ -4075,6 +4093,8 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
 }
 
 export interface DownsideUpTestApi {
+  setupState(): { welcome: boolean; skippedAutoMaps: number };
+  modelConfigurationSettled(): Promise<void>;
   header(): { stats: PanelState["stats"]; crumbs: Crumb[] };
   regenerateOutdated(): Promise<void>;
   cancel(): void;

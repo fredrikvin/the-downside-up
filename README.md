@@ -13,32 +13,33 @@ Requires VS Code 1.90 or newer.
 1. Install Downside Up and open a source file in your project.
 2. Run **Downside Up: Open Preview to the Side**, or use the preview button in
    the editor title bar.
-3. Choose a model with the **Functions** button at the top of the preview.
+3. Click **Choose model** on the welcome screen, or use the **Functions**
+   button at the top of the preview.
    For GitHub Copilot, sign in to Copilot in VS Code first. Other extensions
    that provide VS Code language models also work.
 4. Click **Explain** beside a function. Review the repository/model sharing
    prompt before any code is sent.
 
-The default provider is **mock**: it shows deterministic placeholder output
-without external requests. Choosing a VS Code language model switches to that
-provider. Requests use your provider's subscription and usage limits; they are
-not free or unlimited. OpenAI API access is also supported with a separate key
-and billing.
+Before a model is configured, the preview offers **Choose model** and
+**OpenAI setup** instead of placeholder AI responses; local outlines remain
+available. Choosing a model does not send code or generate explanations.
+Requests use your provider's subscription and usage limits; they are not free
+or unlimited. OpenAI API access is also supported with a separate key and
+billing; see [configuration](docs/configuration.md).
 
 ## Read and explore
 
 - **Explain functions.** Read purpose, inputs, results, and steps in plain
-  language. Pseudocode and flowcharts are enabled by default; **More detail**
-  adds edge cases, language notes, and related code. Pseudocode highlights
-  control words, quoted values, numbers, and backticked code names without
-  changing its plain-language wording. Flowcharts use diamonds for decisions
-  and rounded start/end nodes. Both improvements also apply to saved results
-  and paired diff views, locally without extra AI requests.
+  language. Switch between **Steps**, **Pseudocode**, and **Flowchart**;
+  **More detail** adds edge cases, language notes, and related code.
+  Pseudocode highlights control words and code names. Flowcharts show decisions,
+  loops, exits, and nested UI output. React explanations distinguish rendering,
+  effects, and event handlers rather than implying everything runs at once.
 - **Stay beside the source.** Editor and preview scroll together. Clicking
   steps, pseudocode, or flowchart nodes highlights their source lines without
   moving the preview; ordinary-file clicks keep keyboard focus in the preview.
-  Saved explanations reappear when you
-  return to a file. Click a function's name to navigate to its source;
+  Saved explanations reappear when you return to a file.
+  Click a function's name to navigate to its source;
   use **Explain** to request an explanation.
 - **Explore the project.** Run **Downside Up: Preview Project**, preview a
   folder from the Explorer, or navigate the breadcrumbs. Project maps show
@@ -48,16 +49,17 @@ and billing.
   **Changed**, and **Removed**, followed by **Other changes** for non-function
   edits. Current cached function details expand automatically when you return
   to a diff; cache misses never generate them. Added and Removed functions get
-  a short summary and an **Explain**
-  button; only that explicit action requests their normal Steps, Pseudocode,
-  and Flowchart detail. Changed functions retain before/after/when/flow items
+  a short summary and an **Explain** button; only that explicit action
+  requests their normal Steps, Pseudocode, and Flowchart detail.
+  Changed functions retain before/after/when/flow items
   and paired visuals. Signature-only changes count; pure comments and
   formatting do not. Renames, container moves, and ambiguous duplicates are
   removed+added, without guessed rename detection. Incomplete discovery falls
   back to an explicitly unclassified textual comparison, without Added/Removed
-  cards. The views use the same underlined tabs and subtle
-  background highlights as normal files; pseudocode rows have no link styling.
-  Flowchart highlights follow the node's shape with a slightly larger halo.
+  cards. All three sections use consistent function headers. Click a Changed
+  function's name to reveal its modified source; its behavior descriptions and
+  paired views sit underneath with room to read. The views use the same tabs,
+  text highlighting, and flowchart shapes as normal explanations.
   Click a visual item to focus and select its source lines in the matching
   Before or After side of the existing diff editor.
   With **Prefetch** enabled and sharing already approved, the comparison
@@ -72,9 +74,8 @@ and billing.
   preamble, with a limitation: historical callers and cross-file dependencies
   are not resolved. They never use today's repository overview or dependencies.
   Missing formats require their own explicit **Generate** request.
-  Failed responses
-  report incomplete JSON, malformed JSON, or schema validation errors without
-  exposing source text or silently retrying.
+  Failed responses report incomplete JSON, malformed JSON, or schema validation
+  errors without exposing source text or silently retrying.
 - **Prepare a review.** Run **Downside Up: Review Changes…**, select a
   comparison, and confirm the number of changed files to explain; each opens in
   VS Code's native diff. The confirmed count remains one comparison per file;
@@ -103,14 +104,14 @@ and billing.
   requests may finish; **Cancel** aborts uncommitted results). At most 200
   changed files are considered; exclusions and limits still apply, and failures
   may retry once. Opening anything outside this scope never adds requests.
-  Added/Removed details are not prepared. VS Code's commit context menu is
-  still proposed-only, so the command palette is the supported entry point:
-  no extra navigator, proposed-API opt-in, or VS Code engine bump is required.
+  Added/Removed details are not prepared. Use the command palette to start
+  preparation; there is no added Source Control Graph context-menu command.
   The graph defaults to the first merge parent; for another parent, use the
   existing **Show Changed Files** list to open that exact prepared diff.
-- **Choose models by role.** **Functions** handles explanations and file
-  summaries. **Project overview** handles repository context, architecture
-  maps, folder summaries, and flows.
+- **Choose models by role.** **Functions** handles function and change
+  explanations, added formats, and file summaries. **Project overview**
+  handles repository context, architecture maps, folder summaries, and flows.
+  It can use the same model or a different one.
 - **Follow callers.** The **Show callers** icon beside a function lists direct callers
   using your language extension's incoming Call Hierarchy. Choose one to open
   its source and preview; use VS Code's **Go Back** to return. This works
@@ -174,8 +175,13 @@ caps repository context requests at 256 KiB by default (128–1024 KiB, user
 settings only), including the previous overview and map. Raising it does not
 scan more files or start generation. If a review would exceed that budget,
 the same action rebuilds context from current bounded evidence instead,
-without an extra request. Any further
-inventory truncation is disclosed in the overview's limitations.
+without an extra request. Any further inventory truncation is disclosed in
+the overview's limitations.
+
+**Max Request Size** (`downsideUp.maxRequestSize`, default 96 KiB, 32–512 KiB)
+separately limits function and change explanations, added formats, summaries,
+and flows. Raise it if a large file's two diff versions or a function's related
+context will not fit. The model's own input-token limit still applies.
 
 ## Privacy and control
 

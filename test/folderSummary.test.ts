@@ -57,6 +57,7 @@ describe("folder summary input", () => {
 
 describe("folder summaries in the service", () => {
   const service = (store: MemoryRepositoryCacheStore, provider: MockProvider) => new ExplanationService({
+    allowMock: true,
     store,
     describeProvider: () => ({ kind: "mock", modelId: provider.modelId }),
     createProvider: async () => provider,

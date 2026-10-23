@@ -42,6 +42,7 @@ import { addLocalSymbolOutline } from "./context/symbolIndex";
 import { currentPolicy } from "./context/policy";
 import { bundledLanguageIdForPath, languageFor, sourceFingerprint } from "./languages/registry";
 import { normalizeStepLines } from "./presentation/stepLines";
+import { ModelSetupRequired, providerConfigured } from "./generation/selection";
 import {
   COMPARISON_PROMPT_VERSION,
   comparisonPrompt,
@@ -129,6 +130,8 @@ export interface SnapshotExplanationSource {
 }
 
 export interface ExplanationServiceOptions {
+  /** Only extension development/test harnesses may opt in to deterministic placeholders. */
+  readonly allowMock?: boolean;
   readonly store: RepositoryCacheStore;
   readonly describeProvider: () => ProviderDescriptor;
   /**
@@ -379,6 +382,31 @@ export class ExplanationService {
 
   constructor(private readonly options: ExplanationServiceOptions) {}
 
+  private requireModel(overview = false): void {
+    const descriptor = overview ? this.overviewDescriptor() : this.options.describeProvider();
+    if (!providerConfigured(this.options.describeProvider(), this.options.allowMock === true) ||
+        !providerConfigured(descriptor, this.options.allowMock === true)) throw new ModelSetupRequired();
+  }
+
+  /** Hide historical placeholders without rewriting caches or changing real-model consent. */
+  async readCache(root: string): Promise<RepositoryCache> {
+    const cache = await this.options.store.read(root);
+    if (this.options.allowMock) return cache;
+    const real = <T extends { readonly provider?: ProviderKind }>(records?: Record<string, T>) =>
+      Object.fromEntries(Object.entries(records ?? {}).filter(([, record]) => record.provider !== "mock"));
+    return {
+      ...cache,
+      overview: cache.overview?.config.startsWith("mock:") ? null : cache.overview,
+      projectMap: cache.projectMap?.provider === "mock" || cache.projectMap?.config.startsWith("mock:")
+        ? null : cache.projectMap,
+      explanations: real(cache.explanations),
+      fileSummaries: real(cache.fileSummaries),
+      folderSummaries: real(cache.folderSummaries),
+      projectFlows: real(cache.projectFlows),
+      comparisons: real(cache.comparisons)
+    };
+  }
+
   /**
    * Tooling can time out or discover additional callers without any source edit.
    * Reuse the same evidence while the selected document and tracked files are unchanged,
@@ -449,7 +477,7 @@ export class ExplanationService {
 
   /** Saved records across all models; no source scanning or freshness checks. */
   async cacheStats(root: string): Promise<CacheStats> {
-    const cache = await this.options.store.read(root);
+    const cache = await this.readCache(root);
     return {
       usage: cachedUsage(cache),
       explanations: Object.keys(cache.explanations).length,
@@ -480,7 +508,7 @@ export class ExplanationService {
   ): Promise<Map<string, ExplanationResult>> {
     const results = new Map<string, ExplanationResult>();
     const descriptor = this.options.describeProvider();
-    const cache = await this.options.store.read(root);
+    const cache = await this.readCache(root);
     const overview = cache.overview;
     if (!overview) return results;
     const settingsHash = fingerprint(EXPLANATION_SETTINGS);
@@ -562,6 +590,7 @@ export class ExplanationService {
     onProgress?: (progress: ExplanationProgress) => void,
     validateSource?: () => Promise<void>
   ): Promise<ExplanationResult> {
+    this.requireModel(true);
     const descriptor = this.options.describeProvider();
     const requestId = JSON.stringify([
       root,
@@ -656,7 +685,7 @@ export class ExplanationService {
     // request waits here, then finds the overview current and reuses it.
     const { cache, inventory, context, overviewRecord } = await this.exclusive(root, async () => {
       assertNotCancelled(signal);
-      let cache = await this.options.store.read(root);
+      let cache = await this.readCache(root);
       const baseInventory = await gatherInventory(root, cache.overview?.checkedSnapshot);
       const inventory = await addLocalSymbolOutline(baseInventory);
       const context = await this.functionContext(target, document, inventory);
@@ -829,6 +858,7 @@ export class ExplanationService {
     signal?: AbortSignal,
     onProgress?: (progress: ExplanationProgress) => void
   ): Promise<{ overview: RepositoryOverview; usage: Usage }> {
+    this.requireModel(true);
     // Exclusive with explanations' overview phase, so the overview is never rebuilt twice at once.
     return this.exclusive(root, () => this.refreshRepositoryContextNow(root, signal, onProgress));
   }
@@ -860,7 +890,7 @@ export class ExplanationService {
     const descriptor = this.overviewDescriptor();
     const restricted = await (await currentPolicy()).repositoryRestriction(root);
     if (restricted) throw new Error(`Nothing was sent because ${restricted}.`);
-    const cache = await this.options.store.read(root);
+    const cache = await this.readCache(root);
     const baseInventory = await gatherInventory(root, cache.overview?.checkedSnapshot);
     const inventory = await addLocalSymbolOutline(baseInventory);
     const authorize = async (bytes: number) => {
@@ -992,6 +1022,7 @@ export class ExplanationService {
     signal?: AbortSignal,
     validateSource?: () => Promise<void>
   ): Promise<ExplanationResult> {
+    this.requireModel();
     const startingFence = this.fence(root);
     await validateSource?.();
     const sourceAtStart = document.getText();
@@ -1086,7 +1117,7 @@ export class ExplanationService {
     await scope.validate();
     const descriptor = this.options.describeProvider();
     const key = this.snapshotKey(target, scope, descriptor);
-    const record = (await this.options.store.read(root)).explanations[key];
+    const record = (await this.readCache(root)).explanations[key];
     if (!record || record.promptVersion !== EXPLANATION_PROMPT_VERSION) return undefined;
     return {
       explanation: record.explanation, context: await this.snapshotContext(target, scope), provider: descriptor,
@@ -1099,6 +1130,7 @@ export class ExplanationService {
     root: string, target: FunctionTarget, scope: SnapshotExplanationSource,
     signal?: AbortSignal, format?: ExplanationFormat
   ): Promise<ExplanationResult> {
+    this.requireModel();
     const requestId = JSON.stringify([root, "snapshot", this.snapshotKey(target, scope, this.options.describeProvider()), format ?? "explanation"]);
     const pending = this.inFlight.get(requestId);
     if (pending) return pending;
@@ -1192,7 +1224,7 @@ export class ExplanationService {
   ): Promise<{ summary: string; current: boolean } | undefined> {
     const descriptor = this.options.describeProvider();
     const path = relative(root, document.uri.fsPath).split(sep).join("/");
-    const record = (await this.options.store.read(root)).fileSummaries?.[fileSummaryKey(path, descriptor)];
+    const record = (await this.readCache(root)).fileSummaries?.[fileSummaryKey(path, descriptor)];
     if (!record) return undefined;
     return { summary: record.summary, current: record.fingerprint === await sourceFingerprint(document.getText(), { path, languageId: document.languageId }) };
   }
@@ -1200,7 +1232,7 @@ export class ExplanationService {
   /** Saved one-sentence file summaries for the explanation model, current or not, by path. */
   async savedFileSummaries(root: string): Promise<Map<string, string>> {
     const descriptor = this.options.describeProvider();
-    const saved = (await this.options.store.read(root)).fileSummaries ?? {};
+    const saved = (await this.readCache(root)).fileSummaries ?? {};
     return new Map(Object.values(saved)
       .filter((record) => record.provider === descriptor.kind && record.model === descriptor.modelId && record.promptVersion === EXPLANATION_PROMPT_VERSION)
       .map((record) => [record.path, record.summary]));
@@ -1208,12 +1240,12 @@ export class ExplanationService {
 
   /** The saved repository overview, from the cache only. */
   async savedOverview(root: string): Promise<RepositoryOverview | undefined> {
-    return (await this.options.store.read(root)).overview?.value;
+    return (await this.readCache(root)).overview?.value;
   }
 
   /** The repository overview's purpose, components, and flows, as background for project flows. */
   async overviewBackground(root: string): Promise<ProjectFlowsPromptInput["overview"]> {
-    const overview = (await this.options.store.read(root)).overview?.value;
+    const overview = (await this.readCache(root)).overview?.value;
     return overview ? { purpose: overview.purpose, components: overview.components, flows: overview.flows } : undefined;
   }
 
@@ -1223,7 +1255,7 @@ export class ExplanationService {
    * with the repository overview, so it is never older than that.
    */
   async savedProjectMap(root: string): Promise<{ map: ProjectMap; current: boolean } | undefined> {
-    const record = (await this.options.store.read(root)).projectMap;
+    const record = (await this.readCache(root)).projectMap;
     return record ? { map: record.value, current: record.config === this.mapConfig(this.overviewDescriptor()) } : undefined;
   }
 
@@ -1232,7 +1264,7 @@ export class ExplanationService {
     root: string,
     request: FlowsRequest
   ): Promise<{ flows: readonly ProjectFlow[]; current: boolean } | undefined> {
-    const record = (await this.options.store.read(root)).projectFlows?.[projectFlowsKey(request.input.path, this.overviewDescriptor())];
+    const record = (await this.readCache(root)).projectFlows?.[projectFlowsKey(request.input.path, this.overviewDescriptor())];
     return record ? { flows: record.flows, current: record.fingerprint === flowsInputFingerprint(request) } : undefined;
   }
 
@@ -1247,6 +1279,7 @@ export class ExplanationService {
     request: FlowsRequest,
     signal?: AbortSignal
   ): Promise<{ flows: readonly ProjectFlow[]; usage: Usage }> {
+    this.requireModel(true);
     const startingFence = this.fence(root);
     const descriptor = this.overviewDescriptor();
     const { input } = request;
@@ -1287,7 +1320,7 @@ export class ExplanationService {
 
   /** A folder's saved summary sentence for the current model, current or not, as input for its parent folder. */
   async savedFolderSummary(root: string, path: string): Promise<string | undefined> {
-    return (await this.options.store.read(root)).folderSummaries?.[folderSummaryKey(path, this.overviewDescriptor())]?.value.summary;
+    return (await this.readCache(root)).folderSummaries?.[folderSummaryKey(path, this.overviewDescriptor())]?.value.summary;
   }
 
   /** Cache-only lookup of a folder's saved summary; `current` is false when its input changed since. */
@@ -1295,7 +1328,7 @@ export class ExplanationService {
     root: string,
     input: FolderSummaryPromptInput
   ): Promise<{ value: FolderSummary; current: boolean } | undefined> {
-    const record = (await this.options.store.read(root)).folderSummaries?.[folderSummaryKey(input.path, this.overviewDescriptor())];
+    const record = (await this.readCache(root)).folderSummaries?.[folderSummaryKey(input.path, this.overviewDescriptor())];
     return record ? { value: record.value, current: record.fingerprint === folderInputFingerprint(input) } : undefined;
   }
 
@@ -1311,11 +1344,12 @@ export class ExplanationService {
     input: FolderSummaryPromptInput,
     signal?: AbortSignal
   ): Promise<{ value: FolderSummary; usage: Usage }> {
+    this.requireModel(true);
     const startingFence = this.fence(root);
     const descriptor = this.overviewDescriptor();
     const restricted = await (await currentPolicy()).repositoryRestriction(root);
     if (restricted) throw new Error(`Nothing was sent because ${restricted}.`);
-    const repositoryPurpose = (await this.options.store.read(root)).overview?.value.purpose;
+    const repositoryPurpose = (await this.readCache(root)).overview?.value.purpose;
     const prompt: FolderSummaryPromptInput = { ...input, ...(repositoryPurpose ? { repositoryPurpose } : {}) };
     const [system, user] = folderSummaryPrompt(prompt);
     const requestBytes = Buffer.byteLength(system + user, "utf8");
@@ -1356,7 +1390,7 @@ export class ExplanationService {
     text: (path: string) => Promise<string | undefined>
   ): Promise<Map<string, { summary: string; current: boolean }>> {
     const descriptor = this.options.describeProvider();
-    const saved = (await this.options.store.read(root)).fileSummaries ?? {};
+    const saved = (await this.readCache(root)).fileSummaries ?? {};
     const found = new Map<string, { summary: string; current: boolean }>();
     for (const path of paths) {
       const record = saved[fileSummaryKey(path, descriptor)];
@@ -1378,6 +1412,7 @@ export class ExplanationService {
     document: vscode.TextDocument,
     signal?: AbortSignal
   ): Promise<{ summary: string; usage?: Usage } | undefined> {
+    this.requireModel();
     const startingFence = this.fence(root);
     const descriptor = this.options.describeProvider();
     if (await sharingExclusion(root, document.uri.fsPath)) return undefined;
@@ -1388,7 +1423,7 @@ export class ExplanationService {
     const bytes = Buffer.from(text, "utf8");
     const truncated = bytes.length > MAX_FILE_SUMMARY_SOURCE_BYTES;
     const path = relative(root, document.uri.fsPath).split(sep).join("/");
-    const repositoryPurpose = (await this.options.store.read(root)).overview?.value.purpose;
+    const repositoryPurpose = (await this.readCache(root)).overview?.value.purpose;
     const input: FileSummaryPromptInput = {
       repositoryName: basename(root),
       path,
@@ -1429,7 +1464,7 @@ export class ExplanationService {
 
   /** Cache-only lookup of a saved comparison for exactly these two sides; never generates. */
   async findComparison(snapshot: ComparisonSnapshot): Promise<SavedComparison | undefined> {
-    const record = (await this.options.store.read(snapshot.root)).comparisons?.[comparisonKey(snapshot, this.options.describeProvider())];
+    const record = (await this.readCache(snapshot.root)).comparisons?.[comparisonKey(snapshot, this.options.describeProvider())];
     return record?.promptVersion === COMPARISON_PROMPT_VERSION && record.catalogue?.version === 1 ? savedComparison(record, snapshot) : undefined;
   }
 
@@ -1444,6 +1479,7 @@ export class ExplanationService {
     reread: () => Promise<ComparisonSnapshot>,
     signal?: AbortSignal
   ): Promise<SavedComparison & { usage?: Usage; cached: boolean }> {
+    this.requireModel();
     const { root } = snapshot;
     const startingFence = this.fence(root);
     const descriptor = this.options.describeProvider();
@@ -1460,7 +1496,7 @@ export class ExplanationService {
       present: version.state === "present",
       source: version.text
     });
-    const repositoryPurpose = (await this.options.store.read(root)).overview?.value.purpose;
+    const repositoryPurpose = (await this.readCache(root)).overview?.value.purpose;
     const input: ComparisonPromptInput = {
       repositoryName: basename(root),
       languageId: bundledLanguageIdForPath(path) ?? (extname(path).slice(1) || "text"),
@@ -1530,10 +1566,6 @@ export class ExplanationService {
   async clearCache(root: string): Promise<void> {
     this.generationFences.set(root, this.fence(root) + 1);
     await this.options.store.clear(root);
-  }
-
-  readCache(root: string) {
-    return this.options.store.read(root);
   }
 }
 

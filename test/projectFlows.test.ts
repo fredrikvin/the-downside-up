@@ -81,6 +81,7 @@ describe("project flows from a model", () => {
   it("saves flows with the overview model and outdates them when the catalog changes", async () => {
     const provider = new MockProvider();
     const service = new ExplanationService({
+      allowMock: true,
       store: new MemoryRepositoryCacheStore(),
       describeProvider: () => ({ kind: "mock", modelId: "fast" }),
       describeOverviewProvider: () => ({ kind: "mock", modelId: provider.modelId }),
@@ -148,6 +149,7 @@ describe("flows between map parts", () => {
   it("saves part flows and outdates them when the map's parts or links change", async () => {
     const provider = new MockProvider();
     const service = new ExplanationService({
+      allowMock: true,
       store: new MemoryRepositoryCacheStore(),
       describeProvider: () => ({ kind: "mock", modelId: "fast" }),
       createProvider: async () => provider,
