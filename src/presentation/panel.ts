@@ -1140,6 +1140,9 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
         const edges = chart.edges.filter((edge) => ids.has(edge.from) && ids.has(edge.to));
         const level = el("div", parentId ? "flow flow-inner" : "flow");
         const { rows, back } = layoutFlow({ nodes, edges }, rowLimit);
+        const branchLanes = Math.max(0, ...nodes.filter((node) => node.kind === "decision").map((node) =>
+          edges.filter((edge) => edge.from === node.id && !back.has(edge)).length - 1));
+        if (branchLanes) level.style.paddingRight = 32 + branchLanes * 16 + "px";
         // Room on the left only for flows with loops, which are routed there.
         if (back.size) level.classList.add("has-loops");
         const boxes = new Map();
@@ -1225,14 +1228,33 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
         if (!boxes.size) return;
         // Loops go up the left of the main path; exits use the right, so they never cross.
         const left = Math.min(...[...boxes.keys()].map((id) => rect(id).left));
+        const right = Math.max(...[...boxes.keys()].map((id) => rect(id).right));
+        const decisionBranches = new Map();
+        for (const node of chart.nodes.filter((node) => node.kind === "decision" && boxes.has(node.id))) {
+          const from = rect(node.id);
+          const branches = edges.filter((edge) => edge.from === node.id && !back.has(edge));
+          branches.sort((a, b) => {
+            const left = rect(a.to);
+            const right = rect(b.to);
+            return Math.abs(left.x - from.x) - Math.abs(right.x - from.x) || left.top - right.top;
+          });
+          if (branches.length > 1) branches.forEach((edge, index) => decisionBranches.set(edge, index));
+        }
         let lane = 0;
         const labels = [];
         for (const edge of edges) {
           const from = rect(edge.from);
           const to = rect(edge.to);
           const path = document.createElementNS(SVG, "path");
+          const branch = decisionBranches.get(edge);
           let d;
-          if (!back.has(edge) && Math.abs(to.y - from.y) < 4 && to.left > from.right) {
+          if (branch > 0 && to.top > from.bottom) {
+            // Reflow may stack both outcomes; keep one at the bottom and the other at the side.
+            const x = right + 16 * branch;
+            d = "M" + from.right + "," + from.y + " H" + x + " V" + to.y + " H" + to.right;
+          } else if (branch === 0 && to.top > from.bottom) {
+            d = downwardPath([{ x: from.x, y: from.bottom }, { x: to.x, y: to.top }]);
+          } else if (!back.has(edge) && Math.abs(to.y - from.y) < 4 && to.left > from.right) {
             d = "M" + from.right + "," + from.y + " H" + to.left;
           } else if (!back.has(edge) && to.top > from.bottom && to.left > from.right) {
             // A branch to the side leaves from the right and bends down into the target.

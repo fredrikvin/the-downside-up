@@ -264,6 +264,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
   const savedLookupDone = new Set<string>();
   let prefetchSession: PrefetchSession | undefined;
   let reviewSession: Review | undefined;
+  let retainedReview: Pick<Review, "root" | "base" | "items" | "kind"> | undefined;
   /** Opaque authority for the currently rendered exact review comparison. */
   let activeReviewNavigation: { readonly session: Review; readonly item: ReviewItem; readonly token: string } | undefined;
   /** Recent rendered navigation states, for tests of band stability across loads. */
@@ -1973,6 +1974,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
   /** Shows a native diff, using the same opt-in background generation as file previews. */
   const showChange = async (diff: { original: vscode.Uri; modified: vscode.Uri; nativeDiff: boolean }, force: boolean): Promise<void> => {
     if (!panel) return;
+    const restored = restoreReviewForDiff(diff);
     const surfaceChanged = changeIsNativeDiff !== diff.nativeDiff;
     changeIsNativeDiff = diff.nativeDiff;
     regeneration?.abort();
@@ -1987,7 +1989,8 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     folderPreview = undefined;
     panel.setFileReferenceHandlers(new Map());
     await change.show(diff.original, diff.modified, force);
-    if (surfaceChanged && change.shows(diff.original, diff.modified)) render();
+    if ((surfaceChanged || restored) && change.shows(diff.original, diff.modified)) render();
+    if (restored) updateReviewStatus();
     reviewSession?.wakeUp();
     if (!panel || !change.active) return;
     const root = change.root;
@@ -2783,6 +2786,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
 
   /** Stops review prefetching and aborts its requests, queued or sent; nothing more is saved. */
   const cancelReview = (): void => {
+    retainedReview = undefined;
     reviewSession?.cancel();
   };
 
@@ -2792,6 +2796,21 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     activeReviewNavigation = undefined;
     updateReviewStatus();
     render();
+  };
+
+  /** Returning to an exact native pair restores navigation, never background work. */
+  const restoreReviewForDiff = (diff: { original: vscode.Uri; modified: vscode.Uri; nativeDiff: boolean }): boolean => {
+    if (reviewSession || !retainedReview || !diff.nativeDiff || !vscode.workspace.isTrusted) return false;
+    const retained = retainedReview;
+    if (!retained.items.some((item) => {
+      const pair = reviewDiffUris(item);
+      return sameUri(pair.original, diff.original) && sameUri(pair.modified, diff.modified);
+    })) return false;
+    retainedReview = undefined;
+    const session = new Review(reviewHost, retained.root, retained.base, retained.items, retained.kind);
+    reviewSession = session;
+    if (session.items.some((item) => item.status === "pending")) session.stop();
+    return true;
   };
 
   /** Whether the preview shows one of the session's confirmed comparisons, including one still being read. */
@@ -2821,7 +2840,14 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     const shownHere = change.active || Boolean(preview && sameUri(preview.document.uri, editor.document.uri));
     if (!shownHere || showsReviewItem(session) || previewInReview(session)) return;
     const end = (): void => {
+      const retained = {
+        root: session.root, base: session.base, kind: session.kind,
+        items: session.items.map((item): ReviewItem => ({
+          ...item, status: item.status === "explaining" ? "pending" : item.status
+        }))
+      };
       dismissReview();
+      retainedReview = retained;
       if (preview && !change.active) startPrefetch(preview.document, preview.root);
       else if (change.active) void change.prefetch();
     };
@@ -3528,6 +3554,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       cancelReview();
       dismissReview();
     }
+    if (retainedReview?.root === root) retainedReview = undefined;
     const changeHere = change.active && change.root === root;
     if (changeHere) change.cancel();
     savedLookupEpoch++;
@@ -3833,7 +3860,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       .some((key) => event.affectsConfiguration(key))) cancelExplanations();
     // A confirmed preparation belongs to the selected model and sharing policy.
     // Never continue it under another configuration without a new confirmation.
-    if (reviewSession && ["downsideUp.provider", "downsideUp.languageModel", "downsideUp.openai", "downsideUp.exclusion", "files.exclude", "search.exclude"]
+    if ((reviewSession || retainedReview) && ["downsideUp.provider", "downsideUp.languageModel", "downsideUp.openai", "downsideUp.exclusion", "files.exclude", "search.exclude"]
       .some((key) => event.affectsConfiguration(key))) dismissReview();
     if (change.active && ["downsideUp.provider", "downsideUp.languageModel", "downsideUp.openai", "downsideUp.exclusion"].some((key) => event.affectsConfiguration(key))) {
       change.stopPrefetch();

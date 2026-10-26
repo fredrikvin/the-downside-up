@@ -89,7 +89,11 @@ billing; see `docs/configuration.md` in the extension package.
   Navigation stays within the confirmed review, does not wrap, and only
   reprioritizes its pending work; it does not start requests. Opening a file
   outside the review ends review mode. If the review is still preparing, you
-  are asked first.
+  are asked first. Returning to an exact native diff from the most recent review
+  restores its navigation with that file selected. Unfinished preparation stays
+  stopped until you choose **Continue explaining changed files**. This context
+  is kept only in the current window; explicitly closing/cancelling the review,
+  closing the preview, or starting another review discards it.
 - **Prepare a commit.** Run **Downside Up: Prepare Commit Explanations…**,
   choose a commit (or enter its ID/ref), and confirm the bounded file scope and
   request count; the first file's diff then opens beside the preview. This

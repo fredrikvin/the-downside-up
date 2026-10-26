@@ -21,7 +21,7 @@ class TestElement {
     toggle: (name: string, force: boolean) => { if (force) this.classList.add(name); else this.classList.remove(name); }
   };
   readonly clientWidth = 400;
-  readonly offsetWidth = 320;
+  get offsetWidth(): number { return 320; }
   readonly offsetHeight = 200;
   readonly scrollWidth = 320;
   readonly scrollHeight = 200;
@@ -697,6 +697,35 @@ describe("preview webview document", () => {
     const { downwardPath } = webviewHelpers();
     expect(downwardPath([{ x: 10, y: 20 }, { x: 80, y: 100 }])).toBe("M10,20 V32 C10,60 80,60 80,88 V100");
     expect(downwardPath([{ x: 0, y: 0 }, { x: 10, y: 8 }])).toBe("M0,0 V2 C0,4 10,4 10,6 V8");
+  });
+
+  it.each([320, 800])("separates decision outcomes even when reflow stacks the targets (chart width %s)", (width) => {
+    const { renderFlowchart, flushFrames } = webviewHelpers();
+    const sizing = vi.spyOn(TestElement.prototype, "offsetWidth", "get");
+    sizing.mockReturnValue(width);
+    try {
+      const chart: Flowchart = {
+        nodes: [
+          { id: "choice", kind: "decision", label: "Credentials valid?", startLine: 1, endLine: 1 },
+          { id: "cached", kind: "action", label: "Use cached credentials", startLine: 2, endLine: 2 },
+          { id: "renew", kind: "action", label: "Renew credentials", startLine: 3, endLine: 3 }
+        ],
+        edges: [
+          { from: "choice", to: "cached", label: "yes" },
+          { from: "choice", to: "renew", label: "no" }
+        ]
+      };
+      const graph = renderFlowchart(chart, { entryId: "credentials" });
+      flushFrames();
+      const edges = graph.elements().filter((node) => node.attributes.get("class") === "flow-edge");
+      expect(edges).toHaveLength(2);
+      expect(edges[0]!.attributes.get("d")).toMatch(/^M[\d.]+,[\d.]+ V/);
+      expect(edges[1]!.attributes.get("d")).toMatch(/^M[\d.]+,[\d.]+ H[\d.]+ V[\d.]+ H/);
+      expect(edges[0]!.attributes.get("d")?.split(" ")[0]).not.toBe(edges[1]!.attributes.get("d")?.split(" ")[0]);
+      expect(graph.elements().filter((node) => node.attributes.get("class") === "flow-label").map((node) => node.textContent)).toEqual(["yes", "no"]);
+    } finally {
+      sizing.mockRestore();
+    }
   });
 
   it("highlights ordinary pseudocode as text without losing indentation, anchors or keyboard navigation", () => {

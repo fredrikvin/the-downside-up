@@ -151,7 +151,10 @@ then is it scaled down, without a minimum scale. Charts fit the reading
 column (at most 860px) without horizontal or nested vertical scrollbars;
 the document scrolls vertically. Rows have more vertical room for arrows
 and labels, labels are positioned away from boxes and other labels, and
-fixed-size arrowheads meet straight path endings at the box boundary. A show
+fixed-size arrowheads meet straight path endings at the box boundary.
+Decision outcomes use distinct bottom and side exits even when narrow layouts
+stack both targets vertically; the side route has reserved space to the right.
+A show
 node with nodes inside it holds a smaller flow laid out the same way, and
 boxes in its row line up with its top. Clicking a node inside it selects only
 that node's lines. No diagram library or HTML parsing is involved.
@@ -576,7 +579,18 @@ outside the set (another file or diff, but not a working file of a Review
 Changes… set) leaves review mode. A finished or stopped review ends quietly.
 A review still preparing asks once, in a modal, whether to end it; ending
 aborts its remaining requests, like Cancel. Ordinary opt-in prefetching then
-resumes for the shown file, using only consent already given. A renamed comparison must match
+resumes for the shown file, using only consent already given.
+The most recent review's confirmed set is retained in memory when leaving by
+navigation. Returning to one of its exact native diff URI pairs restores the
+review bands, progress, and selected file, including immutable commit reviews;
+ordinary files and single historical documents do not restore it. Any aborted
+in-flight items return to pending and preparation stays stopped until explicit
+Continue; restoration itself makes no provider requests. A new Review instance
+owns fresh navigation authority, so old webview messages cannot control it.
+Only one set is retained per window, not persisted across restarts. Explicit
+Close/Cancel, closing the preview, clearing that repository's cache, changing
+model/sharing/exclusion configuration, or confirming another review discards it.
+A renamed comparison must match
 both of its side paths; matching only a label or one path is not sufficient.
 The toolbar is hidden for comparisons outside the active session and for
 single historical documents. Host-issued opaque navigation authority is bound

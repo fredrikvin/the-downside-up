@@ -235,6 +235,13 @@ async function testCommitPreparation(api: DownsideUpTestApi, root: string): Prom
     await api.invokeReviewNavigation("previous", renameNavigation.token);
     await waitFor(async () => api.shownChange()?.fileName === "main.ts" ? true : undefined, "Previous to return to main");
     await assertDiffPair(side("main.ts", parent), side("main.ts", commit), "Previous opens the exact main comparison");
+    const workingMain = await vscode.workspace.openTextDocument(resolve(root, "main.ts"));
+    await vscode.window.showTextDocument(workingMain, vscode.ViewColumn.One);
+    await waitFor(async () => api.reviewItems().length === 0 ? true : undefined, "leaving the immutable commit review");
+    await vscode.commands.executeCommand("vscode.diff", side("main.ts", parent), side("main.ts", commit), "Return to commit review (test)");
+    await assertReviewLayout(api, "main.ts");
+    assert.deepEqual(api.reviewProgress(), { text: "Commit: 4/4 ready", canStop: false });
+    assert.equal(api.reviewNavigation()?.position, 3, "Commit review context restores at the selected immutable pair.");
 
     const absentAdded = vscode.Uri.file(resolve(root, "added.ts")).with({ scheme: "downside-up-empty", query: parent });
     await vscode.commands.executeCommand("vscode.diff", absentAdded, side("added.ts", commit), "Added boundary (test)");
@@ -752,11 +759,19 @@ async function runWithCommitRepository(commitRoot: string): Promise<void> {
     try {
       assert.equal(await api.reviewChanges("HEAD"), 3);
       await assertReviewLayout(api, "src/Badge.next.tsx");
+      const retainedPair = api.reviewDiffUris("src/Badge.next.tsx")!;
       await waitFor(async () => api.reviewItems().some((item) => item.status === "explaining") ? true : undefined, "a review in flight");
       const endPrompts = api.answerLeaveReview("End Review");
       await vscode.window.showTextDocument(cartViewDocument, vscode.ViewColumn.One);
       await waitFor(async () => api.reviewItems().length === 0 ? true : undefined, "confirming to end a preparing review");
       assert.equal(endPrompts(), 1);
+      await vscode.commands.executeCommand("vscode.diff", retainedPair.original, retainedPair.modified, "Restore paused review (test)");
+      await assertReviewLayout(api, "src/Badge.next.tsx");
+      assert.equal(api.reviewItems().length, 3, "Returning to the exact diff restores the confirmed set.");
+      assert.match(api.reviewProgress()?.text ?? "", /stopped$/);
+      await new Promise((resolveWait) => setTimeout(resolveWait, 1_700));
+      assert.ok(api.reviewItems().every((item) => item.status === "pending"), "Restoring navigation does not restart preparation.");
+      api.stopReview();
 
       assert.equal(await api.reviewChanges("HEAD"), 3);
       await assertReviewLayout(api, "src/Badge.next.tsx");
@@ -816,7 +831,9 @@ async function runWithCommitRepository(commitRoot: string): Promise<void> {
     assert.equal(api.reviewItems().length, 3, "A working file in the confirmed set keeps review mode.");
     assert.equal(await api.reviewChanges("HEAD"), 3);
     await assertReviewLayout(api, "src/CartItem.tsx");
-    api.stopReview();
+    await waitFor(async () => api.reviewItems().every((item) => item.status === "done") ? true : undefined, "the cached review to finish");
+    const returnPair = api.reviewDiffUris("src/Badge.tsx")!;
+    const oldToken = api.reviewNavigation()!.token;
 
     // Start with the existing preview visible: opening the diff also fires
     // editor-change routing, independently of startReview's explicit routing.
@@ -827,6 +844,23 @@ async function runWithCommitRepository(commitRoot: string): Promise<void> {
     await waitFor(async () => api.reviewItems().length === 0 ? true : undefined, "opening a file outside the finished review to end it");
     assert.equal(api.reviewProgress(), undefined);
     assert.equal(api.reviewNavigation(), undefined);
+    await vscode.commands.executeCommand("vscode.diff", returnPair.original, nextBadgeUri, "Different pair (test)");
+    await waitFor(async () => api.shownChange()?.fileName === "Badge.next.tsx" ? true : undefined, "an unrelated diff to be read");
+    assert.equal(api.reviewItems().length, 0, "One matching side cannot restore review context.");
+    await vscode.commands.executeCommand("vscode.diff", returnPair.original, returnPair.modified, "Return to review (test)");
+    await assertReviewLayout(api, "src/Badge.tsx");
+    assert.deepEqual(api.reviewProgress(), { text: "Review: 3/3 ready", canStop: false });
+    assert.equal(api.reviewNavigation()?.position, 2, "The reselected diff becomes the current review item.");
+    await api.invokeReviewNavigation("next", oldToken);
+    assert.equal(api.reviewNavigation()?.fileName, "Badge.tsx", "Old navigation authority cannot control the restored session.");
+    api.stopReview();
+    await vscode.window.showTextDocument(cartViewDocument, vscode.ViewColumn.One);
+    await waitFor(async () => api.shownChange() === undefined ? true : undefined, "an ordinary file after explicitly closing review");
+    await vscode.commands.executeCommand("vscode.diff", returnPair.original, returnPair.modified, "Closed review (test)");
+    await waitFor(async () => api.shownChange()?.fileName === "Badge.tsx" ? true : undefined, "the former review diff after Close");
+    assert.equal(api.reviewItems().length, 0, "Explicit Close discards retained review context.");
+    await vscode.window.showTextDocument(cartViewDocument, vscode.ViewColumn.One);
+    await waitFor(async () => api.shownChange() === undefined ? true : undefined, "the ordinary editor before a new review");
     const visiblePanel = await waitForPanel();
     assert.equal(visiblePanel.group.viewColumn, vscode.ViewColumn.Two);
     assert.equal(visiblePanel.group.activeTab, visiblePanel, "The preview is already visible before Review starts.");

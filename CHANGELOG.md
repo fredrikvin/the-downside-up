@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.50.0
+
+- Keep decision outcomes on distinct connector exits when flowchart targets
+  stack vertically, so yes/no labels do not share a downward branch.
+- Restore the most recent review's navigation when returning to an exact
+  matching native diff after exploring another file. Select the returned file
+  without restarting unfinished preparation or generating explanations.
+
 ## 0.49.0
 
 - Replace production mock responses with welcome/setup in the existing preview:
