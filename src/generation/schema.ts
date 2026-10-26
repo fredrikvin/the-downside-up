@@ -386,7 +386,6 @@ export function parseExplanation(value: unknown): FunctionExplanation {
     role: readText(source, "role", 2_000),
     edgeCases: readText(source, "edgeCases", 2_000),
     languageNotes: readText(source, "languageNotes", 2_000),
-    limitations: readStrings(source.limitations, "limitations"),
     ...readFormats(source)
   };
 }
@@ -431,11 +430,19 @@ function checkedParents(nodes: readonly FlowNode[]): FlowNode[] {
   return direct.map((node) => (node.parent && tooDeep(node.id) ? withoutParent(node) : node));
 }
 
+function assertTerminalFlowEdges(
+  nodes: readonly { readonly id: string; readonly kind: string }[],
+  edges: readonly { readonly from: string }[]
+): void {
+  const terminals = new Set(nodes.filter((node) => node.kind === "end").map((node) => node.id));
+  if (edges.some((edge) => terminals.has(edge.from))) {
+    throw new Error("The provider response contains a flowchart that continues after an end node.");
+  }
+}
+
 /**
- * Checks the flowchart's structure: bounded size, unique node IDs, edges
- * between known nodes, and nesting inside `show` nodes. An edge between nodes
- * at different nesting levels is dropped, since each level is drawn as its
- * own flow.
+ * Checks bounded nodes, references, terminal exits, and show nesting.
+ * Cross-level edges are dropped because each level is drawn separately.
  */
 function parseFlowchart(value: unknown): Flowchart {
   const source = record(value);
@@ -466,16 +473,20 @@ function parseFlowchart(value: unknown): Flowchart {
   if (edges.some((edge) => !ids.has(edge.from) || !ids.has(edge.to))) {
     throw new Error("The provider response contains a flowchart edge to an unknown node.");
   }
+  assertTerminalFlowEdges(nodes, edges);
   const parentOf = new Map(nodes.map((node) => [node.id, node.parent ?? ""]));
-  return { nodes, edges: edges.filter((edge) => parentOf.get(edge.from) === parentOf.get(edge.to)) };
+  const sameLevelEdges = edges.filter((edge) => parentOf.get(edge.from) === parentOf.get(edge.to));
+  return { nodes, edges: sameLevelEdges };
 }
 
 /**
  * Reads optional extra views. An invalid view is dropped with a limitation
  * instead of failing the whole explanation.
  */
-function readFormats(source: Record<string, unknown>): Pick<FunctionExplanation, "pseudocode" | "flowchart"> {
-  const result: { pseudocode?: PseudocodeLine[]; flowchart?: Flowchart } = {};
+function readFormats(source: Record<string, unknown>): Pick<FunctionExplanation, "pseudocode" | "flowchart" | "limitations"> {
+  const result: { pseudocode?: PseudocodeLine[]; flowchart?: Flowchart; limitations: string[] } = {
+    limitations: readStrings(source.limitations, "limitations")
+  };
   if (source.pseudocode !== undefined) {
     try {
       result.pseudocode = parsePseudocode(source.pseudocode);
@@ -487,7 +498,7 @@ function readFormats(source: Record<string, unknown>): Pick<FunctionExplanation,
     try {
       result.flowchart = parseFlowchart(source.flowchart);
     } catch {
-      // Dropped; the panel offers to generate it again.
+      result.limitations.push("The generated flowchart failed structural validation and was omitted; the textual explanation is still available.");
     }
   }
   return result;
@@ -740,6 +751,7 @@ function parseComparisonSide(
     return { id: `${side}-edge-${edgeIndex++}`, from, to, label: readText(edge, "label", 80).trim() };
   });
   const chart: ComparisonFlowchart = { nodes, edges };
+  assertTerminalFlowEdges(nodes, edges);
   if (flowchartStatus === "available") {
     if (!expectedPresent || chart.nodes.length === 0 || flowchartReason) throw new Error("Available flowchart has no usable graph.");
   } else if (chart.nodes.length > 0 || chart.edges.length > 0 || !flowchartReason) {

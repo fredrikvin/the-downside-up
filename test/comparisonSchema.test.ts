@@ -58,6 +58,15 @@ describe("host catalogue response validation", () => {
 });
 
 describe("parseComparison", () => {
+  it("omits visuals that continue after a return while retaining behavioral text", () => {
+    const wire = comparisonResponse();
+    wire.visualScopes[0]!.original.operations[0]!.kind = "end";
+    const parsed = parseComparison(wire, bounds);
+    expect(parsed.visualScopes).toBeUndefined();
+    expect(parsed.changes).toHaveLength(1);
+    expect(parsed.limitations.length).toBeGreaterThan(0);
+  });
+
   const base = {
     summary: "Adds a retry.",
     outside: "",

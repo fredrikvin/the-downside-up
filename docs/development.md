@@ -76,8 +76,8 @@ Never read/update that store from its own validation hook (the repository write
 lock is held). Recheck exact snapshot signatures, policy/model/trust and request
 cancellation there. Rename is the commit point: test both pre-commit rejection
 and post-commit successful cancellation with deterministic gates, not sleeps.
-Comparison catalogue version 1 and prompt versions `downside-up-changes-6` /
-`downside-up-plain-10` invalidate changed records without migrating them or
+Comparison catalogue version 1 and prompt versions `downside-up-changes-7` /
+`downside-up-plain-11` invalidate changed records without migrating them or
 changing repository envelope schema 2/consent.
 
 Provider selection is normalized in `generation/selection.ts`: no setting,

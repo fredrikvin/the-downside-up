@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.50.1
+
+- Reject flowcharts that continue after an end node, keeping the textual
+  explanation and disclosing omitted visuals. Strengthen decision-polarity
+  and early-return instructions for function and comparison flowcharts.
+
 ## 0.50.0
 
 - Keep decision outcomes on distinct connector exits when flowchart targets

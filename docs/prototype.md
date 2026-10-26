@@ -129,7 +129,10 @@ that sends the function source with numbered lines and the saved step titles,
 and saves the view into the explanation only if the function and its context
 are unchanged afterwards. The flowchart is validated before use (at most 24
 nodes and 40 edges, unique node IDs, edges only between known nodes); an
-invalid view is dropped without failing the explanation. A node nested in
+invalid view is dropped without failing the explanation, with a limitation
+explaining the omission. End nodes cannot have outgoing edges. Prompts require
+true/false outcomes to follow the source and early returns to terminate their
+path, but structural validation does not prove semantic accuracy. A node nested in
 anything other than a show node, in itself, in a cycle, or more than 3 levels
 deep is drawn at the top level instead, and an edge between nodes at
 different nesting levels is dropped, since each level is drawn as its own
@@ -497,8 +500,8 @@ repair call, retry, or model fallback is made for diff prefetch.
 The comparison prompt version is bumped for this contract; old comparison
 records are not migrated or reused under the new version.
 
-The comparison prompt is `downside-up-changes-6`, with catalogue version 1;
-function explanations/file summaries use `downside-up-plain-10` for the
+The comparison prompt is `downside-up-changes-7`, with catalogue version 1;
+function explanations/file summaries use `downside-up-plain-11` for the
 source-context contract. These invalidate only their own record lookups.
 The repository cache envelope remains schema version 2, preserving consent.
 Function/format/comparison writes check cancellation and freshness again after

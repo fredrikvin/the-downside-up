@@ -15,9 +15,9 @@ import type {
 /** Version of the repository overview and project map prompt; changing it rebuilds overviews and maps. */
 export const PROMPT_VERSION = "downside-up-3";
 /** Version of the function explanation and file summary prompts; changing it outdates saved explanations. */
-export const EXPLANATION_PROMPT_VERSION = "downside-up-plain-10";
+export const EXPLANATION_PROMPT_VERSION = "downside-up-plain-11";
 /** Version of the change explanation prompt; changing it outdates saved comparisons. */
-export const COMPARISON_PROMPT_VERSION = "downside-up-changes-6";
+export const COMPARISON_PROMPT_VERSION = "downside-up-changes-7";
 /** Version of the folder summary and flow prompts; changing it outdates saved folder summaries and flows. */
 export const FOLDER_PROMPT_VERSION = "downside-up-folders-1";
 
@@ -87,6 +87,8 @@ const FORMAT_INSTRUCTIONS: Record<ExplanationFormat, string> = {
   flowchart: "flowchart: the control flow as at most 20 nodes and 30 edges. Each node has a short unique id, a kind (start, action, decision, end, or show), a label of a few plain words (a decision is a short yes/no question, such as \"Did the request fail?\"), parent, and startLine and endLine from the numbered source, or 0 for both. Use exactly one start node, make every return or early exit an end node, and merge minor details so the main path is easy to follow. Use show instead of end for a return of something shown on screen, such as a React element, labelled by what appears, such as \"Empty cart message\" or \"Cart list\". parent is an empty string, except for nodes of the logic that decides what appears inside a show node: give those the show node's id, such as a decision choosing a \"Delete\" or \"Cancel\" label inside a \"Remove button\" show node, which itself can be inside a \"Cart line\" show node, at most 3 levels deep. Nodes inside a show node connect only to each other and need no start node; leave out show nodes for plain markup with no logic inside. Each edge has from and to node ids and a label such as \"yes\", \"no\", or \"error\", or an empty label for plain sequence."
 };
 
+const CONTROL_FLOW_RULES = " Preserve decision polarity: yes follows the condition being true, no follows it being false. Trace each outcome independently against the supplied source, not the order of the nodes. An early return terminates that path: end nodes have no outgoing edges. Route a guard's non-returning outcome directly to the next executed operation, never through the early-return node. For example, 'Are cached credentials still valid?' has yes -> return cached credentials (end), no -> fetch fresh credentials; only the fresh path proceeds to update the cache and its own return. If a finally block must run before the function exits, show that cleanup before the terminal node.";
+
 /** Background from the extension's language support (its own fixed text, not repository text). */
 function guidanceText(guidance: string | undefined): string {
   return guidance ? ` Background on this kind of function: ${guidance}` : "";
@@ -103,7 +105,7 @@ steps: the 2-7 main things that happen, in order; each with a short imperative t
 phase: an empty string when all steps run during one call, which is most functions. When parts of the function run at different times (for example later, when someone clicks a button, when a timer fires, after something appears on screen, or in the background), a short plain heading saying when, such as "When the person clicks Check out", shared by the consecutive steps that run then, with the steps that run first listed first.
 notes: only when relevant, short extra sections with a plain heading, such as "Cleanup", "Runs in the background", or "Changes shared data"; empty otherwise.
 role, edgeCases, languageNotes: brief extra detail for curious readers: where the function fits in the application, unusual inputs or failure cases, and the language features it relies on explained in plain words. Use an empty string when there is nothing useful to add.
-limitations: anything you could not see or are unsure about.${input.formats.map((format) => `\n${FORMAT_INSTRUCTIONS[format]}`).join("")}
+limitations: anything you could not see or are unsure about.${input.formats.map((format) => `\n${FORMAT_INSTRUCTIONS[format]}${format === "flowchart" ? CONTROL_FLOW_RULES : ""}`).join("")}
 Treat the repository overview as orientation, not proof about this function.`,
     JSON.stringify({
       task: "Explain the selected function in plain language using bounded repository context.",
@@ -142,7 +144,7 @@ export function comparisonPrompt(input: ComparisonPromptInput): [string, string]
     ...(side.present ? { numberedSource: numberLines(side.source) } : { note: "The file does not exist on this side." })
   });
   return [
-    `${plainSystem} Explain what the change between two versions of one file does to behavior, for someone reviewing it. The original and modified sources are numbered separately and are exactly what a diff shows; compare only them. When their paths differ the file was moved or renamed; say so in the summary, and when the sources are identical, say that only the path changed and leave changes and visualScopes empty. Generate the paired visual data in this same response from both exact snapshots; never generate one side from or infer it from the other.
+    `${plainSystem}${CONTROL_FLOW_RULES} Explain what the change between two versions of one file does to behavior, for someone reviewing it. The original and modified sources are numbered separately and are exactly what a diff shows; compare only them. When their paths differ the file was moved or renamed; say so in the summary, and when the sources are identical, say that only the path changed and leave changes and visualScopes empty. Generate the paired visual data in this same response from both exact snapshots; never generate one side from or infer it from the other.
 The supplied function catalogue is authoritative HOST DATA, including categories, ids and ranges. Never infer renames or invent function ids. added and removed: exactly one {functionId,summary} for EVERY catalogue entry of that category, no duplicates or other ids. Added summaries briefly say what the function does. Removed summaries say what it did and what may have relied on it; dependencies elsewhere are only possible, never facts without supplied evidence. Do not provide paired before/after boilerplate for whole added or removed functions. Only Changed catalogue entries may receive changes and visualScopes, each carrying its functionId. Evidence spans must stay inside that function's corresponding side range (catalogue lines are zero-based; numbered source spans are one-based). Multiple behavioral changes can refer to one Changed function; none is acceptable when no behavioral difference is established. Describe changed enclosing functions without repeating a nested addition's summary. Pure comments/formatting are Other changes, never Changed. If catalogue.classified is false, keep added/removed empty, leave functionId empty, omit visualScopes, and describe unclassified textual edits in outside (Other changes), noting the discovery limitation. Fill the fields as follows.
 summary: one to three plain sentences on what the change does to the file's behavior, not on how the text differs.
 changes: one entry for each behavior change, most important first, at most 20. Skip pure formatting, renaming without behavior change, and comment-only edits (mention those in outside). Each has a short unique id (letters, digits, "_" or "-"), a short plain title naming the function or part; before: how the original behaved in a sentence or two, empty when the code is new; after: how the modified version behaves, empty when the code was removed; when: the conditions under which behavior differs, such as which inputs or states, or "always"; flow: effects on control flow when there are any, such as an added decision, a removed path, an earlier exit, reordered steps, or different failure handling, otherwise an empty string; original and modified: the startLine and endLine of the relevant code in each numbered source, or 0 and 0 when it has no lines on that side; visualScopeId: an id of a scope below when this change belongs to it, otherwise the empty string.
@@ -240,7 +242,7 @@ edges: each has from and to node ids and a label such as "yes", "no", or "error"
 
 export function formatPrompt(input: FormatPromptInput): [string, string] {
   return [
-    `${plainSystem} Describe only the selected ${input.languageId} function in the requested view, consistent with its saved steps.${guidanceText(input.guidance)}\n${FORMAT_INSTRUCTIONS[input.format]}`,
+    `${plainSystem} Describe only the selected ${input.languageId} function in the requested view, consistent with its saved steps.${guidanceText(input.guidance)}\n${FORMAT_INSTRUCTIONS[input.format]}${input.format === "flowchart" ? CONTROL_FLOW_RULES : ""}`,
     JSON.stringify({
       task: `Add a ${input.format} view of the function.`,
       repository: input.repositoryName,

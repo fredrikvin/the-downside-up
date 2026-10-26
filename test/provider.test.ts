@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { estimateTokens } from "../src/core/fingerprint";
 import type { FunctionExplanation, RepositoryOverview } from "../src/core/types";
-import { comparisonPrompt, explanationPrompt, fileSummaryPrompt } from "../src/generation/prompts";
+import { comparisonPrompt, explanationPrompt, fileSummaryPrompt, formatPrompt } from "../src/generation/prompts";
 import { OpenAIProvider } from "../src/generation/openai";
 import {
   explanationSchema,
@@ -282,6 +282,48 @@ describe("structured generation", () => {
     const pseudocode = [{ text: "find the book", depth: 9, startLine: 2, endLine: 3 }];
     const withViews = parseExplanation({ ...explanation, flowchart, pseudocode });
     expect(withViews.flowchart).toEqual(flowchart);
+    const cachedCredentials = {
+      nodes: [
+        { id: "valid", kind: "decision", label: "Are cached credentials still valid?", startLine: 1, endLine: 2 },
+        { id: "cached", kind: "end", label: "Return cached credentials", startLine: 3, endLine: 3 },
+        { id: "fetch", kind: "action", label: "Fetch fresh credentials", startLine: 4, endLine: 4 }
+      ],
+      edges: [
+        { from: "valid", to: "cached", label: "yes" },
+        { from: "valid", to: "cached", label: "no" },
+        { from: "cached", to: "fetch", label: "" }
+      ]
+    };
+    expect(() => parseFormat({ flowchart: cachedCredentials }, "flowchart")).toThrow("continues after an end node");
+    expect(() => parseFormat({
+      flowchart: { ...cachedCredentials, edges: [{ from: "cached", to: "cached", label: "" }] }
+    }, "flowchart")).toThrow("continues after an end node");
+    const rejected = parseExplanation({ ...explanation, flowchart: cachedCredentials });
+    expect(rejected.flowchart).toBeUndefined();
+    expect(rejected.title).toBe(explanation.title);
+    expect(rejected.limitations).toContain("The generated flowchart failed structural validation and was omitted; the textual explanation is still available.");
+    const corrected = {
+      ...cachedCredentials,
+      nodes: [
+        ...cachedCredentials.nodes,
+        { id: "fresh", kind: "end", label: "Return fresh credentials", startLine: 5, endLine: 5 }
+      ],
+      edges: [
+        { from: "valid", to: "cached", label: "yes" },
+        { from: "valid", to: "fetch", label: "no" },
+        { from: "fetch", to: "fresh", label: "" }
+      ]
+    };
+    expect(parseFormat({ flowchart: corrected }, "flowchart").flowchart).toEqual(corrected);
+    const [extraFormat] = formatPrompt({
+      repositoryName: "sample", languageId: "typescript", functionName: "getCredentials",
+      signature: "getCredentials()", source: "return cached;", format: "flowchart", stepTitles: []
+    });
+    for (const instructions of [charted, extraFormat, comparisonPrompt(comparisonInput)[0]]) {
+      expect(instructions).toContain("yes follows the condition being true");
+      expect(instructions).toContain("end nodes have no outgoing edges");
+      expect(instructions).toContain("no -> fetch fresh credentials");
+    }
     expect(withViews.pseudocode).toEqual([{ text: "find the book", depth: 4, startLine: 2, endLine: 3 }]);
     const brokenEdge = parseExplanation({ ...explanation, flowchart: { ...flowchart, edges: [{ from: "a", to: "missing", label: "" }] } });
     expect(brokenEdge.flowchart).toBeUndefined();

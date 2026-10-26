@@ -35,6 +35,8 @@ billing; see `docs/configuration.md` in the extension package.
   Pseudocode highlights control words and code names. Flowcharts show decisions,
   loops, exits, and nested UI output. React explanations distinguish rendering,
   effects, and event handlers rather than implying everything runs at once.
+  Invalid flowcharts, including paths continuing after an end node, are omitted
+  with a limitation; structural checks cannot guarantee semantic accuracy.
 - **Stay beside the source.** Editor and preview scroll together. Clicking
   steps, pseudocode, or flowchart nodes highlights their source lines without
   moving the preview; ordinary-file clicks keep keyboard focus in the preview.
