@@ -33,6 +33,27 @@ vi.mock("vscode", () => ({
 }));
 
 describe("header action validation", () => {
+  it("accepts only bounded token-bearing review summary operations", () => {
+    const actions: PanelAction[] = [];
+    const panel = new ExplanationPanel("Test", (action) => actions.push(action));
+    const token = "summary-token-123456";
+    harness.receive({ type: "reviewSummary", operation: "generate" });
+    harness.receive({ type: "reviewSummary", token: "short", operation: "generate" });
+    harness.receive({ type: "reviewSummary", token, operation: "open", fileId: "../outside".repeat(30) });
+    harness.receive({ type: "reviewSummary", token, operation: "open" });
+    harness.receive({ type: "reviewSummary", token, operation: "execute" });
+    expect(actions).toEqual([]);
+    harness.receive({ type: "reviewSummary", token, operation: "generate" });
+    harness.receive({ type: "reviewSummary", token, operation: "cancel" });
+    harness.receive({ type: "reviewSummary", token, operation: "open", fileId: "host-file" });
+    expect(actions).toEqual([
+      { type: "reviewSummary", token, operation: "generate" },
+      { type: "reviewSummary", token, operation: "cancel" },
+      { type: "reviewSummary", token, operation: "open", fileId: "host-file" }
+    ]);
+    panel.dispose();
+  });
+
   it("ignores reentrant cleanup and late messages after closing, and allows a new panel", async () => {
     const state: PanelState = {
       provider: "mock", models: { explanation: "mock" }, busy: false, hasRepository: false,

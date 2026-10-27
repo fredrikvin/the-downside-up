@@ -141,7 +141,10 @@ export class Review {
     /** Such as "since main (merge base 1a2b3c4)" or "in commit 1a2b3c4". */
     readonly base: string,
     readonly items: ReviewItem[],
-    readonly kind: "working" | "commit" = "working"
+    readonly kind: "working" | "commit" = "working",
+    readonly coverage: { readonly excluded: number; readonly skipped: number; readonly truncated: boolean } = {
+      excluded: 0, skipped: 0, truncated: false
+    }
   ) {
     this.unsubscribeCapacityChange = host.scheduler.onCapacityChange(() => this.wakeUp());
   }

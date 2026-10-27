@@ -19,7 +19,8 @@ import type {
   ProjectMap,
   PseudocodeLine,
   RepositoryOverview,
-  RepositoryPriming
+  RepositoryPriming,
+  ReviewSummary
 } from "../core/types";
 import { SchemaValidationError } from "./jsonResponse";
 
@@ -32,6 +33,40 @@ function objectSchema(
   required: string[]
 ): Record<string, unknown> {
   return { type: "object", properties, required, additionalProperties: false };
+}
+
+export const reviewSummarySchema = objectSchema({
+  summary: { type: "string", minLength: 1, maxLength: 3000 },
+  themes: { type: "array", maxItems: 12, items: objectSchema({
+    title: { type: "string", minLength: 1, maxLength: 160 },
+    text: { type: "string", minLength: 1, maxLength: 2000 },
+    fileIds: { type: "array", minItems: 1, maxItems: 200, items: { type: "string", maxLength: 80 } }
+  }, ["title", "text", "fileIds"]) },
+  possibleEffects: { type: "array", maxItems: 20, items: { type: "string", maxLength: 1500 } },
+  limitations: { type: "array", maxItems: 20, items: { type: "string", maxLength: 1500 } }
+}, ["summary", "themes", "possibleEffects", "limitations"]);
+
+/** Reject uncertain references rather than silently dropping or repairing their meaning. */
+export function parseReviewSummary(value: unknown, knownIds: readonly string[]): ReviewSummary {
+  const source = record(value);
+  const text = (object: Record<string, unknown>, key: string, limit: number) => {
+    const result = readText(object, key, limit);
+    if (!result.trim()) throw new SchemaValidationError(`The review summary contains empty ${key}.`);
+    return result;
+  };
+  const ids = new Set(knownIds);
+  return {
+    summary: text(source, "summary", 3000),
+    themes: readObjects(source.themes, "review summary themes", 12, (theme) => {
+      const fileIds = readStrings(theme.fileIds, "review summary file IDs", 200);
+      if (!fileIds.length || new Set(fileIds).size !== fileIds.length || fileIds.some((id) => !ids.has(id))) {
+        throw new SchemaValidationError("The review summary references an unknown or duplicate file ID.");
+      }
+      return { title: text(theme, "title", 160), text: text(theme, "text", 2000), fileIds };
+    }),
+    possibleEffects: readStrings(source.possibleEffects, "review summary possible effects", 20),
+    limitations: readStrings(source.limitations, "review summary limitations", 20)
+  };
 }
 
 export const overviewSchema = objectSchema(

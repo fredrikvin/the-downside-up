@@ -8,9 +8,10 @@ import type {
   FunctionExplanation,
   ProjectFlowsDraft,
   GenerationResult,
-  RepositoryPriming
+  RepositoryPriming,
+  ReviewSummary
 } from "../core/types";
-import { comparisonPrompt, explanationPrompt, fileSummaryPrompt, folderSummaryPrompt, formatPrompt, partFlowsPrompt, projectFlowsPrompt, overviewPrompt, reviewPrompt } from "./prompts";
+import { comparisonPrompt, explanationPrompt, fileSummaryPrompt, folderSummaryPrompt, formatPrompt, partFlowsPrompt, projectFlowsPrompt, overviewPrompt, reviewPrompt, reviewSummaryPrompt } from "./prompts";
 import type {
   ExplanationPromptInput,
   ComparisonPromptInput,
@@ -21,7 +22,8 @@ import type {
   GenerationProvider,
   OverviewReviewPromptInput,
   PartFlowsPromptInput,
-  RepositoryPromptInput
+  RepositoryPromptInput,
+  ReviewSummaryPromptInput
 } from "./provider";
 import {
   explanationSchemaFor,
@@ -39,7 +41,9 @@ import {
   parseProjectFlows,
   parseFormat,
   parsePriming,
-  parsePartFlows
+  parsePartFlows,
+  reviewSummarySchema,
+  parseReviewSummary
 } from "./schema";
 
 const REQUEST_TIMEOUT_MS = 10 * 60_000;
@@ -134,6 +138,12 @@ export class LanguageModelProvider implements GenerationProvider {
     readonly modelId: string,
     private readonly model: vscode.LanguageModelChat
   ) {}
+
+  async summarizeReview(input: ReviewSummaryPromptInput, signal?: AbortSignal): Promise<GenerationResult<ReviewSummary>> {
+    const [system, user] = reviewSummaryPrompt(input);
+    return this.request(system, user, reviewSummarySchema,
+      (value) => parseReviewSummary(value, input.files.map((file) => file.id)), signal);
+  }
 
   async explainRepository(
     input: RepositoryPromptInput,

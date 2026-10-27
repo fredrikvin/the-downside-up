@@ -46,6 +46,27 @@ export interface ReviewNavigationView {
   readonly canNext: boolean;
   /** The exact pair is still being read; controls stay visible but disabled. */
   readonly loading?: boolean;
+  readonly summary?: boolean;
+}
+
+export interface ReviewSummaryView {
+  readonly token: string;
+  readonly base: string;
+  readonly coverage: string;
+  readonly loading: boolean;
+  readonly generating: boolean;
+  readonly canGenerate: boolean;
+  readonly current: boolean;
+  readonly error?: string;
+  readonly model?: string;
+  readonly summary?: string;
+  readonly themes: readonly {
+    readonly title: string;
+    readonly text: string;
+    readonly files: readonly { readonly id: string; readonly path: string }[];
+  }[];
+  readonly possibleEffects: readonly string[];
+  readonly limitations: readonly string[];
 }
 
 export interface LinkedItems {
@@ -277,6 +298,7 @@ export interface PanelState {
   readonly review?: { readonly text: string; readonly canStop: boolean };
   /** Present only when the shown native diff is an exact member of the active review. */
   readonly reviewNavigation?: ReviewNavigationView;
+  readonly reviewSummary?: ReviewSummaryView;
   /** A folder being opened; its placeholder is shown until it is listed. */
   readonly loading?: { readonly name: string };
   readonly busy: boolean;
@@ -293,6 +315,7 @@ export type PanelAction =
   | { readonly type: "cancel" }
   | { readonly type: "stopReview" }
   | { readonly type: "reviewNavigation"; readonly token: string; readonly direction: "previous" | "next" | "picker" }
+  | { readonly type: "reviewSummary"; readonly token: string; readonly operation: "generate" | "cancel" | "open"; readonly fileId?: string }
   | { readonly type: "explainChanges" }
   | { readonly type: "summarizeFolder" }
   | { readonly type: "summarizeTree" }
@@ -2341,9 +2364,10 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
       state = next;
       renderActivity(next);
       const loading = next.loading;
-      const change = loading ? undefined : next.change;
-      const file = loading || change ? undefined : next.document;
-      const folder = file || loading || change ? undefined : next.folder;
+      const reviewSummary = loading ? undefined : next.reviewSummary;
+      const change = loading || reviewSummary ? undefined : next.change;
+      const file = loading || change || reviewSummary ? undefined : next.document;
+      const folder = file || loading || change || reviewSummary ? undefined : next.folder;
       renderCrumbs(next.breadcrumbs);
       renderHeader(next);
       renderPageActions(next);
@@ -2377,11 +2401,11 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
         approve.addEventListener("click", () => post({ type: "approveSharing" }));
         consent.append(approve, el("p", "small muted", "Approval is saved for this repository and model. Background requests use your provider's usage limits or billing. You can also press Explain beside a function to approve its first request."));
       }
-      byId("title").textContent = loading ? loading.name : change ? change.fileName : file ? file.fileName : folder ? folder.name : "Downside Up";
-      byId("facts").textContent = change ? change.facts : file
+      byId("title").textContent = reviewSummary ? "Review summary" : loading ? loading.name : change ? change.fileName : file ? file.fileName : folder ? folder.name : "Downside Up";
+      byId("facts").textContent = reviewSummary ? reviewSummary.base : change ? change.facts : file
         ? [file.path, file.languageId, file.lineCount + " lines"].join(" · ")
         : folder ? [folder.path || "repository root", plural(folder.fileCount, "file")].join(" · ") : loading ? "Opening…" : "";
-      renderReviewBands(change ? next.reviewNavigation : undefined, next.review);
+      renderReviewBands(change || reviewSummary ? next.reviewNavigation : undefined, next.review);
       const summary = byId("summary");
       const aiSummary = file ? next.summary : undefined;
       summary.hidden = !aiSummary;
@@ -2393,9 +2417,9 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
       purpose.hidden = !localPurpose;
       purpose.textContent = localPurpose;
       const views = new Map((next.explanations || []).map((view) => [view.entryId, view]));
-      byId("entries").replaceChildren(...(change ? renderChange(change) : file ? file.entries.map((entry) => renderEntry(entry, views)) : folder ? renderFolder(folder) : loading ? [renderSkeleton(true)] : []));
+      byId("entries").replaceChildren(...(reviewSummary ? renderReviewSummary(reviewSummary) : change ? renderChange(change) : file ? file.entries.map((entry) => renderEntry(entry, views)) : folder ? renderFolder(folder) : loading ? [renderSkeleton(true)] : []));
       const empty = byId("empty");
-      empty.hidden = Boolean(loading || change || (file && file.entries.length) || (folder && folder.children.length));
+      empty.hidden = Boolean(reviewSummary || loading || change || (file && file.entries.length) || (folder && folder.children.length));
       empty.textContent = file ? "Nothing to describe in this file." : folder ? "Nothing to describe in this folder." : "Open a source file to see its description here.";
       byId("limitations").textContent = file ? file.limitations.join("\\n") : folder ? folder.limitations.join("\\n") : "";
       renderOverview(next.overview);
@@ -2414,11 +2438,11 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
         if (focusedItem === "node") requestAnimationFrame(() => { if (state === next) refocus(); });
       }
       const release = () => { if (renderToken === renderCount) doc.style.minHeight = ""; };
-      const fileKey = change ? "change:" + change.key : file ? file.path : folder ? "folder:" + folder.path : loading ? "loading:" + loading.name : "";
+      const fileKey = reviewSummary ? "review-summary:" + reviewSummary.token : change ? "change:" + change.key : file ? file.path : folder ? "folder:" + folder.path : loading ? "loading:" + loading.name : "";
       if (fileKey !== renderedFile) {
         release();
         renderedFile = fileKey;
-        if (folder || loading || change) window.scrollTo(0, 0);
+        if (reviewSummary || folder || loading || change) window.scrollTo(0, 0);
         else scrollToLine(sourceLine);
       } else {
         // Re-rendering the same file keeps the reader's place.
@@ -2588,16 +2612,52 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
         }));
         return control;
       };
-      const pickerTitle = "Choose " + navigation.fileName + " (" + navigation.position + " of " + navigation.total + ") from changed files";
+      const pickerTitle = navigation.summary ? "Choose Review summary or a changed file" : "Choose " + navigation.fileName + " (" + navigation.position + " of " + navigation.total + ") from changed files";
       toolbar.append(
         button("Previous", "previous", !navigation.canPrevious, "Previous changed file", "chevron-left"),
         button(navigation.fileName, "picker", false, pickerTitle, undefined, "review-file"),
         button("Next", "next", !navigation.canNext, "Next changed file", "chevron-right", undefined, true)
       );
       const label = toolbar.children[1];
-      const position = el("span", "review-position", navigation.position + " of " + navigation.total);
+      const position = el("span", "review-position", navigation.summary ? navigation.total + " files" : navigation.position + " of " + navigation.total);
       position.setAttribute("aria-hidden", "true");
       label.append(position);
+    }
+
+    function renderReviewSummary(view) {
+      const box = el("section", "review-summary");
+      box.append(el("p", "muted", view.coverage),
+        el("p", "small muted", "Synthesized from saved AI change explanations, not an independent code review. Coverage and conclusions may be incomplete."));
+      if (view.error) box.append(el("p", "error", view.error));
+      if (view.summary && !view.current) box.append(el("p", "muted", "Outdated or more comparisons are available. Regenerate explicitly to update this summary."));
+      const control = el("button", "explain", view.generating ? "Cancel summary" : view.summary && view.current ? "Summary up to date" : view.summary ? "Regenerate summary" : "Generate summary");
+      control.type = "button";
+      control.disabled = !view.generating && (view.loading || !view.canGenerate || (view.summary && view.current));
+      control.title = "Uses the Overview model and provider quota or billing; asks for repository/model sharing approval if needed.";
+      control.addEventListener("click", () => post({ type: "reviewSummary", token: view.token, operation: view.generating ? "cancel" : "generate" }));
+      box.append(control);
+      if (view.loading) box.append(explanationSkeleton(view.generating ? "Generating the review summary…" : "Checking saved comparisons…"));
+      if (view.summary) box.append(el("p", "lead", view.summary));
+      for (const theme of view.themes) {
+        const section = el("section");
+        section.append(el("h2", "", theme.title), el("p", "", theme.text));
+        const files = el("ul");
+        for (const file of theme.files) {
+          const item = el("li");
+          item.append(action(file.path, () => post({ type: "reviewSummary", token: view.token, operation: "open", fileId: file.id })));
+          files.append(item);
+        }
+        if (theme.files.length) section.append(files);
+        box.append(section);
+      }
+      for (const [heading, values] of [["Possible effects", view.possibleEffects], ["Limitations", view.limitations]]) {
+        if (!values.length) continue;
+        const list = el("ul");
+        for (const value of values) list.append(el("li", "", value));
+        box.append(el("h2", "", heading), list);
+      }
+      if (view.model) box.append(el("p", "small muted", "Summarized with " + view.model));
+      return [box];
     }
 
     function renderReviewBands(navigation, review) {
@@ -2698,6 +2758,14 @@ export class ExplanationPanel {
           if (token && token.length >= 16 &&
               (direction === "previous" || direction === "next" || direction === "picker")) {
             onAction({ type, token, direction });
+          }
+        } else if (type === "reviewSummary") {
+          const token = stringField("token");
+          const operation = fields.operation;
+          const fileId = stringField("fileId");
+          if (token && token.length >= 16 &&
+            (operation === "generate" || operation === "cancel" || (operation === "open" && fileId))) {
+            onAction({ type, token, operation, ...(operation === "open" ? { fileId } : {}) });
           }
         } else if (type === "revealItem") {
           const entryId = stringField("entryId");

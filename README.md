@@ -92,11 +92,21 @@ billing; see `docs/configuration.md` in the extension package.
   Added/Removed details are not included in that count; optional card prefetch
   applies only to the diff being viewed. After
   you confirm, the first file's diff opens on the left with the preview on the
-  right (the active editor's file if it is in the review). While a confirmed
+  right (the active editor's file if it is in the review). The preview starts
+  on **Review summary**, showing scope and progress without generating a summary.
+  **Generate summary** explicitly asks the Overview model to synthesize saved
+  file comparisons, with host-validated links to their confirmed diffs.
+  It shows incomplete coverage and uncertainties: this is a synthesis of AI
+  explanations, not an independent code review. Overview-model sharing approval
+  is separate; no raw diffs are resent for this request. Saved summaries are
+  reused; new comparisons or changed evidence require explicit regeneration.
+  While a confirmed
   file's native diff is shown, the review bands above the file header and at
   the bottom of the preview offer **‹ Previous** and **Next ›** to step through
   the review in path order, plus **Review: 3/8 ready** progress at the top.
-  The filename and position open the existing **Show Changed Files** picker.
+  The filename and position open the existing **Show Changed Files** picker,
+  with **Review summary** first. Previous from the first file returns to the
+  summary; Next from the summary opens the first file.
   Navigation stays within the confirmed review, does not wrap, and only
   reprioritizes its pending work; it does not start requests. Opening a file
   outside the review ends review mode. If the review is still preparing, you
@@ -110,7 +120,8 @@ billing; see `docs/configuration.md` in the extension package.
   closing the preview, or starting another review discards it.
 - **Prepare a commit.** Run **Downside Up: Prepare Commit Explanations…**,
   choose a commit (or enter its ID/ref), and confirm the bounded file scope and
-  request count; the first file's diff then opens beside the preview. This
+  request count; the first file's diff then opens beside the review-summary
+  preview. This
   compares the immutable commit with its parent, **not**
   today's working tree; root commits compare with the empty tree, and merges
   require an explicit parent choice. Keep using Source Control Graph's existing

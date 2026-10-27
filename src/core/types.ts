@@ -342,6 +342,8 @@ export interface RepositoryCache {
   readonly projectFlows?: Record<string, ProjectFlowsRecord>;
   /** AI explanations of what a diff changes, keyed by both sides' identities and paths, provider, model, and prompt version. */
   readonly comparisons?: Record<string, ComparisonRecord>;
+  /** Explicit cross-file synthesis of saved comparison explanations; never source. */
+  readonly reviewSummaries?: Record<string, ReviewSummaryRecord>;
   /**
    * The project map, made in the same request as the overview but saved
    * apart from it, so map changes never outdate saved explanations.
@@ -506,6 +508,42 @@ export interface ComparisonRecord {
   readonly model: string;
   readonly promptVersion: string;
   readonly savedAt: number;
+}
+
+export interface ReviewSummary {
+  readonly summary: string;
+  readonly themes: readonly {
+    readonly title: string;
+    readonly text: string;
+    readonly fileIds: readonly string[];
+  }[];
+  readonly possibleEffects: readonly string[];
+  readonly limitations: readonly string[];
+}
+
+export interface ReviewSummaryCoverage {
+  readonly total: number;
+  readonly included: number;
+  readonly unavailable: number;
+  readonly omitted: number;
+}
+
+export interface ReviewSummaryEvidence {
+  readonly id: string;
+  readonly path: string;
+  readonly ref: import("../context/comparison").ComparisonRef;
+}
+
+export interface ReviewSummaryRecord {
+  readonly value: ReviewSummary;
+  readonly provider: ProviderKind;
+  readonly model: string;
+  readonly usage?: Usage;
+  readonly savedAt: number;
+  readonly promptVersion: string;
+  readonly fingerprint: string;
+  readonly coverage: ReviewSummaryCoverage;
+  readonly evidence: readonly ReviewSummaryEvidence[];
 }
 
 export interface ComparisonFunctionSummary {

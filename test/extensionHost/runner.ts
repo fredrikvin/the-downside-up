@@ -56,6 +56,7 @@ async function waitForPanel(): Promise<vscode.Tab> {
 
 /** Review startup must open the exact confirmed native pair, not an ordinary file tab. */
 async function assertReviewLayout(api: DownsideUpTestApi, path: string): Promise<void> {
+  if (api.shownReviewSummary()) await api.openReviewedFile(path);
   const pair = api.reviewDiffUris(path);
   assert.ok(pair, `${path} belongs to the confirmed review.`);
   await waitFor(async () => {
@@ -213,6 +214,9 @@ async function testCommitPreparation(api: DownsideUpTestApi, root: string): Prom
     await waitFor(async () => api.shownChange() === undefined ? true : undefined, "the preview to close before commit preparation");
     assert.ok((await vscode.commands.getCommands(true)).includes("downsideUp.prepareCommit"), "The stable commit preparation command is registered.");
     assert.equal(await api.prepareCommit(root, commit), 4, "The committed secret file is excluded from the bounded preparation.");
+    assert.ok(api.shownReviewSummary(), "Commit preparation opens the review summary without generating it.");
+    assert.equal(api.shownReviewSummary()?.summary, undefined);
+    assert.equal(api.reviewNavigation()?.fileName, "Review summary");
     await assertReviewLayout(api, "main.ts");
     assert.deepEqual(api.reviewItems().map((item) => `${item.path} ${item.change}`), [
       "added.ts added", "deleted.ts deleted", "main.ts modified", "renamed.ts renamed"
@@ -265,12 +269,35 @@ async function testCommitPreparation(api: DownsideUpTestApi, root: string): Prom
     await waitFor(async () => api.shownChange()?.fileName === "added.ts" ? true : undefined, "the first review comparison");
     const firstNavigation = api.reviewNavigation();
     assert.equal(firstNavigation?.position, 1);
-    assert.equal(firstNavigation?.canPrevious, false, "The first item has no wrapping Previous action.");
+    assert.equal(firstNavigation?.canPrevious, true, "Previous from the first file returns to the summary.");
     assert.ok(firstNavigation);
     await assertDiffPair(absentAdded, side("added.ts", commit), "The first item remains the exact native pair");
     await api.invokeReviewNavigation("previous", firstNavigation.token);
-    await assertDiffPair(absentAdded, side("added.ts", commit), "A boundary action is rejected by the host");
+    assert.ok(api.shownReviewSummary(), "Previous from the first file selects Review summary.");
+    const summaryNavigation = api.reviewNavigation()!;
+    assert.equal(summaryNavigation.canPrevious, false);
+    assert.equal(api.shownReviewSummary()?.summary, undefined, "Preparation and navigation do not automatically generate a summary.");
+    await api.invokeReviewSummary("generate", summaryNavigation.token);
+    const synthesized = api.shownReviewSummary();
+    assert.ok(synthesized?.summary, synthesized?.error);
+    assert.equal(synthesized.current, true);
+    assert.ok(synthesized.coverage.includes("4 of 4"));
+    const summaryLink = synthesized.themes.flatMap((theme) => theme.files)[0];
+    assert.ok(summaryLink, "Generated themes link only to confirmed evidence.");
+    await api.invokeReviewSummary("open", summaryNavigation.token, "forged-file");
+    assert.ok(api.shownReviewSummary(), "A forged evidence id cannot navigate.");
+    await api.invokeReviewSummary("open", summaryNavigation.token, summaryLink.id);
+    await assertReviewLayout(api, summaryLink.path);
+    await api.showReviewSummary();
+    assert.equal(api.shownReviewSummary()?.summary, synthesized.summary, "Returning restores the saved summary cache-only.");
+    const currentSummaryNavigation = api.reviewNavigation()!;
     await api.invokeReviewNavigation("next", firstNavigation.token);
+    assert.ok(api.shownReviewSummary(), "Old file authority cannot control the summary page.");
+    await api.invokeReviewNavigation("next", currentSummaryNavigation.token);
+    await assertDiffPair(absentAdded, side("added.ts", commit), "Next from Summary opens the first confirmed file");
+    const firstAgain = await waitFor(async () => api.reviewNavigation()?.fileName === "added.ts" ? api.reviewNavigation() : undefined,
+      "first-file navigation after returning from summary");
+    await api.invokeReviewNavigation("next", firstAgain.token);
     await waitFor(async () => api.shownChange()?.fileName === "deleted.ts" ? true : undefined, "Next from the first item to deleted");
     await assertDiffPair(side("deleted.ts", parent), vscode.Uri.file(resolve(root, "deleted.ts")).with({ scheme: "downside-up-empty", query: commit }),
       "Next opens the exact deleted-file comparison");

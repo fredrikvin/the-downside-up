@@ -68,6 +68,38 @@ afterEach(() => {
 });
 
 describe("structured generation", () => {
+  it("synthesizes saved comparisons with a dedicated bounded schema and validates file IDs without repair", async () => {
+    const input = {
+      coverage: { total: 1, included: 1, unavailable: 0, omitted: 0 }, limitations: [],
+      files: [{ id: "file-a", path: "a.ts", summary: "Adds retries.", added: [], removed: [], changes: [],
+        outside: "", possibleEffects: [], limitations: [] }]
+    };
+    const value = {
+      summary: "Reported retries.", themes: [{ title: "Retry", text: "Retries reported.", fileIds: ["file-a"] }],
+      possibleEffects: [], limitations: []
+    };
+    const fetch = vi.fn().mockResolvedValue(response({
+      status: "completed", output: [{ content: [{ type: "output_text", text: JSON.stringify(value) }] }],
+      usage: { input_tokens: 80, output_tokens: 40 }
+    }));
+    vi.stubGlobal("fetch", fetch);
+    const provider = new OpenAIProvider("overview-model", "test-key");
+    const result = await provider.summarizeReview(input);
+    expect(result.value).toEqual(value);
+    expect(result.usage).toEqual({ inputTokens: 80, outputTokens: 40, estimated: false });
+    const body = JSON.parse((fetch.mock.calls[0]![1] as RequestInit).body as string);
+    expect(body.text.format.name).toBe("review_summary");
+    expect(body.text.format.schema.properties.themes.maxItems).toBe(12);
+    expect(body.max_output_tokens).toBe(8000);
+    expect(body.input[0].content[0].text).toContain("NOT an independent code review");
+    fetch.mockResolvedValueOnce(response({
+      output: [{ content: [{ type: "output_text", text: JSON.stringify({
+        ...value, themes: [{ ...value.themes[0], fileIds: ["not-in-evidence"] }]
+      }) }] }]
+    }));
+    await expect(provider.summarizeReview(input)).rejects.toMatchObject({ code: "invalid-schema" });
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
   it("sends the authoritative function catalogue and enforces summary coverage in one OpenAI request", async () => {
     const input = { ...comparisonInput, catalogue: comparisonFunctionCatalogue };
     const [system, user] = comparisonPrompt(input);

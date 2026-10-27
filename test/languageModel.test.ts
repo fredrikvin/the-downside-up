@@ -99,6 +99,25 @@ function fakeModel(send: SendRequest, maxInputTokens = 100_000, countsTokens = t
 }
 
 describe("VS Code language model generation", () => {
+  it("synthesizes saved comparisons and rejects unknown file IDs without a repair request", async () => {
+    const input = {
+      coverage: { total: 1, included: 1, unavailable: 0, omitted: 0 }, limitations: [],
+      files: [{ id: "file-a", path: "a.ts", summary: "Adds retries.", added: [], removed: [], changes: [],
+        outside: "", possibleEffects: [], limitations: [] }]
+    };
+    const value = {
+      summary: "Reported retries.", themes: [{ title: "Retry", text: "Retries reported.", fileIds: ["file-a"] }],
+      possibleEffects: [], limitations: []
+    };
+    const { provider, sendRequest } = fakeModel(async () => streamOf([JSON.stringify(value)]));
+    expect((await provider.summarizeReview(input)).value).toEqual(value);
+    expect(sendRequest).toHaveBeenCalledTimes(1);
+    sendRequest.mockImplementationOnce(async () => streamOf([JSON.stringify({
+      ...value, themes: [{ ...value.themes[0], fileIds: ["invented"] }]
+    })]));
+    await expect(provider.summarizeReview(input)).rejects.toMatchObject({ code: "invalid-schema" });
+    expect(sendRequest).toHaveBeenCalledTimes(2);
+  });
   it("allows slow models past 90 seconds, then cancels after ten minutes without retrying", async () => {
     vi.useFakeTimers();
     try {

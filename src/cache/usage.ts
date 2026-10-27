@@ -36,7 +36,7 @@ export function cachedUsage(cache: RepositoryCache): CachedUsage {
   }
   for (const record of Object.values(cache.comparisons ?? {})) add("Functions", record.provider, record.model, record.usage);
   for (const record of Object.values(cache.fileSummaries ?? {})) add("Functions", record.provider, record.model, record.usage);
-  for (const record of [...Object.values(cache.folderSummaries ?? {}), ...Object.values(cache.projectFlows ?? {})]) {
+  for (const record of [...Object.values(cache.folderSummaries ?? {}), ...Object.values(cache.projectFlows ?? {}), ...Object.values(cache.reviewSummaries ?? {})]) {
     add("Overview", record.provider, record.model, record.usage);
   }
   const models = [...groups.values()].sort((a, b) => a.role.localeCompare(b.role) || a.provider.localeCompare(b.provider) || a.model.localeCompare(b.model));

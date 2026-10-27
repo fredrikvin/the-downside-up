@@ -199,6 +199,50 @@ it("renders mirrored review navigation with accessible controls and host-only ac
   expect(element("reviewNavigationBottom").hidden).toBe(true);
 });
 
+it("renders a review landing page as safe text with explicit token-bound actions and incomplete coverage", () => {
+  const { render, element, messages } = webviewHelpers();
+  const state: PanelState = {
+    provider: "vscode-lm", models: { explanation: "functions", overview: "overview" },
+    hasRepository: true, busy: false, explanations: [], showDetails: false,
+    formats: { pseudocode: true, flowchart: true, initial: "steps" },
+    review: { text: "Review: 2/3 ready", canStop: true },
+    reviewNavigation: {
+      token: "summary-token-12345678", fileName: "Review summary", summary: true,
+      position: 0, total: 3, canPrevious: false, canNext: true
+    },
+    reviewSummary: {
+      token: "summary-token-12345678", base: "since main", coverage: "2 of 3 confirmed files available.",
+      loading: false, generating: false, current: false, canGenerate: true, model: "overview",
+      summary: "<script>unsafe</script>", themes: [{
+        title: "<b>Requests</b>", text: "Changes request behavior.",
+        files: [{ id: "host-file-1", path: "src/<img>.ts" }]
+      }], possibleEffects: ["More requests."], limitations: ["One file is unavailable."]
+    }
+  };
+  render(state);
+  expect(element("title").textContent).toBe("Review summary");
+  expect(element("reviewNavigationTop").elements().some((node) => node.textContent === "3 files")).toBe(true);
+  const content = element("entries");
+  expect(content.elements().some((node) => ["script", "b", "img"].includes(node.tagName))).toBe(false);
+  expect(content.elements().map((node) => node.textContent).join(" ")).toContain("not an independent code review");
+  expect(messages).toEqual([]);
+  const event = { preventDefault: () => undefined, stopPropagation: () => undefined };
+  content.elements().find((node) => node.textContent === "Regenerate summary")!.listeners.get("click")?.(event);
+  content.elements().find((node) => node.textContent === "src/<img>.ts")!.listeners.get("click")?.(event);
+  expect(messages).toEqual([
+    { type: "reviewSummary", token: state.reviewSummary!.token, operation: "generate" },
+    { type: "reviewSummary", token: state.reviewSummary!.token, operation: "open", fileId: "host-file-1" }
+  ]);
+  render({ ...state, reviewSummary: { ...state.reviewSummary!, loading: true, generating: true } });
+  content.elements().find((node) => node.textContent === "Cancel summary")!.listeners.get("click")?.(event);
+  expect(messages.at(-1)).toEqual({ type: "reviewSummary", token: state.reviewSummary!.token, operation: "cancel" });
+  render({ ...state, reviewSummary: { ...state.reviewSummary!, loading: true, generating: false } });
+  expect(content.elements().some((node) => node.textContent === "Cancel summary")).toBe(false);
+  expect(content.elements().some((node) => node.textContent === "Checking saved comparisons…")).toBe(true);
+  render({ ...state, reviewSummary: { ...state.reviewSummary!, current: true } });
+  expect(content.elements().find((node) => node.textContent === "Summary up to date")?.disabled).toBe(true);
+});
+
 it("offers setup with host-only actions while retaining local outlines, then hides it when configured", () => {
   const { render, element, messages } = webviewHelpers();
   const state: PanelState = {

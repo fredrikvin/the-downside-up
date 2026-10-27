@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.52.0
+
+- Add a Review summary landing page for working and commit reviews, with
+  explicit Overview-model synthesis of saved file comparisons, coverage,
+  cached results, and host-validated links to confirmed diffs.
+- Include Review summary first in the file picker and before the first file
+  in Previous/Next navigation. Opening or returning never generates a summary.
+
 ## 0.51.0
 
 - Add independent user controls for diff Added/Removed function-detail prefetch

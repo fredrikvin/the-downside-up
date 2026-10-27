@@ -11,7 +11,8 @@ import type {
   MapPart,
   ProjectMap,
   RepositoryOverview,
-  RepositoryPriming
+  RepositoryPriming,
+  ReviewSummary
 } from "../core/types";
 import type {
   ExplanationPromptInput,
@@ -23,7 +24,8 @@ import type {
   GenerationProvider,
   OverviewReviewPromptInput,
   PartFlowsPromptInput,
-  RepositoryPromptInput
+  RepositoryPromptInput,
+  ReviewSummaryPromptInput
 } from "./provider";
 
 const COMPONENT_MARKERS = /\b(?:package\.json|go\.mod|Cargo\.toml|pyproject\.toml|setup\.py|pom\.xml|build\.gradle|Dockerfile|\.csproj)\b/;
@@ -98,6 +100,19 @@ export class MockProvider implements GenerationProvider {
   requests = 0;
   delayMs = 0;
   failure: "network" | "malformed" | "refusal" | "none" = "none";
+
+  summarizeReview(input: ReviewSummaryPromptInput, signal?: AbortSignal): Promise<GenerationResult<ReviewSummary>> {
+    return this.respond(JSON.stringify(input), {
+      summary: "Mock mode: saved change explanations have not been semantically synthesized.",
+      themes: input.files.length ? [{
+        title: "Saved explanations",
+        text: "Deterministic placeholder output, not an independent review.",
+        fileIds: input.files.map((file) => file.id)
+      }] : [],
+      possibleEffects: [],
+      limitations: [...input.limitations, "Mock provider does not understand change semantics."]
+    }, signal);
+  }
 
   private async respond<T>(input: string, result: T, signal?: AbortSignal): Promise<GenerationResult<T>> {
     this.requests++;

@@ -28,9 +28,15 @@ import type {
   RepositoryCache,
   RepositoryOverview,
   RepositoryPriming,
+  ReviewSummaryRecord,
   Usage
 } from "./core/types";
-import { comparisonProblem, describeIdentity, type ComparisonSnapshot, type SideSnapshot } from "./context/comparison";
+import { comparisonProblem, describeIdentity, snapshotSignature, type ComparisonSnapshot, type SideSnapshot } from "./context/comparison";
+import {
+  buildReviewSummaryRequest, reviewComparisonCurrent, reviewEvidenceFingerprint, reviewSnapshotMatches, validateReviewSummaryScope,
+  type PreparedReviewSummary, type ReviewSummaryRead, type ReviewSummaryScope
+} from "./context/reviewSummary";
+import { parseReviewSummary } from "./generation/schema";
 import { comparisonCatalogue } from "./context/comparisonFunctions";
 import { gatherInventory, sharingExclusion, type RepositoryInventory } from "./context/inventory";
 import { checkedProjectMap, outlineText } from "./context/projectMap";
@@ -56,7 +62,8 @@ import {
   formatPrompt,
   overviewPrompt,
   PROMPT_VERSION,
-  reviewPrompt
+  reviewPrompt,
+  REVIEW_SUMMARY_PROMPT_VERSION
 } from "./generation/prompts";
 import type {
   ComparisonPromptInput,
@@ -403,7 +410,8 @@ export class ExplanationService {
       fileSummaries: real(cache.fileSummaries),
       folderSummaries: real(cache.folderSummaries),
       projectFlows: real(cache.projectFlows),
-      comparisons: real(cache.comparisons)
+      comparisons: real(cache.comparisons),
+      reviewSummaries: real(cache.reviewSummaries)
     };
   }
 
@@ -1466,6 +1474,139 @@ export class ExplanationService {
   async findComparison(snapshot: ComparisonSnapshot): Promise<SavedComparison | undefined> {
     const record = (await this.readCache(snapshot.root)).comparisons?.[comparisonKey(snapshot, this.options.describeProvider())];
     return record?.promptVersion === COMPARISON_PROMPT_VERSION && record.catalogue?.version === 1 ? savedComparison(record, snapshot) : undefined;
+  }
+
+  /** Local eligibility only; this never prompts or starts a provider request. */
+  private async reviewSummaryAllowed(ref: import("./context/comparison").ComparisonRef): Promise<boolean> {
+    return vscode.workspace.isTrusted !== false &&
+      !(await sharingExclusion(ref.root, resolve(ref.root, ref.original.path))) &&
+      !(await sharingExclusion(ref.root, resolve(ref.root, ref.modified.path)));
+  }
+
+  /** Cache-only synthesis preparation: missing comparisons remain missing. */
+  async prepareReviewSummary(scope: ReviewSummaryScope, read: ReviewSummaryRead): Promise<PreparedReviewSummary> {
+    validateReviewSummaryScope(scope);
+    const cache = await this.readCache(scope.root);
+    const restricted = await (await currentPolicy()).repositoryRestriction(scope.root);
+    const request = await buildReviewSummaryRequest(
+      scope, cache, this.options.describeProvider(), this.overviewDescriptor(), read,
+      (ref) => restricted ? Promise.resolve(false) : this.reviewSummaryAllowed(ref), this.maxRequestBytes()
+    );
+    const record = cache.reviewSummaries?.[request.scopeKey];
+    return {
+      scopeKey: request.scopeKey, coverage: request.input.coverage,
+      evidence: record?.evidence ?? request.evidence,
+      ...(record ? { record } : {}),
+      current: Boolean(record && record.promptVersion === REVIEW_SUMMARY_PROMPT_VERSION && record.fingerprint === request.fingerprint),
+      canGenerate: request.evidence.length > 0 && request.bytes <= this.maxRequestBytes()
+    };
+  }
+
+  /**
+   * One explicit Overview-model request, made solely from frozen current saved
+   * comparisons. No overview priming, per-file generation or background consent.
+   */
+  async summarizeReview(scope: ReviewSummaryScope, read: ReviewSummaryRead, signal: AbortSignal): Promise<PreparedReviewSummary> {
+    this.requireModel(true);
+    assertNotCancelled(signal);
+    validateReviewSummaryScope(scope);
+    const confirmedScope = (): ReviewSummaryScope => ({
+      kind: scope.kind, base: scope.base, root: scope.root,
+      items: scope.items.map(({ path, ref, confirmed }) => ({ path, ref, confirmed })),
+      excluded: scope.excluded, skipped: scope.skipped, truncated: scope.truncated
+    });
+    const frozen = structuredClone(confirmedScope());
+    const startingScope = JSON.stringify(frozen);
+    const root = frozen.root;
+    const startingFence = this.fence(root);
+    const descriptor = { ...this.overviewDescriptor() };
+    const functions = { ...this.options.describeProvider() };
+    const limit = this.maxRequestBytes();
+    const restricted = await (await currentPolicy()).repositoryRestriction(root);
+    if (vscode.workspace.isTrusted === false || restricted) {
+      throw new Error("Trust this workspace and resolve repository sharing restrictions before summarizing the review.");
+    }
+    const cache = await this.readCache(root);
+    const request = await buildReviewSummaryRequest(
+      frozen, cache, functions, descriptor, read, (ref) => this.reviewSummaryAllowed(ref), limit
+    );
+    if (!request.evidence.length || request.bytes > limit) {
+      throw new Error("No current saved comparisons fit the review summary. Explain changes for at least one confirmed file first, or raise Downside Up: Max Request Size.");
+    }
+    const checkEvidence = (current: RepositoryCache): void => {
+      for (const consumed of request.consumed) {
+        const record = current.comparisons?.[consumed.key];
+        if (!record || reviewEvidenceFingerprint(record) !== consumed.fingerprint) {
+          throw new Error("A saved file comparison changed while the review was summarized; the summary was discarded.");
+        }
+      }
+    };
+    const checkSettings = (): void => {
+      const currentOverview = this.overviewDescriptor();
+      const currentFunctions = this.options.describeProvider();
+      if (vscode.workspace.isTrusted === false || this.fence(root) !== startingFence ||
+          JSON.stringify(confirmedScope()) !== startingScope || this.maxRequestBytes() !== limit ||
+          descriptor.kind !== currentOverview.kind || descriptor.modelId !== currentOverview.modelId ||
+          functions.kind !== currentFunctions.kind || functions.modelId !== currentFunctions.modelId) {
+        throw new Error("The review scope, sharing settings, or models changed; the review summary was discarded.");
+      }
+    };
+    const validate = async (current: RepositoryCache): Promise<void> => {
+      assertNotCancelled(signal);
+      checkSettings();
+      if (await (await currentPolicy()).repositoryRestriction(root)) {
+        throw new Error("Repository sharing is now restricted; the review summary was discarded.");
+      }
+      checkEvidence(current);
+      for (const consumed of request.consumed) {
+        const snapshot = await read(consumed.item.ref);
+        if (!(await this.reviewSummaryAllowed(consumed.item.ref)) ||
+            !reviewSnapshotMatches(consumed.item.ref, snapshot) || comparisonProblem(snapshot) ||
+            snapshotSignature(snapshot) !== consumed.item.confirmed ||
+            !reviewComparisonCurrent(current.comparisons![consumed.key]!, snapshot, functions)) {
+          throw new Error("A file changed while the review was summarized; the summary was discarded.");
+        }
+      }
+      checkSettings();
+      assertNotCancelled(signal);
+    };
+    await validate(cache);
+    const existing = cache.reviewSummaries?.[request.scopeKey];
+    if (existing?.promptVersion === REVIEW_SUMMARY_PROMPT_VERSION && existing.fingerprint === request.fingerprint) {
+      return this.prepareReviewSummary(frozen, read);
+    }
+    if (descriptor.kind !== "mock" &&
+        !(await this.options.authorizeExternalData(root, descriptor, request.bytes, signal))) {
+      throw new DOMException("External data sharing was not authorized.", "AbortError");
+    }
+    await validate(await this.readCache(root));
+    const provider = await this.options.createProvider(descriptor);
+    await validate(await this.readCache(root));
+    const generated = await provider.summarizeReview(request.input, signal);
+    const value = parseReviewSummary(generated.value, request.evidence.map((entry) => entry.id));
+    // At most six fixed host notices plus twenty validated model limitations.
+    // Keep every valid caveat rather than silently truncating its meaning.
+    const limitations = [...new Set([...request.input.limitations, ...value.limitations])];
+    const record: ReviewSummaryRecord = {
+      value: { ...value, limitations }, coverage: request.input.coverage, evidence: request.evidence,
+      provider: descriptor.kind, model: descriptor.modelId, usage: generated.usage,
+      promptVersion: REVIEW_SUMMARY_PROMPT_VERSION, fingerprint: request.fingerprint, savedAt: Date.now()
+    };
+    await validate(await this.readCache(root));
+    let lockedCache: RepositoryCache | undefined;
+    await this.options.store.update(root, (current) => {
+      assertNotCancelled(signal);
+      checkEvidence(current);
+      lockedCache = current;
+      return { ...current, reviewSummaries: { ...current.reviewSummaries, [request.scopeKey]: record } };
+    }, signal, async () => {
+      // The write lock is held: validate against the updater's cache, never read it again.
+      await validate(lockedCache!);
+    });
+    // Atomic rename is the commit point. Never reject a committed result for late cancellation.
+    // Newly available *unconsumed* comparisons only make this frozen coverage outdated.
+    const prepared = await this.prepareReviewSummary(frozen, read);
+    return prepared.record ? prepared : { ...prepared, record, evidence: record.evidence, current: false };
   }
 
   /**

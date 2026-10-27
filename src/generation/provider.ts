@@ -12,6 +12,8 @@ import type {
   ProviderKind,
   RepositoryOverview,
   RepositoryPriming,
+  ReviewSummary,
+  ReviewSummaryCoverage,
   Usage
 } from "../core/types";
 import type { FolderPageLevel } from "../context/projectMap";
@@ -160,9 +162,33 @@ export interface OverviewReviewPromptInput extends RepositoryPromptInput {
   readonly changedPaths: readonly string[];
 }
 
+/** Saved, untrusted AI explanations only: no source or comparison catalogue. */
+export interface ReviewSummaryPromptInput {
+  readonly coverage: ReviewSummaryCoverage;
+  readonly limitations: readonly string[];
+  readonly files: readonly {
+    readonly id: string;
+    readonly path: string;
+    readonly summary: string;
+    readonly added: readonly string[];
+    readonly removed: readonly string[];
+    readonly changes: readonly {
+      readonly title: string;
+      readonly before: string;
+      readonly after: string;
+      readonly when: string;
+      readonly flow: string;
+    }[];
+    readonly outside: string;
+    readonly possibleEffects: readonly string[];
+    readonly limitations: readonly string[];
+  }[];
+}
+
 export interface GenerationProvider {
   readonly kind: ProviderKind;
   readonly modelId: string;
+  summarizeReview(input: ReviewSummaryPromptInput, signal?: AbortSignal): Promise<GenerationResult<ReviewSummary>>;
   explainRepository(
     input: RepositoryPromptInput,
     signal?: AbortSignal

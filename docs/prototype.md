@@ -560,7 +560,8 @@ oversized, identical, and unreadable ones. Nothing is sent until the user
 confirms the number of requests (files with a current saved comparison are
 not counted); running the command is an explicit request, so if code sharing
 is not yet approved for the repository and the Functions model (the only model
-comparisons use; a separate Overview model needs no approval for review), the
+comparisons use; a separate Overview model needs no approval for preparing
+file comparisons), the
 first file is explained as an ordinary request, which asks. The rest are
 explained like prefetching: with the free request slots (never the last one),
 never prompting, skipping files with a current explanation, and the file being
@@ -587,15 +588,19 @@ stable path order. The band is mirrored below a divider at the bottom of the pre
 progress. While the next confirmed diff is being read, both bands stay in
 place with that file's name and all controls disabled, so they don't
 disappear and reflow. Boundary buttons are disabled and navigation does
-not wrap. The filename/position opens the existing **Show Changed Files**
-picker. The top band also holds the single compact progress status
+not wrap. The summary precedes the first file: Previous from that file returns
+to the summary and Next from the summary opens the first file. The
+filename/position opens the existing **Show Changed Files** picker, whose first
+entry is **Review summary**. File counts still count files, not the summary.
+The top band also holds the single compact progress status
 (**Review:** or **Commit:** ready/total) with **Stop**. A progress update
 changes only that line; it does not re-render the bands or charts. Starting
 Review Changes… or Prepare Commit Explanations… opens one confirmed file's
 native diff in the first editor column, with the preview beside it and focus
-kept on the diff. That file is the active editor's file if it is in the set,
+kept on the diff. The preview lands on Review summary. That underlying file is
+the active editor's file if it is in the set,
 otherwise the first by path. Opening it starts no request. Review progress
-shows only while the preview shows a file in the review. Opening a file
+shows while the preview shows the summary or a file in the review. Opening a file
 outside the set (another file or diff, but not a working file of a Review
 Changes… set) leaves review mode. A finished or stopped review ends quietly.
 A review still preparing asks once, in a modal, whether to end it; ending
@@ -624,6 +629,36 @@ to the active session and exact pair, so stale webview messages cannot navigate
 a replacement session. Moving between review files only reorders pending
 requests already in the confirmed set; it never starts a provider request or
 expands that set.
+
+**Review summary** is a landing page for the confirmed working or commit review,
+not an extra queue item. Opening it, preparation progress, returning through
+navigation, and cache misses only read local saved comparisons and never generate
+a summary. **Generate summary / Regenerate summary** is an explicit, separately
+cancellable request using the Overview model with per-repository/model sharing
+consent. It runs with explicit scheduler priority and neither primes a project
+overview nor requests missing file comparisons. The evidence is bounded saved
+comparison prose and host-issued file IDs, never raw diffs/source or visual data.
+Only current saved comparisons of the exact confirmed snapshots under the
+Functions model are eligible. Coverage counts included, unavailable, and
+budget-omitted files, and discloses excluded/skipped files or truncated review
+listings. Zero eligible comparisons sends nothing. The prose is explicitly a
+synthesis of AI explanations, not independent review or proof of correctness.
+Model-returned references must be IDs from the included evidence; host code
+revalidates their evidence and opens only the corresponding confirmed native
+pair. Outdated summaries have no generated links. Render all generated text as
+text, never markup.
+
+Summaries are saved with their scope, model/prompt identity and evidence
+freshness. They are reused cache-only; additional saved comparisons or changed
+inputs mark them outdated without regeneration. A request freezes its consumed
+evidence: completion of other file comparisons does not expand its coverage or
+abort it. Relevant source/evidence/model/policy changes and cancellation fence
+uncommitted results. No automatic retry or fallback is made. Closing/replacing
+the review or preview, changing model/exclusion configuration, or clearing the
+repository cache cancels summary work. Stop still stops comparison preparation;
+a separately requested summary is cancelled with its own control. Returning
+focus to the unchanged underlying diff leaves the summary selected; opening
+another file follows normal review-membership rules.
 
 **Prepare Commit Explanations…** reuses this Review queue, scheduler, consent,
 comparison request and cache. The command palette offers the last 50 commits
