@@ -31,6 +31,8 @@ billing; see `docs/configuration.md` in the extension package.
 
 - **Explain functions.** Read purpose, inputs, results, and steps in plain
   language. Switch between **Steps**, **Pseudocode**, and **Flowchart**;
+  the selected view applies across functions and files, including review
+  comparisons, while the preview is open. Switching views never generates content.
   **More detail** adds edge cases, language notes, and related code.
   Pseudocode highlights control words and code names. Flowcharts show decisions,
   loops, exits, and nested UI output. React explanations distinguish rendering,

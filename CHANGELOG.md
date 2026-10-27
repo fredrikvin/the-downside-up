@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Share the selected Steps, Pseudocode, or Flowchart view across ordinary
+  previews and all review functions, retaining it when navigating files.
+  Switching views never starts generation.
+
 ## 0.50.1
 
 - Reject flowcharts that continue after an end node, keeping the textual

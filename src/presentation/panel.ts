@@ -702,7 +702,7 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
     ];
     /** "More detail" open state the reader chose, by entry; otherwise the setting decides. */
     const detailChoices = new Map();
-    const comparisonTabChoices = new Map();
+    const flowViewUpdates = [];
     let comparisonVisualId = 0;
     let state;
     let renderedFile = "";
@@ -774,9 +774,26 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
       return meta;
     }
 
-    /** Tab chosen per explanation; otherwise the setting decides. */
     /** The view picked with a tab; it applies to every explanation, like language tabs in documentation. */
     let chosenTab = (vscode.getState() || {}).tab;
+    function selectedFlowTab(available) {
+      const initial = state && state.formats && state.formats.initial;
+      return available.includes(chosenTab) ? chosenTab : available.includes(initial) ? initial : "steps";
+    }
+    function chooseFlowTab(format, bar) {
+      const before = bar.getBoundingClientRect().top;
+      chosenTab = format;
+      vscode.setState({ ...(vscode.getState() || {}), tab: format });
+      for (const observer of chartObservers.splice(0)) observer.disconnect();
+      for (const update of flowViewUpdates) update();
+      const keepInPlace = () => {
+        if (!bar.isConnected) return;
+        ignoreScrollUntil = performance.now() + 200;
+        window.scrollBy(0, bar.getBoundingClientRect().top - before);
+      };
+      keepInPlace();
+      requestAnimationFrame(() => requestAnimationFrame(keepInPlace));
+    }
     const SVG = "http://www.w3.org/2000/svg";
     const iconPaths = {
       model: "M8 1 10 6 15 8 10 10 8 15 6 10 1 8 6 6Z",
@@ -1340,10 +1357,12 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
       if (formats.pseudocode || explanation.pseudocode) tabs.push(["pseudocode", "Pseudocode"]);
       if (formats.flowchart || explanation.flowchart) tabs.push(["flowchart", "Flowchart"]);
       const available = tabs.map(([id]) => id);
-      const selected = available.includes(chosenTab) ? chosenTab : available.includes(formats.initial) ? formats.initial : "steps";
+      const selected = selectedFlowTab(available);
       if (selected === "steps" && !(explanation.steps && explanation.steps.length) && tabs.length === 1) return;
       const head = el("div", "flow-head");
       head.append(el("h5", "", "What happens"));
+      const pane = el("div");
+      const buttons = [];
       if (tabs.length > 1) {
         const bar = el("div", "tabs");
         bar.setAttribute("role", "tablist");
@@ -1354,35 +1373,25 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
           tab.setAttribute("aria-selected", String(id === selected));
           tab.addEventListener("click", (event) => {
             event.stopPropagation();
-            if (id === selected) return;
-            chosenTab = id;
-            vscode.setState({ ...(vscode.getState() || {}), tab: id });
-            // Every explanation switches, which changes heights above this one, so keep the clicked tabs in place.
-            const before = bar.getBoundingClientRect().top;
-            render(state);
-            const keepInPlace = () => {
-              const after = document.querySelector("#" + CSS.escape(view.entryId) + "-ai .tabs");
-              if (!after) return;
-              ignoreScrollUntil = performance.now() + 200;
-              window.scrollBy(0, after.getBoundingClientRect().top - before);
-              return after;
-            };
-            keepInPlace()?.querySelector('[aria-selected="true"]')?.focus({ preventScroll: true });
-            // Flowcharts are fitted in the next frame, which changes heights once more.
-            requestAnimationFrame(() => requestAnimationFrame(keepInPlace));
+            if (id !== chosenTab) chooseFlowTab(id, bar);
           });
+          buttons.push([id, tab]);
           bar.append(tab);
         }
         head.append(bar);
       }
-      body.append(head);
-      if (selected === "pseudocode") {
-        body.append(explanation.pseudocode ? renderPseudocode(explanation.pseudocode, view) : missingFormat(view, "pseudocode"));
-      } else if (selected === "flowchart") {
-        body.append(explanation.flowchart ? renderFlowchart(explanation.flowchart, view) : missingFormat(view, "flowchart"));
-      } else {
-        body.append(renderSteps(explanation, view));
+      function update() {
+        const selected = selectedFlowTab(available);
+        for (const [id, button] of buttons) button.setAttribute("aria-selected", String(id === selected));
+        pane.replaceChildren(selected === "pseudocode"
+          ? explanation.pseudocode ? renderPseudocode(explanation.pseudocode, view) : missingFormat(view, "pseudocode")
+          : selected === "flowchart"
+            ? explanation.flowchart ? renderFlowchart(explanation.flowchart, view) : missingFormat(view, "flowchart")
+            : renderSteps(explanation, view));
       }
+      flowViewUpdates.push(update);
+      update();
+      body.append(head, pane);
     }
 
     function renderExplanation(body, explanation, view) {
@@ -1984,7 +1993,7 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
       return button;
     }
 
-    function renderComparisonVisual(view, change, outdated, choiceKey) {
+    function renderComparisonVisual(view, change, outdated) {
       const scope = view.scope;
       const section = el("section", "comparison-visual");
       section.setAttribute("aria-label", scope.title);
@@ -2074,7 +2083,6 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
         return column;
       }
       function select(format) {
-        comparisonTabChoices.set(choiceKey, format);
         for (const [name, button] of buttons) {
           button.setAttribute("aria-selected", String(name === format));
           button.tabIndex = name === format ? 0 : -1;
@@ -2090,20 +2098,21 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
         button.id = prefix + "-" + format;
         button.setAttribute("role", "tab");
         button.setAttribute("aria-controls", pane.id);
-        button.addEventListener("click", () => select(format));
+        button.addEventListener("click", () => chooseFlowTab(format, tabs));
         button.addEventListener("keydown", (event) => {
           const index = formats.findIndex((item) => item[0] === format);
           const next = event.key === "Home" ? 0 : event.key === "End" ? formats.length - 1 : event.key === "ArrowRight" ? (index + 1) % formats.length : event.key === "ArrowLeft" ? (index + formats.length - 1) % formats.length : -1;
           if (next < 0) return;
           event.preventDefault();
-          select(formats[next][0]);
+          chooseFlowTab(formats[next][0], tabs);
           buttons[next][1].focus();
         });
         buttons.push([format, button]);
         tabs.append(button);
       }
-      const chosen = comparisonTabChoices.get(choiceKey);
-      select(formats.some((item) => item[0] === chosen) ? chosen : "steps");
+      const update = () => select(selectedFlowTab(formats.map((item) => item[0])));
+      flowViewUpdates.push(update);
+      update();
       section.append(tabs, pane);
       return section;
     }
@@ -2235,14 +2244,14 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
         const visual = visualScopes.find((view) => view.scope.id === item.visualScopeId);
         if (visual && !usedScopes.has(visual.scope.id)) {
           usedScopes.add(visual.scope.id);
-          section.append(renderComparisonVisual(visual, change, result.outdated || change.status === "outdated", JSON.stringify([change.key, visual.scope.id, index])));
+          section.append(renderComparisonVisual(visual, change, result.outdated || change.status === "outdated"));
         }
         parts.push(section);
       }
       for (const visual of visualScopes) {
         if (usedScopes.has(visual.scope.id)) continue;
         const section = el("section", "change-item");
-        section.append(renderComparisonVisual(visual, change, result.outdated || change.status === "outdated", JSON.stringify([change.key, visual.scope.id])));
+        section.append(renderComparisonVisual(visual, change, result.outdated || change.status === "outdated"));
         parts.push(section);
       }
       renderFunctionCards("Removed", result.removed);
@@ -2308,6 +2317,7 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
 
 
     function render(next) {
+      flowViewUpdates.length = 0;
       const previousScroll = window.scrollY;
       const entries = [...document.querySelectorAll(".entry")];
       const inset = stickyInset();

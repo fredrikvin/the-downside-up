@@ -64,6 +64,7 @@ function webviewHelpers() {
   const script = html.slice(start, html.indexOf("</script>", start));
   const elements = new Map<string, TestElement>();
   const messages: unknown[] = [];
+  let savedState: Record<string, unknown> = {};
   const frames: Array<{ id: number; callback: () => void }> = [];
   const cancelledFrames = new Set<number>();
   let nextFrame = 0;
@@ -81,7 +82,11 @@ function webviewHelpers() {
   };
   const listeners = new Map<string, (event: { data: unknown }) => void>();
   const helpers = new Function("acquireVsCodeApi", "document", "window", "requestAnimationFrame", "cancelAnimationFrame", script + "\n  return { render, layoutFlow, downwardPath, renderPseudocode, renderFlowchart, renderEntry, renderAiBody, missingFormat, renderHeader, renderCrumbs, renderActivity, renderPageActions, renderReviewNavigation, renderReviewBands, renderChange, highlightSteps, setFormats: (formats) => { state = { formats }; } };")(
-    () => ({ getState: () => ({}), postMessage: (message: unknown) => messages.push(message) }),
+    () => ({
+      getState: () => savedState,
+      setState: (next: Record<string, unknown>) => { savedState = next; },
+      postMessage: (message: unknown) => messages.push(message)
+    }),
     {
       getElementById: element,
       createElement: (tag: string) => new TestElement(tag),
@@ -114,7 +119,7 @@ function webviewHelpers() {
   };
   messages.length = 0;
   return {
-    ...helpers, element, messages, window,
+    ...helpers, element, messages, window, savedState: () => savedState,
     receive: (data: unknown) => listeners.get("message")!({ data }),
     flushFrames: () => {
       while (frames.length) {
@@ -1059,7 +1064,7 @@ describe("change view", () => {
   });
 
   it("renders card explanations with the normal tabs and posts revealItem using the card id", () => {
-    const { renderChange, messages } = webviewHelpers();
+    const { renderChange, messages, renderAiBody, setFormats, savedState } = webviewHelpers();
     const cardId = "explained-added";
     const explanation: ExplanationView = {
       entryId: "host-view-entry",
@@ -1092,6 +1097,27 @@ describe("change view", () => {
     const step = nodes.find((node) => node.className === "step linked")!;
     step.listeners.get("keydown")?.({ ...event, key: "Enter", target: step });
     expect(messages).toEqual([{ type: "revealItem", entryId: cardId, kind: "step", index: 0 }]);
+    messages.length = 0;
+    setFormats({ pseudocode: true, flowchart: true, initial: "steps" });
+    const ordinary = renderAiBody(explanation);
+    const selected = (elements: TestElement[]) => elements.filter((node) =>
+      node.getAttribute("role") === "tab" && node.getAttribute("aria-selected") === "true").map((node) => node.textContent);
+    ordinary.elements().find((node) => node.textContent === "Pseudocode")!.listeners.get("click")?.(event);
+    expect(selected(ordinary.elements())).toEqual(["Pseudocode"]);
+    expect(selected(cards.flatMap((node) => node.elements()))).toEqual(["Pseudocode", "Pseudocode"]);
+    const nextFile = renderChange({ ...view, key: "another-file" });
+    expect(selected(nextFile.flatMap((node) => node.elements()))).toEqual(["Pseudocode"]);
+    nextFile.flatMap((node) => node.elements()).find((node) => node.textContent === "Flowchart")!.listeners.get("click")?.(event);
+    expect(selected(ordinary.elements())).toEqual(["Flowchart"]);
+    expect(selected(cards.flatMap((node) => node.elements()))).toEqual(["Flowchart", "Flowchart"]);
+    const missing = renderAiBody({
+      ...explanation, entryId: "missing-view",
+      explanation: { ...explanation.explanation!, pseudocode: undefined, flowchart: undefined }
+    });
+    expect(selected(missing.elements())).toEqual(["Flowchart"]);
+    expect(missing.elements().some((node) => node.textContent === "Generate")).toBe(true);
+    expect(savedState()).toEqual({ tab: "flowchart" });
+    expect(messages).toEqual([]);
   });
 
   it("keeps the comparison visible while an added card explanation is loading and removes stale card links", () => {
@@ -1216,8 +1242,8 @@ describe("change view", () => {
     expect(html).not.toContain(".comparison-tabs");
   });
 
-  it("keeps comparison tabs local, keyboard accessible, and independent of other change cards", () => {
-    const { renderChange, messages } = webviewHelpers();
+  it("shares comparison tabs across scopes and files while retaining keyboard access", () => {
+    const { renderChange, messages, savedState } = webviewHelpers();
     const view = withVisual();
     const sharedScope = {
       ...view,
@@ -1248,12 +1274,13 @@ describe("change view", () => {
     const pane = firstElements.find((node) => node.attributes.get("role") === "tabpanel")!;
     expect(pane.attributes.get("aria-labelledby")).toBe(pseudoTab.id);
     expect(pseudoTab.attributes.get("aria-controls")).toBe(pane.id);
-    expect(visuals[1]!.elements().find((node) => node.textContent === "Steps")?.attributes.get("aria-selected")).toBe("true");
+    expect(visuals[1]!.elements().find((node) => node.textContent === "Pseudocode")?.attributes.get("aria-selected")).toBe("true");
     const rerendered = renderChange(combined).flatMap((card) => card.elements()).filter((node) => node.className === "comparison-visual");
     expect(rerendered[0]!.elements().find((node) => node.textContent === "Pseudocode")?.attributes.get("aria-selected")).toBe("true");
-    expect(rerendered[1]!.elements().find((node) => node.textContent === "Steps")?.attributes.get("aria-selected")).toBe("true");
+    expect(rerendered[1]!.elements().find((node) => node.textContent === "Pseudocode")?.attributes.get("aria-selected")).toBe("true");
     const otherPair = renderChange({ ...combined, key: "other-pair" }).flatMap((card) => card.elements());
-    expect(otherPair.filter((node) => node.textContent === "Steps").every((tab) => tab.attributes.get("aria-selected") === "true")).toBe(true);
+    expect(otherPair.filter((node) => node.textContent === "Pseudocode").every((tab) => tab.attributes.get("aria-selected") === "true")).toBe(true);
+    expect(savedState()).toEqual({ tab: "pseudocode" });
     expect(messages).toEqual([]);
   });
 
@@ -1313,6 +1340,14 @@ describe("change view", () => {
     const updatedTabs = renderChange(withVisual()).flatMap((card) => card.elements()).filter((node) => node.attributes.get("role") === "tab");
     expect(updatedTabs.map((tab) => tab.textContent)).toEqual(["Steps"]);
     expect(updatedTabs[0]!.attributes.get("aria-selected")).toBe("true");
+    expect(messages).toEqual([]);
+  });
+
+  it("uses the configured initial view until the reader chooses one", () => {
+    const { renderChange, setFormats, messages } = webviewHelpers();
+    setFormats({ pseudocode: true, flowchart: true, initial: "pseudocode" });
+    const tabs = renderChange(withVisual()).flatMap((card) => card.elements()).filter((node) => node.getAttribute("role") === "tab");
+    expect(tabs.find((node) => node.getAttribute("aria-selected") === "true")?.textContent).toBe("Pseudocode");
     expect(messages).toEqual([]);
   });
 

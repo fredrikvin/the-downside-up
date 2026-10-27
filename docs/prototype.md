@@ -111,9 +111,13 @@ are preserved.
 
 `downsideUp.explanations.formats` adds two views of "What happens", both enabled by default,
 shown as tabs beside the steps (`downsideUp.explanations.initialFormat` picks
-the first tab; choosing a tab switches every explanation, like language tabs in
-documentation, keeps the clicked tabs in place on screen, and lasts while the
-preview is open): plain-language pseudocode lines with indentation, and a
+the first tab; choosing a tab switches every explanation, including Added/Removed
+cards and paired Changed views in reviews, like language tabs in documentation.
+The choice follows navigation between files and ordinary/review previews,
+keeps the clicked tabs in place on screen, and lasts while the preview is open).
+Unavailable or disabled views fall back to the configured initial view or Steps
+without changing the shared preference. The extra views are plain-language
+pseudocode lines with indentation, and a
 flowchart of start, action, decision, end, and show nodes with labelled edges.
 A show node is an exit that returns something shown on screen, such as a
 React element, drawn like a small window (a thick top bar and a "Shows"
@@ -468,7 +472,7 @@ native diff editor group and the original (Before) or modified (After) side
 before selecting and revealing the range; it does not open a separate file
 tab. If that comparison is no longer visible or its side cannot be focused,
 navigation reports an error instead of opening another document.
-Switching tabs is local and makes no
+Switching tabs shares the ordinary preview's view preference and makes no
 request. Valid side views survive invalid operation or connection matching;
 unverified matches are omitted with a specific limitation, never inferred.
 A malformed visual scope does not discard other valid scopes. Unsafe source
