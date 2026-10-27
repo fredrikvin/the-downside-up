@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.52.1
+
+- Ground review summaries in actual confirmed diffs and bounded surrounding
+  source rather than saved AI explanations. Summaries no longer wait for file
+  explanations, and disclose source coverage and omitted context.
+
 ## 0.52.0
 
 - Add a Review summary landing page for working and commit reviews, with

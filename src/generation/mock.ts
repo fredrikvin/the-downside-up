@@ -103,10 +103,10 @@ export class MockProvider implements GenerationProvider {
 
   summarizeReview(input: ReviewSummaryPromptInput, signal?: AbortSignal): Promise<GenerationResult<ReviewSummary>> {
     return this.respond(JSON.stringify(input), {
-      summary: "Mock mode: saved change explanations have not been semantically synthesized.",
+      summary: `Mock mode: ${input.files.length} confirmed source diffs supplied; change semantics have not been analyzed.`,
       themes: input.files.length ? [{
-        title: "Saved explanations",
-        text: "Deterministic placeholder output, not an independent review.",
+        title: "Confirmed source diffs",
+        text: `Deterministic placeholder for ${input.files.reduce((bytes, file) => bytes + Buffer.byteLength(file.diff, "utf8"), 0)} bytes of source hunks, not an independent review.`,
         fileIds: input.files.map((file) => file.id)
       }] : [],
       possibleEffects: [],

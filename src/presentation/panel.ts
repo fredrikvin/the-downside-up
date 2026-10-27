@@ -2627,16 +2627,16 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
     function renderReviewSummary(view) {
       const box = el("section", "review-summary");
       box.append(el("p", "muted", view.coverage),
-        el("p", "small muted", "Synthesized from saved AI change explanations, not an independent code review. Coverage and conclusions may be incomplete."));
+        el("p", "small muted", "Grounded in the confirmed diff and bounded surrounding source. Coverage and conclusions may be incomplete; this is not proof of correctness."));
       if (view.error) box.append(el("p", "error", view.error));
-      if (view.summary && !view.current) box.append(el("p", "muted", "Outdated or more comparisons are available. Regenerate explicitly to update this summary."));
+      if (view.summary && !view.current) box.append(el("p", "muted", "Review sources or summary settings changed. Regenerate explicitly to update this summary."));
       const control = el("button", "explain", view.generating ? "Cancel summary" : view.summary && view.current ? "Summary up to date" : view.summary ? "Regenerate summary" : "Generate summary");
       control.type = "button";
       control.disabled = !view.generating && (view.loading || !view.canGenerate || (view.summary && view.current));
       control.title = "Uses the Overview model and provider quota or billing; asks for repository/model sharing approval if needed.";
       control.addEventListener("click", () => post({ type: "reviewSummary", token: view.token, operation: view.generating ? "cancel" : "generate" }));
       box.append(control);
-      if (view.loading) box.append(explanationSkeleton(view.generating ? "Generating the review summary…" : "Checking saved comparisons…"));
+      if (view.loading) box.append(explanationSkeleton(view.generating ? "Generating the review summary…" : "Checking review sources…"));
       if (view.summary) box.append(el("p", "lead", view.summary));
       for (const theme of view.themes) {
         const section = el("section");

@@ -68,11 +68,14 @@ afterEach(() => {
 });
 
 describe("structured generation", () => {
-  it("synthesizes saved comparisons with a dedicated bounded schema and validates file IDs without repair", async () => {
+  it("summarizes source diffs with a dedicated bounded schema and validates file IDs without repair", async () => {
     const input = {
       coverage: { total: 1, included: 1, unavailable: 0, omitted: 0 }, limitations: [],
-      files: [{ id: "file-a", path: "a.ts", summary: "Adds retries.", added: [], removed: [], changes: [],
-        outside: "", possibleEffects: [], limitations: [] }]
+      files: [{ id: "file-a", path: "a.ts",
+        original: { path: "a.ts", label: "base", present: true, lines: 1, finalNewline: false },
+        modified: { path: "a.ts", label: "working", present: true, lines: 1, finalNewline: false },
+        diff: "@@ -1,1 +1,1 @@\n-tryOnce()\n+retry()", contextLines: 3,
+        omittedContext: { original: 0, modified: 0 }, limitations: [] }]
     };
     const value = {
       summary: "Reported retries.", themes: [{ title: "Retry", text: "Retries reported.", fileIds: ["file-a"] }],
@@ -92,6 +95,8 @@ describe("structured generation", () => {
     expect(body.text.format.schema.properties.themes.maxItems).toBe(12);
     expect(body.max_output_tokens).toBe(8000);
     expect(body.input[0].content[0].text).toContain("NOT an independent code review");
+    expect(body.input[1].content[0].text).toContain("-tryOnce()");
+    expect(body.input[1].content[0].text).toContain("+retry()");
     fetch.mockResolvedValueOnce(response({
       output: [{ content: [{ type: "output_text", text: JSON.stringify({
         ...value, themes: [{ ...value.themes[0], fileIds: ["not-in-evidence"] }]

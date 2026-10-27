@@ -99,11 +99,14 @@ function fakeModel(send: SendRequest, maxInputTokens = 100_000, countsTokens = t
 }
 
 describe("VS Code language model generation", () => {
-  it("synthesizes saved comparisons and rejects unknown file IDs without a repair request", async () => {
+  it("summarizes source diffs and rejects unknown file IDs without a repair request", async () => {
     const input = {
       coverage: { total: 1, included: 1, unavailable: 0, omitted: 0 }, limitations: [],
-      files: [{ id: "file-a", path: "a.ts", summary: "Adds retries.", added: [], removed: [], changes: [],
-        outside: "", possibleEffects: [], limitations: [] }]
+      files: [{ id: "file-a", path: "a.ts",
+        original: { path: "a.ts", label: "base", present: true, lines: 1, finalNewline: false },
+        modified: { path: "a.ts", label: "working", present: true, lines: 1, finalNewline: false },
+        diff: "@@ -1,1 +1,1 @@\n-tryOnce()\n+retry()", contextLines: 3,
+        omittedContext: { original: 0, modified: 0 }, limitations: [] }]
     };
     const value = {
       summary: "Reported retries.", themes: [{ title: "Retry", text: "Retries reported.", fileIds: ["file-a"] }],
@@ -112,6 +115,8 @@ describe("VS Code language model generation", () => {
     const { provider, sendRequest } = fakeModel(async () => streamOf([JSON.stringify(value)]));
     expect((await provider.summarizeReview(input)).value).toEqual(value);
     expect(sendRequest).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(sendRequest.mock.calls[0])).toContain("-tryOnce()");
+    expect(JSON.stringify(sendRequest.mock.calls[0])).toContain("+retry()");
     sendRequest.mockImplementationOnce(async () => streamOf([JSON.stringify({
       ...value, themes: [{ ...value.themes[0], fileIds: ["invented"] }]
     })]));

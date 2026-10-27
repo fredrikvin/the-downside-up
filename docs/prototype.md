@@ -632,27 +632,28 @@ expands that set.
 
 **Review summary** is a landing page for the confirmed working or commit review,
 not an extra queue item. Opening it, preparation progress, returning through
-navigation, and cache misses only read local saved comparisons and never generate
+navigation, and cache misses only inspect local review evidence and never generate
 a summary. **Generate summary / Regenerate summary** is an explicit, separately
 cancellable request using the Overview model with per-repository/model sharing
 consent. It runs with explicit scheduler priority and neither primes a project
-overview nor requests missing file comparisons. The evidence is bounded saved
-comparison prose and host-issued file IDs, never raw diffs/source or visual data.
-Only current saved comparisons of the exact confirmed snapshots under the
-Functions model are eligible. Coverage counts included, unavailable, and
+overview nor requests missing file comparisons. The primary evidence is the
+actual confirmed diff with bounded surrounding source and host-issued file IDs.
+This explicitly shares source with the Overview model; file explanations do not
+need to have been generated first. Coverage counts included, unavailable, and
 budget-omitted files, and discloses excluded/skipped files or truncated review
-listings. Zero eligible comparisons sends nothing. The prose is explicitly a
-synthesis of AI explanations, not independent review or proof of correctness.
+listings, and identifies omitted surrounding context. Zero eligible source
+entries sends nothing. Conclusions must be grounded in supplied source, with
+inferred effects kept separate; this is not proof of correctness or execution.
 Model-returned references must be IDs from the included evidence; host code
 revalidates their evidence and opens only the corresponding confirmed native
 pair. Outdated summaries have no generated links. Render all generated text as
 text, never markup.
 
 Summaries are saved with their scope, model/prompt identity and evidence
-freshness. They are reused cache-only; additional saved comparisons or changed
-inputs mark them outdated without regeneration. A request freezes its consumed
-evidence: completion of other file comparisons does not expand its coverage or
-abort it. Relevant source/evidence/model/policy changes and cancellation fence
+freshness, without persisting the source payload. They are reused cache-only;
+changed inputs mark them outdated without regeneration. A request freezes its
+consumed evidence: completion of file comparisons does not expand its coverage,
+invalidate it, or abort it. Relevant source/model/policy changes and cancellation fence
 uncommitted results. No automatic retry or fallback is made. Closing/replacing
 the review or preview, changing model/exclusion configuration, or clearing the
 repository cache cancels summary work. Stop still stops comparison preparation;

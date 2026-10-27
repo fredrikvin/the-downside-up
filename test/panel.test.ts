@@ -224,7 +224,7 @@ it("renders a review landing page as safe text with explicit token-bound actions
   expect(element("reviewNavigationTop").elements().some((node) => node.textContent === "3 files")).toBe(true);
   const content = element("entries");
   expect(content.elements().some((node) => ["script", "b", "img"].includes(node.tagName))).toBe(false);
-  expect(content.elements().map((node) => node.textContent).join(" ")).toContain("not an independent code review");
+  expect(content.elements().map((node) => node.textContent).join(" ")).toContain("confirmed diff and bounded surrounding source");
   expect(messages).toEqual([]);
   const event = { preventDefault: () => undefined, stopPropagation: () => undefined };
   content.elements().find((node) => node.textContent === "Regenerate summary")!.listeners.get("click")?.(event);
@@ -238,7 +238,7 @@ it("renders a review landing page as safe text with explicit token-bound actions
   expect(messages.at(-1)).toEqual({ type: "reviewSummary", token: state.reviewSummary!.token, operation: "cancel" });
   render({ ...state, reviewSummary: { ...state.reviewSummary!, loading: true, generating: false } });
   expect(content.elements().some((node) => node.textContent === "Cancel summary")).toBe(false);
-  expect(content.elements().some((node) => node.textContent === "Checking saved comparisons…")).toBe(true);
+  expect(content.elements().some((node) => node.textContent === "Checking review sources…")).toBe(true);
   render({ ...state, reviewSummary: { ...state.reviewSummary!, current: true } });
   expect(content.elements().find((node) => node.textContent === "Summary up to date")?.disabled).toBe(true);
 });

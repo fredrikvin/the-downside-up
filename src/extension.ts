@@ -2954,7 +2954,6 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       void change.comparisonSaved(snapshot).catch((error: unknown) => {
         void vscode.window.showWarningMessage(`The explanation was saved, but the preview could not refresh: ${errorMessage(error)}`);
       });
-      if (summarySelected && summaryPage?.session === reviewSession) scheduleSummaryRefresh();
       return saved;
     },
     sharingAllowed: reviewSharingAllowed,
@@ -2983,8 +2982,8 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     const files = new Map((prepared?.evidence ?? []).map((file) => [file.id, file]));
     const scope = page.session.coverage;
     const coverageText = coverage
-      ? `${coverage.included} of ${coverage.total} confirmed file comparisons ${record ? "used in this summary" : "available for synthesis"}; ${coverage.unavailable} unavailable, ${coverage.omitted} omitted by request limits.`
-      : `Checking saved comparisons for ${page.session.items.length} confirmed files…`;
+      ? `${coverage.included} of ${coverage.total} confirmed file diffs ${record ? "used in this summary" : "available for summarizing"}; ${coverage.unavailable} unavailable, ${coverage.omitted} omitted by request limits.`
+      : `Checking review sources for ${page.session.items.length} confirmed files…`;
     return {
       token, base: page.session.base, loading: page.loading, generating: Boolean(page.controller),
       canGenerate: prepared?.canGenerate === true && !page.loading, current: prepared?.current === true,
@@ -3335,7 +3334,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       : [];
     const picked = await vscode.window.showQuickPick<vscode.QuickPickItem & { item?: ReviewItem; action?: "summary" | "stop" | "dismiss" | "resume" }>(
       [
-        { label: "$(list-unordered) Review summary", description: "Overview of saved change explanations", action: "summary" },
+        { label: "$(list-unordered) Review summary", description: "Source-grounded overview of the confirmed diff", action: "summary" },
         ...session.items.map((item) => ({
           label: `${icons[item.status]} ${item.path}`,
           description: item.file.status === "modified" ? undefined : item.file.status,

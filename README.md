@@ -94,12 +94,13 @@ billing; see `docs/configuration.md` in the extension package.
   you confirm, the first file's diff opens on the left with the preview on the
   right (the active editor's file if it is in the review). The preview starts
   on **Review summary**, showing scope and progress without generating a summary.
-  **Generate summary** explicitly asks the Overview model to synthesize saved
-  file comparisons, with host-validated links to their confirmed diffs.
-  It shows incomplete coverage and uncertainties: this is a synthesis of AI
-  explanations, not an independent code review. Overview-model sharing approval
-  is separate; no raw diffs are resent for this request. Saved summaries are
-  reused; new comparisons or changed evidence require explicit regeneration.
+  **Generate summary** explicitly asks the Overview model to summarize the actual
+  confirmed diffs and bounded surrounding source, with host-validated links to
+  those diffs. Individual file explanations do not need to be ready first.
+  It discloses incomplete coverage, omitted context, and uncertainties; it is
+  not proof of correctness. Overview-model sharing approval is separate, and
+  this request shares diff source with that model. Saved summaries are reused;
+  changed evidence or summary settings require explicit regeneration.
   While a confirmed
   file's native diff is shown, the review bands above the file header and at
   the bottom of the preview offer **‹ Previous** and **Next ›** to step through

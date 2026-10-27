@@ -217,6 +217,13 @@ async function testCommitPreparation(api: DownsideUpTestApi, root: string): Prom
     assert.ok(api.shownReviewSummary(), "Commit preparation opens the review summary without generating it.");
     assert.equal(api.shownReviewSummary()?.summary, undefined);
     assert.equal(api.reviewNavigation()?.fileName, "Review summary");
+    const landingToken = api.reviewNavigation()!.token;
+    await api.invokeReviewSummary("generate", landingToken);
+    const sourceSummary = api.shownReviewSummary();
+    assert.ok(sourceSummary?.summary, sourceSummary?.error);
+    assert.equal(sourceSummary.current, true, "Source-grounded summary can be requested while file preparation is running.");
+    assert.ok(sourceSummary.coverage.includes("4 of 4"));
+    assert.ok(!sourceSummary.limitations.some((text) => text.includes("synthesizes saved AI explanations")));
     await assertReviewLayout(api, "main.ts");
     assert.deepEqual(api.reviewItems().map((item) => `${item.path} ${item.change}`), [
       "added.ts added", "deleted.ts deleted", "main.ts modified", "renamed.ts renamed"
@@ -276,7 +283,7 @@ async function testCommitPreparation(api: DownsideUpTestApi, root: string): Prom
     assert.ok(api.shownReviewSummary(), "Previous from the first file selects Review summary.");
     const summaryNavigation = api.reviewNavigation()!;
     assert.equal(summaryNavigation.canPrevious, false);
-    assert.equal(api.shownReviewSummary()?.summary, undefined, "Preparation and navigation do not automatically generate a summary.");
+    assert.equal(api.shownReviewSummary()?.summary, sourceSummary.summary, "Navigation reuses the explicitly generated source summary.");
     await api.invokeReviewSummary("generate", summaryNavigation.token);
     const synthesized = api.shownReviewSummary();
     assert.ok(synthesized?.summary, synthesized?.error);

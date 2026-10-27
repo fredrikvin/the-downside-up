@@ -7,12 +7,12 @@ import { cachedUsage } from "../src/cache/usage";
 import { fingerprint } from "../src/core/fingerprint";
 import type { ComparisonRecord, RepositoryCache } from "../src/core/types";
 import { ExplanationService } from "../src/controller";
-import { snapshotSignature, type ComparisonRef, type ComparisonSnapshot } from "../src/context/comparison";
+import { MAX_SIDE_BYTES, snapshotSignature, sourceIdentity, type ComparisonRef, type ComparisonSnapshot } from "../src/context/comparison";
 import {
   buildReviewSummaryRequest, reviewComparisonKey, reviewSummaryScopeKey, type ReviewSummaryScope
 } from "../src/context/reviewSummary";
 import { MockProvider } from "../src/generation/mock";
-import { COMPARISON_PROMPT_VERSION, reviewSummaryPrompt } from "../src/generation/prompts";
+import { COMPARISON_PROMPT_VERSION, REVIEW_SUMMARY_PROMPT_VERSION, reviewSummaryPrompt } from "../src/generation/prompts";
 import { parseReviewSummary } from "../src/generation/schema";
 import { workspace } from "./vscode";
 
@@ -46,6 +46,48 @@ function scopeFor(references = [ref()]): ReviewSummaryScope {
       path: reference.modified.path, ref: reference, confirmed: snapshotSignature(snapshot(reference))
     }))
   };
+}
+function sourceSnapshot(reference: ComparisonRef, before: string | undefined, after: string | undefined): ComparisonSnapshot {
+  const side = (name: "original" | "modified", text: string | undefined) => ({
+    path: reference[name].path, identity: sourceIdentity(reference[name].source),
+    state: text === undefined ? "absent" as const : "present" as const, detail: "",
+    text: text ?? "", fingerprint: text === undefined ? "" : fingerprint(text),
+    lines: text ? text.split(/\r?\n/).length : 0
+  });
+  return { root, original: side("original", before), modified: side("modified", after) };
+}
+async function sourceRequest(
+  entries: readonly { reference: ComparisonRef; source: ComparisonSnapshot }[], limit = 96 * 1024
+) {
+  const scope = {
+    ...scopeFor(entries.map((entry) => entry.reference)),
+    items: entries.map(({ reference, source }) => ({
+      path: reference.modified.path, ref: reference, confirmed: snapshotSignature(source)
+    }))
+  };
+  return buildReviewSummaryRequest(scope, await new MemoryRepositoryCacheStore().read(root), functions, overview,
+    async (reference) => entries.find((entry) => entry.reference === reference)!.source, async () => true, limit);
+}
+
+/** Reconstruct the after side, including untouched regions, to prove no changes vanished from bounded hunks. */
+function applyHunks(before: string, diff: string): string[] {
+  const original = before ? before.replace(/\n$/, "").split("\n") : [];
+  const after: string[] = [];
+  let cursor = 0;
+  for (const line of diff ? diff.split("\n") : []) {
+    const header = /^@@ -(\d+),(\d+) \+(\d+),(\d+) @@$/.exec(line);
+    if (header) {
+      const start = Number(header[1]) - (Number(header[2]) ? 1 : 0);
+      expect(start).toBeGreaterThanOrEqual(cursor);
+      after.push(...original.slice(cursor, start));
+      cursor = start;
+    } else {
+      const text = line.slice(1);
+      if (line[0] !== "+") expect(original[cursor++]).toBe(text);
+      if (line[0] !== "-") after.push(text);
+    }
+  }
+  return [...after, ...original.slice(cursor)];
 }
 function comparison(source = snapshot()): ComparisonRecord {
   return {
@@ -114,7 +156,7 @@ beforeEach(() => {
 });
 afterEach(() => vi.restoreAllMocks());
 
-describe("cache-only review summary preparation", () => {
+describe("local source-grounded review summary preparation", () => {
   it("requires model setup before touching an invalid scope, sources, cache or consent", async () => {
     const store = new MemoryRepositoryCacheStore();
     const readCache = vi.spyOn(store, "read");
@@ -122,8 +164,8 @@ describe("cache-only review summary preparation", () => {
     const authorizeExternalData = vi.fn();
     const read = vi.fn();
     const service = new ExplanationService({
-      store, describeProvider: () => ({ kind: "vscode-lm", modelId: "" }),
-      describeOverviewProvider: () => overview, createProvider, authorizeExternalData
+      store, describeProvider: () => functions,
+      describeOverviewProvider: () => ({ kind: "vscode-lm", modelId: "" }), createProvider, authorizeExternalData
     });
     await expect(service.summarizeReview(undefined as never, read, abortSignal())).rejects.toMatchObject({ name: "ModelSetupRequired" });
     expect(readCache).not.toHaveBeenCalled();
@@ -131,34 +173,45 @@ describe("cache-only review summary preparation", () => {
     expect(createProvider).not.toHaveBeenCalled();
     expect(authorizeExternalData).not.toHaveBeenCalled();
   });
-  it("does not generate or authorize on any cache miss, including zero evidence", async () => {
+  it("prepares sources without generating or authorizing on a cache miss", async () => {
     const h = harness();
     const prepared = await h.service.prepareReviewSummary(scopeFor(), h.read);
     expect(prepared).toMatchObject({
-      current: false, canGenerate: false, evidence: [],
-      coverage: { total: 1, included: 0, unavailable: 1, omitted: 0 }
+      current: false, canGenerate: true, evidence: [expect.objectContaining({ path: "a.ts" })],
+      coverage: { total: 1, included: 1, unavailable: 0, omitted: 0 }
     });
-    await expect(h.service.summarizeReview(scopeFor(), h.read, abortSignal())).rejects.toThrow("Explain changes");
     expect(h.provider.requests).toBe(0);
     expect(h.createProvider).not.toHaveBeenCalled();
     expect(h.authorizeExternalData).not.toHaveBeenCalled();
     expect((await h.store.read(root)).overview).toBeNull();
   });
 
-  it("uses only current saved text and never source, spans, visuals or catalogue in the request", async () => {
+  it("sends nothing for an empty confirmed set or a request too small for one complete diff", async () => {
     const h = harness();
-    await save(h.store);
+    expect(await h.service.prepareReviewSummary(scopeFor([]), h.read)).toMatchObject({
+      canGenerate: false, coverage: { total: 0, included: 0, unavailable: 0, omitted: 0 }
+    });
+    await expect(h.service.summarizeReview(scopeFor([]), h.read, abortSignal())).rejects.toThrow("No current confirmed source diffs");
+    h.setLimit(1);
+    expect(await h.service.prepareReviewSummary(scopeFor(), h.read)).toMatchObject({
+      canGenerate: false, coverage: { total: 1, included: 0, unavailable: 0, omitted: 1 }
+    });
+    await expect(h.service.summarizeReview(scopeFor(), h.read, abortSignal())).rejects.toThrow();
+    expect(h.createProvider).not.toHaveBeenCalled();
+    expect(h.authorizeExternalData).not.toHaveBeenCalled();
+  });
+
+  it("uses actual before/after source with zero saved comparisons and never persists the source payload", async () => {
+    const h = harness();
     const summarize = vi.spyOn(h.provider, "summarizeReview");
     const prepared = await h.service.summarizeReview({ ...scopeFor(), excluded: 2, skipped: 3, truncated: true }, h.read, abortSignal());
     const input = summarize.mock.calls[0]![0];
-    expect(JSON.stringify(input)).not.toContain("raw original source");
-    expect(JSON.stringify(input)).not.toContain("raw modified source");
+    expect(input.files[0]!.diff).toBe("@@ -1,1 +1,1 @@\n-raw original source\n+raw modified source");
     expect(JSON.stringify(input)).not.toContain("fingerprint");
     expect(JSON.stringify(input)).not.toContain("startLine");
     expect(JSON.stringify(input)).not.toContain("catalogue");
-    expect(input.files[0]!.changes[0]).toEqual({
-      title: "Retry", before: "Stops", after: "Tries twice", when: "On failure", flow: "Retries before stopping"
-    });
+    expect(input.files[0]!.original).toMatchObject({ present: true, path: "a.ts" });
+    expect(input.files[0]!.modified).toMatchObject({ present: true, path: "a.ts" });
     expect(h.createProvider).toHaveBeenCalledExactlyOnceWith(overview);
     expect(h.authorizeExternalData).toHaveBeenCalledWith(root, overview, expect.any(Number), expect.any(AbortSignal));
     expect(prepared).toMatchObject({ current: true, canGenerate: true, coverage: { included: 1 } });
@@ -169,10 +222,29 @@ describe("cache-only review summary preparation", () => {
     expect(prepared.evidence[0]?.id).toBe(input.files[0]!.id);
     expect(prepared.evidence[0]?.ref).toEqual(ref());
     expect((await h.store.read(root)).overview).toBeNull();
+    expect((await h.store.read(root)).comparisons).toBeUndefined();
+    expect(JSON.stringify(await h.store.read(root))).not.toContain("raw original source");
+    expect(JSON.stringify(await h.store.read(root))).not.toContain("raw modified source");
     const usage = cachedUsage(await h.store.read(root));
     expect(usage.models).toContainEqual(expect.objectContaining({ role: "Overview", provider: "openai", model: "Overview" }));
     await h.service.summarizeReview({ ...scopeFor(), excluded: 2, skipped: 3, truncated: true }, h.read, abortSignal());
     expect(summarize).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses only Overview configuration and request bounds for model freshness", async () => {
+    const h = harness();
+    h.setFunctionsModel("");
+    const first = await h.service.summarizeReview(scopeFor(), h.read, abortSignal());
+    h.setFunctionsModel("new unused Functions model");
+    const cached = await h.service.prepareReviewSummary(scopeFor(), h.read);
+    expect(cached.current).toBe(true);
+    expect(cached.record?.fingerprint).toBe(first.record?.fingerprint);
+    h.setLimit(80_000);
+    expect((await h.service.prepareReviewSummary(scopeFor(), h.read)).current).toBe(false);
+    h.setLimit(96 * 1024);
+    h.setOverviewModel("new used Overview model");
+    expect((await h.service.prepareReviewSummary(scopeFor(), h.read)).current).toBe(false);
+    expect(h.provider.requests).toBe(1);
   });
 
   it("retains a stale record and its frozen navigation IDs without generating", async () => {
@@ -190,6 +262,24 @@ describe("cache-only review summary preparation", () => {
     h.read.mockImplementation(async (reference) => snapshot(reference));
     h.setOverviewModel("new Overview");
     expect((await h.service.prepareReviewSummary(scopeFor(), h.read)).current).toBe(false);
+  });
+
+  it("hides obsolete explanation-only summaries entirely, while allowing explicit source regeneration", async () => {
+    const h = harness();
+    const first = await h.service.summarizeReview(scopeFor(), h.read, abortSignal());
+    await h.store.update(root, (current) => ({
+      ...current, reviewSummaries: {
+        [first.scopeKey]: { ...first.record!, promptVersion: "downside-up-review-summary-1",
+          value: { ...first.record!.value, summary: "Old saved explanation synthesis." } }
+      }
+    }));
+    expect(await h.service.prepareReviewSummary(scopeFor(), h.read)).toMatchObject({ current: false, canGenerate: true });
+    expect((await h.service.prepareReviewSummary(scopeFor(), h.read)).record).toBeUndefined();
+    expect(h.provider.requests).toBe(1);
+    const next = await h.service.summarizeReview(scopeFor(), h.read, abortSignal());
+    expect(next.record?.promptVersion).toBe(REVIEW_SUMMARY_PROMPT_VERSION);
+    expect(next.current).toBe(true);
+    expect(h.provider.requests).toBe(2);
   });
 
   it("selects whole entries in stable path order and counts available omissions", async () => {
@@ -229,7 +319,7 @@ describe("cache-only review summary preparation", () => {
     expect((await h.service.prepareReviewSummary(scope, h.read)).canGenerate).toBe(false);
   });
 
-  it.each(["wrong source", "wrong model", "old prompt", "missing catalogue", "wrong ref"])("rejects %s evidence without generation", async (problem) => {
+  it.each(["wrong source", "wrong model", "old prompt", "missing catalogue"])("ignores supplementary comparisons with %s", async (problem) => {
     const h = harness();
     await save(h.store, snapshot(), (record) => {
       switch (problem) {
@@ -240,9 +330,19 @@ describe("cache-only review summary preparation", () => {
         default: return record;
       }
     });
-    if (problem === "wrong ref") h.read.mockResolvedValue(snapshot(ref("elsewhere.ts")));
-    expect((await h.service.prepareReviewSummary(scopeFor(), h.read)).canGenerate).toBe(false);
+    expect((await h.service.prepareReviewSummary(scopeFor(), h.read)).canGenerate).toBe(true);
     expect(h.provider.requests).toBe(0);
+  });
+
+  it("rejects a reader's substituted path or source identity even with matching source text", async () => {
+    const h = harness();
+    for (const source of [
+      snapshot(ref("elsewhere.ts")),
+      { ...snapshot(), modified: { ...snapshot().modified, identity: "index" } }
+    ]) {
+      h.read.mockResolvedValue(source);
+      expect((await h.service.prepareReviewSummary(scopeFor(), h.read)).canGenerate).toBe(false);
+    }
   });
 
   it.each(["excluded", "restricted", "untrusted", "unreadable"])("refuses %s evidence", async (reason) => {
@@ -291,6 +391,106 @@ describe("cache-only review summary preparation", () => {
   });
 });
 
+describe("bounded complete source evidence", () => {
+  it("includes Added, Removed, rename-only, empty-file and outside-function changes without language branching", async () => {
+    const renamed = {
+      ...ref("new.unknown"), original: { ...ref("old.unknown").original }
+    };
+    const entries = [
+      { reference: ref("added.sql"), before: undefined, after: "CREATE TABLE widgets(id int);\n" },
+      { reference: ref("removed.py"), before: "GLOBAL_SETTING = True\n", after: undefined },
+      { reference: renamed, before: "opaque text\nunchanged\n", after: "opaque text\nunchanged\n" },
+      { reference: ref("empty"), before: undefined, after: "" },
+      { reference: ref("outside.rs"), before: "use old::Type;\nconst LIMIT: i32 = 1;\n",
+        after: "use new::Type;\nconst LIMIT: i32 = 2;\n" },
+      { reference: ref("newline"), before: "unchanged", after: "unchanged\n" }
+    ].map(({ reference, before, after }) => ({ reference, source: sourceSnapshot(reference, before, after) }));
+    const request = await sourceRequest(entries);
+    expect(request.input.coverage).toEqual({ total: 6, included: 6, unavailable: 0, omitted: 0 });
+    const file = (path: string) => request.input.files.find((entry) => entry.path === path)!;
+    expect(file("added.sql")).toMatchObject({ original: { present: false }, modified: { present: true } });
+    expect(file("added.sql").diff).toContain("+CREATE TABLE widgets(id int);");
+    expect(file("removed.py")).toMatchObject({ original: { present: true }, modified: { present: false } });
+    expect(file("removed.py").diff).toContain("-GLOBAL_SETTING = True");
+    expect(file("new.unknown")).toMatchObject({ original: { path: "old.unknown" }, modified: { path: "new.unknown" } });
+    expect(file("new.unknown").diff).toContain(" opaque text");
+    expect(file("empty")).toMatchObject({ original: { present: false }, modified: { present: true, lines: 0 }, diff: "" });
+    expect(file("outside.rs").diff).toContain("-use old::Type;");
+    expect(file("outside.rs").diff).toContain("+const LIMIT: i32 = 2;");
+    expect(file("newline")).toMatchObject({ original: { finalNewline: false }, modified: { finalNewline: true } });
+  });
+
+  it("fits moderate and near-side-limit files by sending every changed region with bounded surrounding source", async () => {
+    const entries = [600, 6500].map((count, index) => {
+      const reference = ref(`${index}.ts`);
+      const lines = Array.from({ length: count }, (_, line) => `const value${line} = "unchanged";`);
+      const before = lines.join("\n");
+      const changed = [...lines];
+      changed[100] = 'const value100 = "CHANGED FIRST";';
+      changed[count - 100] = 'const last = "CHANGED SECOND";';
+      return { reference, source: sourceSnapshot(reference, before, changed.join("\n")) };
+    });
+    const request = await sourceRequest(entries, 7000);
+    expect(request.bytes).toBeLessThanOrEqual(7000);
+    expect(request.input.coverage).toEqual({ total: 2, included: 2, unavailable: 0, omitted: 0 });
+    for (const file of request.input.files) {
+      const source = entries.find((entry) => entry.reference.modified.path === file.path)!.source;
+      expect(source.original.text.length + source.modified.text.length).toBeGreaterThan(7000);
+      expect(file.diff).toContain('+const value100 = "CHANGED FIRST";');
+      expect(file.diff).toContain('+const last = "CHANGED SECOND";');
+      expect(file.diff).toContain(' const value99 = "unchanged";');
+      expect(file.diff).not.toContain('value200 =');
+      expect(file.contextLines).toBe(3);
+      expect(file.omittedContext.original).toBe(file.original.lines - 14);
+      expect(file.omittedContext.modified).toBe(file.modified.lines - 14);
+      expect(file.limitations.join(" ")).toContain("Unchanged surrounding source omitted");
+      expect(applyHunks(source.original.text, file.diff)).toEqual(source.modified.text.split("\n"));
+    }
+    expect(request.input.limitations.join(" ")).toContain("Surrounding source is bounded");
+  });
+
+  it("omits a huge whole diff but still selects later bounded entries, with complete coverage accounting", async () => {
+    const entries = [
+      { reference: ref("a-huge"), source: sourceSnapshot(ref("a-huge"), "old\n".repeat(30_000), "new\n".repeat(30_000)) },
+      { reference: ref("b-small"), source: sourceSnapshot(ref("b-small"), "old", "new") },
+      { reference: ref("c-oversized"), source: sourceSnapshot(ref("c-oversized"), "old", "x".repeat(MAX_SIDE_BYTES + 1)) }
+    ];
+    const request = await sourceRequest(entries, 5000);
+    expect(request.bytes).toBeLessThanOrEqual(5000);
+    expect(request.input.coverage).toEqual({ total: 3, included: 1, unavailable: 1, omitted: 1 });
+    expect(request.evidence.map((entry) => entry.path)).toEqual(["b-small"]);
+    expect(request.input.limitations.join(" ")).toContain("omitted whole");
+    const reversed = await sourceRequest([...entries].reverse(), 5000);
+    expect(reversed.fingerprint).toBe(request.fingerprint);
+  });
+
+  it("retains all changes when bounded alignment falls back to a replacement region", async () => {
+    const reference = ref("coarse.txt");
+    const before = ["same", ...Array.from({ length: 100 }, (_, i) => `old-${i}`), "middle",
+      ...Array.from({ length: 100 }, (_, i) => `before-${i}`), "suffix"].join("\n");
+    const after = before.replaceAll("old-", "new-").replaceAll("before-", "after-");
+    const request = await sourceRequest([{ reference, source: sourceSnapshot(reference, before, after) }]);
+    const file = request.input.files[0]!;
+    expect(file.limitations.join(" ")).toContain("may contain unchanged lines");
+    expect(file.diff).toContain("-middle\n");
+    expect(file.diff).toContain("+middle\n");
+    expect(applyHunks(before, file.diff)).toEqual(after.split("\n"));
+  });
+
+  it("reconstructs both sparse and repetitive changes exactly from every included hunk", async () => {
+    for (let sample = 0; sample < 50; sample++) {
+      const reference = ref("repeated.txt");
+      const lines = Array.from({ length: 30 }, (_, index) => `line${(sample + index) % 9}`);
+      const modified = [...lines];
+      modified.splice(sample % 27, sample % 4, ...Array.from({ length: sample % 5 }, (_, i) => `new${i}`));
+      modified.splice(27, sample % 2, `last${sample}`);
+      const before = lines.join("\n");
+      const request = await sourceRequest([{ reference, source: sourceSnapshot(reference, before, modified.join("\n")) }]);
+      expect(applyHunks(before, request.input.files[0]!.diff)).toEqual(modified);
+    }
+  });
+});
+
 describe("review summary freshness and persistence", () => {
   it("uses Overview-model consent and honors a decline without generation", async () => {
     const h = harness();
@@ -302,7 +502,7 @@ describe("review summary freshness and persistence", () => {
     expect((await h.store.read(root)).reviewSummaries).toBeUndefined();
   });
 
-  it.each(["source", "evidence", "model", "functions", "policy", "trust", "limit", "scope", "clear", "cancel"])("discards in-flight %s changes", async (change) => {
+  it.each(["source", "model", "policy", "restriction", "trust", "limit", "scope", "clear", "cancel"])("discards in-flight %s changes", async (change) => {
     const h = harness();
     await save(h.store);
     const scope = scopeFor();
@@ -320,10 +520,9 @@ describe("review summary freshness and persistence", () => {
     await started.promise;
     switch (change) {
       case "source": h.read.mockImplementation(async (reference) => snapshot(reference, "changed")); break;
-      case "evidence": await save(h.store, snapshot(), (record) => ({ ...record, savedAt: 2 })); break;
       case "model": h.setOverviewModel("changed"); break;
-      case "functions": h.setFunctionsModel("changed"); break;
       case "policy": policy.exclusion = "new exclusion"; break;
+      case "restriction": policy.restriction = "new repository restriction"; break;
       case "trust": Object.assign(workspace, { isTrusted: false }); break;
       case "limit": h.setLimit(2000); break;
       case "scope": Object.assign(scope, { excluded: 4 }); break;
@@ -335,7 +534,36 @@ describe("review summary freshness and persistence", () => {
     expect((await h.store.read(root)).reviewSummaries).toBeUndefined();
   });
 
-  it("does not abort when previously unconsumed evidence finishes; frozen coverage is saved then marked outdated", async () => {
+  it.each(["consent", "provider setup"])("revalidates source, policy, cancellation and settings after %s before dispatch", async (stage) => {
+    for (const change of ["source", "policy", "restriction", "cancel", "limit", "model", "trust"]) {
+      const h = harness();
+      const controller = new AbortController();
+      const mutate = () => {
+        switch (change) {
+          case "source": h.read.mockImplementation(async (reference) => snapshot(reference, "edited before dispatch")); break;
+          case "policy": policy.exclusion = "new exclusion"; break;
+          case "restriction": policy.restriction = "new restriction"; break;
+          case "cancel": controller.abort(); break;
+          case "limit": h.setLimit(2000); break;
+          case "model": h.setOverviewModel("new Overview"); break;
+          case "trust": Object.assign(workspace, { isTrusted: false }); break;
+        }
+      };
+      if (stage === "consent") {
+        h.authorizeExternalData.mockImplementation(async () => { mutate(); return true; });
+      } else {
+        h.createProvider.mockImplementation(async () => { mutate(); return h.provider; });
+      }
+      await expect(h.service.summarizeReview(scopeFor(), h.read, controller.signal)).rejects.toThrow();
+      expect(h.provider.requests).toBe(0);
+      expect((await h.store.read(root)).reviewSummaries).toBeUndefined();
+      policy.exclusion = undefined;
+      policy.restriction = undefined;
+      Object.assign(workspace, { isTrusted: true });
+    }
+  });
+
+  it("ignores background comparisons, Functions-model changes and mutable queue status", async () => {
     const h = harness();
     const confirmed = scopeFor([ref("a.ts"), ref("b.ts")]);
     const scope = { ...confirmed, items: confirmed.items.map((item) => ({ ...item, status: "pending" })) };
@@ -345,33 +573,39 @@ describe("review summary freshness and persistence", () => {
       scope.items[0]!.status = "done";
       scope.items[1]!.status = "explaining";
       await save(h.store, snapshot(ref("b.ts")));
+      h.setFunctionsModel("changed");
       scope.items[1]!.status = "done";
       return original(input, signal);
     });
     const prepared = await h.service.summarizeReview(scope, h.read, abortSignal());
-    expect(prepared.current).toBe(false);
+    expect(prepared.current).toBe(true);
     expect(prepared.coverage.included).toBe(2);
-    expect(prepared.record?.coverage).toEqual({ total: 2, included: 1, unavailable: 1, omitted: 0 });
-    expect(prepared.record?.evidence).toHaveLength(1);
-    expect(prepared.record?.value.limitations.join(" ")).toContain("1 confirmed files");
+    expect(prepared.record?.coverage).toEqual({ total: 2, included: 2, unavailable: 0, omitted: 0 });
+    expect(prepared.record?.evidence).toHaveLength(2);
+    await h.service.summarizeReview(scope, h.read, abortSignal());
+    expect(h.provider.summarizeReview).toHaveBeenCalledTimes(1);
   });
 
-  it.each(["cancel", "source", "policy", "model"])("rechecks %s after the updater while the persistence lock is held", async (change) => {
+  it.each(["cancel", "source", "policy", "restriction", "trust", "model", "limit", "scope"])("rechecks %s after the updater while the persistence lock is held", async (change) => {
     const store = new GatedStore();
     const h = harness(store);
-    await save(store);
+    const scope = scopeFor();
     const controller = new AbortController();
     store.beforeCommit = async () => {
       if (change === "cancel") controller.abort();
       if (change === "source") h.read.mockImplementation(async (reference) => snapshot(reference, "changed before commit"));
       if (change === "policy") policy.exclusion = "excluded at commit";
+      if (change === "restriction") policy.restriction = "restricted at commit";
+      if (change === "trust") Object.assign(workspace, { isTrusted: false });
       if (change === "model") h.setOverviewModel("changed at commit");
+      if (change === "limit") h.setLimit(2000);
+      if (change === "scope") Object.assign(scope.items[0]!, { confirmed: "changed at commit" });
     };
-    await expect(h.service.summarizeReview(scopeFor(), h.read, controller.signal)).rejects.toThrow();
+    await expect(h.service.summarizeReview(scope, h.read, controller.signal)).rejects.toThrow();
     expect((await store.read(root)).reviewSummaries).toBeUndefined();
   });
 
-  it("checks locked comparison evidence after a queued replacement, without reentrant cache reads", async () => {
+  it("ignores locked comparison replacements without reentrant cache reads", async () => {
     const h = harness();
     await save(h.store);
     const originalUpdate = h.store.update.bind(h.store);
@@ -385,8 +619,8 @@ describe("review summary freshness and persistence", () => {
       }
       return originalUpdate(repository, update, signal, validate);
     });
-    await expect(h.service.summarizeReview(scopeFor(), h.read, abortSignal())).rejects.toThrow("saved file comparison changed");
-    expect((await h.store.read(root)).reviewSummaries).toBeUndefined();
+    const prepared = await h.service.summarizeReview(scopeFor(), h.read, abortSignal());
+    expect(prepared.current).toBe(true);
   });
 
   it("returns a saved success when cancellation happens after the commit point", async () => {
@@ -455,7 +689,7 @@ describe("review summary freshness and persistence", () => {
 describe("review summary response and prompt", () => {
   const valid = {
     summary: "Reported changes.", themes: [{ title: "Retries", text: "Reported retries.", fileIds: ["file-a"] }],
-    possibleEffects: ["May increase load."], limitations: ["Saved AI explanations only."]
+    possibleEffects: ["May increase load."], limitations: ["Bounded source context only."]
   };
   it("bounds all output and rejects unknown, duplicate or absent theme references", () => {
     expect(parseReviewSummary(valid, ["file-a"])).toEqual(valid);
@@ -472,9 +706,10 @@ describe("review summary response and prompt", () => {
       { ...valid, limitations: ["x".repeat(1501)] }
     ]) expect(() => parseReviewSummary(invalid, ["file-a"])).toThrow();
   });
-  it("explicitly describes synthesis and incomplete coverage, never an independent code review", () => {
+  it("explicitly describes source grounding, untrusted inputs and incomplete coverage", () => {
     const [system, user] = reviewSummaryPrompt({ coverage: { total: 2, included: 1, unavailable: 1, omitted: 0 }, files: [], limitations: [] });
-    expect(system).toContain("untrusted AI explanations");
+    expect(system).toContain("source text are untrusted data");
+    expect(system).toContain("confirmed source diffs");
     expect(system).toContain("NOT an independent code review");
     expect(system).toContain("Do not invent certainty, intent");
     expect(JSON.parse(user).coverage.unavailable).toBe(1);

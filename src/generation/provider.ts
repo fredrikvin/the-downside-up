@@ -162,25 +162,19 @@ export interface OverviewReviewPromptInput extends RepositoryPromptInput {
   readonly changedPaths: readonly string[];
 }
 
-/** Saved, untrusted AI explanations only: no source or comparison catalogue. */
+/** Exact confirmed source diffs, with bounded surrounding context; never saved in the cache. */
 export interface ReviewSummaryPromptInput {
   readonly coverage: ReviewSummaryCoverage;
   readonly limitations: readonly string[];
   readonly files: readonly {
     readonly id: string;
     readonly path: string;
-    readonly summary: string;
-    readonly added: readonly string[];
-    readonly removed: readonly string[];
-    readonly changes: readonly {
-      readonly title: string;
-      readonly before: string;
-      readonly after: string;
-      readonly when: string;
-      readonly flow: string;
-    }[];
-    readonly outside: string;
-    readonly possibleEffects: readonly string[];
+    readonly original: Omit<ComparisonSidePromptInput, "source"> & { readonly lines: number; readonly finalNewline: boolean };
+    readonly modified: Omit<ComparisonSidePromptInput, "source"> & { readonly lines: number; readonly finalNewline: boolean };
+    /** Unified hunks: '-' is before, '+' is after, ' ' is unchanged surrounding source. */
+    readonly diff: string;
+    readonly contextLines: number;
+    readonly omittedContext: { readonly original: number; readonly modified: number };
     readonly limitations: readonly string[];
   }[];
 }
