@@ -358,7 +358,8 @@ when another editor is shown. **Open Preview to the Side** and the editor
 title button work from either side of a diff. A saved explanation is looked up
 first, even with text selected.
 
-With `downsideUp.prefetch.enabled` and existing sharing approval for the
+With `downsideUp.prefetch.enabled`, `downsideUp.prefetch.diff.changed`
+(on by default), and existing sharing approval for the
 repository and Functions model, first showing a diff in the preview also
 preloads a missing comparison with background request priority. It never
 prompts for consent, needs no Overview model approval, reuses saved comparisons,
@@ -367,7 +368,7 @@ Enabling prefetch or granting consent can start a waiting comparison.
 Changing the shown diff, closing the preview, cancelling, disabling prefetch,
 or changing provider/exclusion settings cancels its background request.
 A queued request is also dropped if the diff was refreshed before it starts.
-Review mode retains its confirmed scope and disables this separate diff prefetch.
+Review mode retains its confirmed scope and disables this separate comparison prefetch.
 Switching tabs within a comparison, scrolling, editing, refreshing, and a
 cache miss outside this opt-in path never call a provider.
 **Explain changes** is the explicit request: it reads both versions
@@ -414,8 +415,21 @@ referenced function's side ranges. Orphan or independently invalid visuals
 are omitted with a limitation while valid text survives.
 
 **Explain** on an Added/Removed card is a separate explicit request for its
-normal Steps/Pseudocode/Flowchart explanation. Rendering, navigation, review,
-diff prefetch, and cache misses never request those details. Reopening a diff
+normal Steps/Pseudocode/Flowchart explanation. By default, rendering, navigation,
+review, diff prefetch, and cache misses never request those details. User-only
+`downsideUp.prefetch.diff.added` and `.removed` (both off by default) opt into
+full details of those categories in the shown diff, including during review,
+under the master `downsideUp.prefetch.enabled`. These settings require a current
+saved comparison/catalogue and existing consent for both Functions and Overview
+models; they never prompt. They use shared background priority, validate exact
+snapshots again at dispatch, reuse current cached details, and attempt each
+missing detail once per opened diff. Refreshing, source edits, and failed or
+cancelled attempts never restart generation; missing formats stay explicit.
+Switching diffs, closing/cancelling, or disabling prefetch cancels background
+card requests. No unseen review files or dependencies are added to the review
+queue. The Changed setting controls the existing whole-file comparison request,
+which necessarily also includes Added/Removed summaries; it does not restrict
+explicit review preparation. Reopening a diff
 restores current cached card explanations expanded; missing or stale details
 retain the Explain button without generation. Historical cards use the same
 cache-only restoration for their exact snapshot. A working-tree
@@ -494,7 +508,7 @@ presence comes from the snapshots, not model output. Each side allows at most
 whole-response budgets checked after expansion.
 This remains one comparison request per file for both exact snapshots, all
 Added/Removed summaries, and the Changed functions' three paired views.
-Uncached card details are separate explicit requests (one each, plus any
+Uncached card details are separate explicit or opted-in prefetch requests (one each, plus any
 needed normal working-source overview priming/review); missing formats add
 one request each. Review confirmation counts only file comparisons and never
 silently expands to those function requests.
@@ -590,7 +604,12 @@ resumes for the shown file, using only consent already given.
 The most recent review's confirmed set is retained in memory when leaving by
 navigation. Returning to one of its exact native diff URI pairs restores the
 review bands, progress, and selected file, including immutable commit reviews;
-ordinary files and single historical documents do not restore it. Any aborted
+for working reviews, selecting a confirmed file from Source Control's Changes
+list (HEAD/index to working tree) opens its confirmed review pair instead,
+preserving the review base even when it differs from HEAD. Both side paths must
+match; staged comparisons and arbitrary historical diffs are not redirected.
+This also restores a retained working review without restarting preparation.
+Ordinary files and single historical documents do not restore it. Any aborted
 in-flight items return to pending and preparation stays stopped until explicit
 Continue; restoration itself makes no provider requests. A new Review instance
 owns fresh navigation authority, so old webview messages cannot control it.
@@ -625,8 +644,9 @@ Source Control Graph's existing file tree remains the navigator; there is no
 new file viewer. Its individual native diffs look up the prepared pair, and a
 comparison already being read reloads cache-only after background persistence.
 Reader movement prioritizes only the confirmed set; cache misses outside it
-do not enqueue work. Independent function/diff prefetch is suppressed while
-Review is present. The preview's top review band shows **Commit: 3/8 ready ·
+do not enqueue work. Independent ordinary function/comparison prefetch is suppressed while
+Review is present, except opted-in Added/Removed details for the shown diff.
+The preview's top review band shows **Commit: 3/8 ready ·
 1 preparing** and **Stop**, scoped to the prepared repository; failed/skipped/outdated items are
 not counted ready. Stop prevents new requests but allows sent ones to finish;
 Cancel, closing the preview, replacing the session, clearing the cache, or

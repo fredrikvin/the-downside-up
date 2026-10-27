@@ -70,7 +70,13 @@ billing; see `docs/configuration.md` in the extension package.
   preloads automatically when the preview shows the diff. Otherwise,
   **Explain changes** sends both versions of that one file.
   All comparison summaries and Changed visuals come from **one request per
-  file**. Review and diff prefetch never request card details. Each uncached
+  file**. Added/Removed card details remain explicit by default. With prefetch
+  enabled, `downsideUp.prefetch.diff.added` and `.removed` separately opt into
+  full function details for the shown diff, including during review.
+  `downsideUp.prefetch.diff.changed` controls ordinary paired-comparison prefetch
+  (default on); it does not limit an explicitly confirmed review.
+  Card prefetch needs a current comparison and existing sharing approval,
+  never prompts, and does not prepare unseen files. Each uncached
   detail is a separate request; a working-side addition can first prime/review
   project context with the separately consented Overview model, but does not
   request an incidental file summary. Removed functions and revision/index-side
@@ -83,7 +89,8 @@ billing; see `docs/configuration.md` in the extension package.
 - **Prepare a review.** Run **Downside Up: Review Changes…**, select a
   comparison, and confirm the number of changed files to explain; each opens in
   VS Code's native diff. The confirmed count remains one comparison per file;
-  Added/Removed details are not included or generated in the background. After
+  Added/Removed details are not included in that count; optional card prefetch
+  applies only to the diff being viewed. After
   you confirm, the first file's diff opens on the left with the preview on the
   right (the active editor's file if it is in the review). While a confirmed
   file's native diff is shown, the review bands above the file header and at
@@ -94,7 +101,10 @@ billing; see `docs/configuration.md` in the extension package.
   reprioritizes its pending work; it does not start requests. Opening a file
   outside the review ends review mode. If the review is still preparing, you
   are asked first. Returning to an exact native diff from the most recent review
-  restores its navigation with that file selected. Unfinished preparation stays
+  restores its navigation with that file selected. For working reviews,
+  selecting a reviewed file in Source Control's
+  **Changes** list opens its confirmed review comparison, keeping the review base.
+  Staged and unrelated historical comparisons are not redirected. Unfinished preparation stays
   stopped until you choose **Continue explaining changed files**. This context
   is kept only in the current window; explicitly closing/cancelling the review,
   closing the preview, or starting another review discards it.
@@ -112,7 +122,8 @@ billing; see `docs/configuration.md` in the extension package.
   requests may finish; **Cancel** aborts uncommitted results). At most 200
   changed files are considered; exclusions and limits still apply, and failures
   may retry once. Opening anything outside this scope never adds requests.
-  Added/Removed details are not prepared. Use the command palette to start
+  Added/Removed details are not prepared for unseen files; opted-in card
+  prefetch applies only when their diff is shown. Use the command palette to start
   preparation; there is no added Source Control Graph context-menu command.
   The graph defaults to the first merge parent; for another parent, use the
   existing **Show Changed Files** list to open that exact prepared diff.

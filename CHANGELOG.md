@@ -1,7 +1,13 @@
 # Changelog
 
-## Unreleased
+## 0.51.0
 
+- Add independent user controls for diff Added/Removed function-detail prefetch
+  (off by default) and Changed comparison prefetch (on under master prefetch).
+  Opted-in details work for the shown review diff using existing consent only.
+- Keep or restore working-review context when selecting a confirmed file in
+  Source Control's Changes list, reopening its original review comparison
+  rather than replacing the review base with HEAD or the index.
 - Share the selected Steps, Pseudocode, or Flowchart view across ordinary
   previews and all review functions, retaining it when navigating files.
   Switching views never starts generation.

@@ -16,6 +16,7 @@ import {
   EMPTY_SCHEME,
   snapshotSignature,
   readComparison,
+  resolveNativeDiff,
   type CommitScope,
   type ComparisonRef
 } from "./context/comparison";
@@ -422,7 +423,10 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     explanationView: (state, id) => explanationView(state, id),
     schedule: (task, priority = "explicit") => scheduler.schedule(priority, task),
     prefetch: {
-      enabled: () => prefetchSettings().enabled && !reviewSession,
+      enabled: () => prefetchSettings().enabled,
+      comparisons: () => !reviewSession && vscode.workspace.getConfiguration("downsideUp").get<boolean>("prefetch.diff.changed", true) === true,
+      cards: (category) => vscode.workspace.getConfiguration("downsideUp").get<boolean>(`prefetch.diff.${category}`, false) === true,
+      cardsAllowed: (root) => modelConfigured() ? prefetchAllowed(root) : Promise.resolve(false),
       allowed: (root) => reviewSharingAllowed(root),
       background: (signal) => prefetchSignals.add(signal)
     },
@@ -1974,6 +1978,32 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
   /** Shows a native diff, using the same opt-in background generation as file previews. */
   const showChange = async (diff: { original: vscode.Uri; modified: vscode.Uri; nativeDiff: boolean }, force: boolean): Promise<void> => {
     if (!panel) return;
+    // Source Control opens HEAD/index -> working, which may differ from the
+    // confirmed review base. Reopen that file's confirmed pair, never relabel it.
+    const workingReview = reviewSession ?? retainedReview;
+    if (diff.nativeDiff && workingReview?.kind === "working" && vscode.workspace.isTrusted &&
+      diff.original.scheme === "git" && diff.modified.scheme === "file") {
+      let scmRef: unknown;
+      try { scmRef = (JSON.parse(diff.original.query) as { ref?: unknown }).ref; } catch { /* Not a Git SCM query. */ }
+      if (scmRef === "" || scmRef === "~" || scmRef === "HEAD") {
+        const editor = vscode.window.activeTextEditor;
+        const resolved = await resolveNativeDiff(workingReview.root, diff.original, diff.modified);
+        if ((reviewSession ?? retainedReview) !== workingReview || vscode.window.activeTextEditor !== editor) return;
+        const item = "ref" in resolved ? workingReview.items.find((candidate) =>
+          candidate.ref.original.path === resolved.ref.original.path &&
+          candidate.ref.modified.path === resolved.ref.modified.path &&
+          resolved.ref.modified.source.kind === "working") : undefined;
+        if (item) {
+          const pair = reviewDiffUris(item);
+          if (!sameUri(pair.original, diff.original) || !sameUri(pair.modified, diff.modified)) {
+            await vscode.commands.executeCommand("vscode.diff", pair.original, pair.modified,
+              `${basename(item.path)} (${workingReview.base})`, { viewColumn: vscode.ViewColumn.One, preview: true });
+            await showChange({ ...pair, nativeDiff: true }, force);
+            return;
+          }
+        }
+      }
+    }
     const restored = restoreReviewForDiff(diff);
     const surfaceChanged = changeIsNativeDiff !== diff.nativeDiff;
     changeIsNativeDiff = diff.nativeDiff;
@@ -3892,8 +3922,8 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       wakePrefetch();
     }
     if (event.affectsConfiguration("downsideUp.prefetch")) {
-      if (!prefetchSettings().enabled) change.stopPrefetch();
-      else if (panel && change.active) void change.prefetch();
+      change.stopPrefetch();
+      if (prefetchSettings().enabled && panel && change.active) void change.prefetch();
       if (!prefetchSettings().enabled) stopPrefetch();
       else if (prefetchSession) wakePrefetch();
       else if (panel && preview) startPrefetch(preview.document, preview.root);

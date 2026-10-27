@@ -299,7 +299,7 @@
             "type": "boolean",
             "default": false,
             "scope": "application",
-            "markdownDescription": "Generate AI explanations in the background for functions in the file shown in the preview, starting where you are reading and spreading outward. Also preloads the comparison when the preview first shows a Git diff, including paired Steps, Pseudocode, and Flowchart views. Uses your provider and its usage limits or billing without a click per function or diff. Runs only in trusted workspaces after code sharing was approved for the repository and model (and the overview model for normal files, if separate). The file preview offers an Approve sharing button while waiting; you can also explain a function or change first. Background work never asks for approval on its own or regenerates outdated comparisons after edits. Can only be set in user settings.",
+            "markdownDescription": "Generate AI explanations in the background for functions in the file shown in the preview, starting where you are reading and spreading outward. Diff prefetch is controlled separately by `#downsideUp.prefetch.diff.changed#`, `#downsideUp.prefetch.diff.added#`, and `#downsideUp.prefetch.diff.removed#`. Uses your provider and its usage limits or billing without a click per function or diff. Runs only in trusted workspaces after code sharing was approved for the repository and model (and the overview model for normal files and diff function details, if separate). The file preview offers an Approve sharing button while waiting; you can also explain a function or change first. Background work never asks for approval on its own or regenerates outdated comparisons after edits. Can only be set in user settings.",
             "order": 2
           },
           "downsideUp.prefetch.window": {
@@ -317,6 +317,27 @@
             "scope": "application",
             "markdownDescription": "For the function you are reading, how many of the functions and methods it calls in other files are prefetched (in languages other than Rust and Go, calls are found with the editor's go-to-definition), right after the function itself. Only the first calls in order of use are considered, and ones already explained count toward the number. `0` prefetches none. Requires `#downsideUp.prefetch.enabled#`.",
             "order": 4
+          },
+          "downsideUp.prefetch.diff.added": {
+            "type": "boolean",
+            "default": false,
+            "scope": "application",
+            "markdownDescription": "Prefetch full explanations for Added functions in the diff currently shown, including during review. Requires `#downsideUp.prefetch.enabled#` and a current saved change comparison identifying the functions. Uses existing repository/model sharing approval only; never prompts, adds review files, or prepares details for unseen files. Can use provider quota or billing.",
+            "order": 5
+          },
+          "downsideUp.prefetch.diff.changed": {
+            "type": "boolean",
+            "default": true,
+            "scope": "application",
+            "markdownDescription": "Prefetch the shown file's change comparison, including Changed functions' paired Steps, Pseudocode, and Flowchart. Requires `#downsideUp.prefetch.enabled#`. The same request includes Added/Removed summaries; it cannot fetch only Changed functions. Does not limit an explicitly confirmed review or start generation when switching view tabs.",
+            "order": 6
+          },
+          "downsideUp.prefetch.diff.removed": {
+            "type": "boolean",
+            "default": false,
+            "scope": "application",
+            "markdownDescription": "Prefetch full explanations for Removed functions from the original side of the diff currently shown, including during review. Requires `#downsideUp.prefetch.enabled#` and a current saved change comparison identifying the functions. Uses existing repository/model sharing approval only; never prompts, adds review files, or prepares details for unseen files. Can use provider quota or billing.",
+            "order": 7
           }
         }
       },

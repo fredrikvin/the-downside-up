@@ -17,6 +17,17 @@ root).
 
 ## Reading code
 
+Diff prefetch has separate user settings under `downsideUp.prefetch.diff`:
+`added` and `removed` (off by default) generate full function details in the
+shown diff, including reviews; `changed` (on by default) controls the ordinary
+whole-file comparison prefetch. All require `downsideUp.prefetch.enabled`.
+Added/Removed detail prefetch needs a current saved comparison and existing
+repository/model consent; it never prompts or prepares unseen review files.
+The comparison request still includes all categories' summaries, and an
+explicitly confirmed review is not limited by the Changed prefetch switch.
+Working-side details can also prime project context using the already-approved
+Overview model. Each detail uses provider quota/billing separately.
+
 The **Show callers** icon beside any function opens an incoming-call picker,
 independent of the active explanation tab. Select a caller to navigate to its
 call site and preview; use VS Code's **Go Back** to return. Only eligible local

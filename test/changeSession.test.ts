@@ -44,7 +44,7 @@ afterEach(async () => {
   await rm(root, { recursive: true, force: true });
 });
 
-async function cardSession() {
+async function cardSession(options: Partial<Pick<ChangeSessionHost, "prefetch" | "schedule">> = {}) {
   await writeFile(join(root, "functions.ts"), "export function removed() {\n return 'old';\n}\n");
   git("add", "functions.ts"); git("commit", "-q", "-m", "original function");
   await writeFile(join(root, "functions.ts"), "export function added() {\n return 'new';\n}\n");
@@ -56,7 +56,7 @@ async function cardSession() {
       lineAt: (line: number) => ({ text: text.split("\n")[line] ?? "" })
     } as vscode.TextDocument;
   }) as unknown as typeof vscode.workspace.openTextDocument);
-  const { changes, provider, service } = session();
+  const { changes, provider, service } = session(undefined, options);
   await changes.show(headOf("functions.ts"), uri("file", "functions.ts"));
   await changes.explain();
   const view = () => changes.view(() => "card-link")!;
@@ -64,6 +64,116 @@ async function cardSession() {
 }
 
 describe("explicit change function cards", () => {
+  const cardPrefetch = (category: "added" | "removed" | "both" = "both") => ({
+    ...prefetchOptions(),
+    enabled: vi.fn(() => false),
+    comparisons: vi.fn(() => false),
+    cards: vi.fn((value: "added" | "removed") => category === "both" || category === value),
+    cardsAllowed: vi.fn(async () => true)
+  });
+
+  it.each(["added", "removed", "both"] as const)("prefetches only opted-in %s details with background priority", async (category) => {
+    const prefetch = cardPrefetch(category);
+    const priorities: string[] = [];
+    const { changes, provider, view } = await cardSession({
+      prefetch, schedule: async (task, priority = "explicit") => { priorities.push(priority); return task(); }
+    });
+    prefetch.enabled.mockReturnValue(true);
+    await changes.prefetch();
+    const added = view().result!.added![0]!.explanation;
+    const removed = view().result!.removed![0]!.explanation;
+    expect(added?.status).toBe(category === "removed" ? undefined : "current");
+    expect(removed?.status).toBe(category === "added" ? undefined : "current");
+    // Working additions also prime repository context; historical removals do not.
+    expect(provider.requests).toBe(category === "both" ? 4 : category === "added" ? 3 : 2);
+    expect(priorities).toEqual(category === "both" ? ["explicit", "prefetch", "prefetch"] : ["explicit", "prefetch"]);
+    expect(prefetch.background).toHaveBeenCalledWith(expect.any(AbortSignal));
+    const requests = provider.requests;
+    await changes.refresh(); await changes.prefetch();
+    expect(provider.requests).toBe(requests);
+  });
+
+  it.each(["unapproved", "disabled", "untrusted", "edited"] as const)("does not prefetch card details when %s", async (reason) => {
+    const prefetch = cardPrefetch();
+    const { changes, provider } = await cardSession({ prefetch });
+    prefetch.enabled.mockReturnValue(reason !== "disabled");
+    prefetch.cardsAllowed.mockResolvedValue(reason !== "unapproved");
+    if (reason === "untrusted") workspace.isTrusted = false;
+    if (reason === "edited") {
+      await writeFile(join(root, "functions.ts"), "export function different() {}\n");
+      await changes.refresh();
+    }
+    await changes.prefetch();
+    expect(provider.requests).toBe(1);
+    expect(prefetch.background).not.toHaveBeenCalled();
+  });
+
+  it("does not generate a missing comparison when Changed prefetch is off", async () => {
+    const prefetch = cardPrefetch();
+    const { changes, provider } = await cardSession({ prefetch });
+    changes.clear();
+    await writeFile(join(root, "functions.ts"), "export function different() {}\n");
+    prefetch.enabled.mockReturnValue(true);
+    await changes.show(headOf("functions.ts"), uri("file", "functions.ts"));
+    await changes.prefetch();
+    expect(provider.requests).toBe(1);
+  });
+
+  it.each(["disabled", "unapproved", "leave"] as const)("drops queued card prefetch when %s", async (reason) => {
+    const prefetch = cardPrefetch("removed");
+    let queued!: () => void;
+    let release!: () => void;
+    const entered = new Promise<void>((resolve) => { queued = resolve; });
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const { changes, provider } = await cardSession({
+      prefetch, schedule: async (task, priority) => {
+        if (priority === "prefetch") { queued(); await gate; }
+        return task();
+      }
+    });
+    prefetch.enabled.mockReturnValue(true);
+    const pending = changes.prefetch();
+    await entered;
+    if (reason === "disabled") { prefetch.enabled.mockReturnValue(false); changes.stopPrefetch(); }
+    if (reason === "unapproved") prefetch.cardsAllowed.mockResolvedValue(false);
+    if (reason === "leave") changes.clear();
+    release(); await pending;
+    expect(provider.requests).toBe(1);
+  });
+
+  it("reports failed background details without retrying on refresh", async () => {
+    const prefetch = cardPrefetch("removed");
+    const { changes, provider, view } = await cardSession({ prefetch });
+    const explain = vi.spyOn(provider, "explainFunction").mockRejectedValue(new Error("Provider unavailable"));
+    prefetch.enabled.mockReturnValue(true);
+    await changes.prefetch();
+    expect(view().result!.removed![0]!.explanation).toMatchObject({
+      status: "failed", error: "Provider unavailable"
+    });
+    await changes.refresh(); await changes.prefetch();
+    expect(explain).toHaveBeenCalledTimes(1);
+  });
+
+  it("global cancellation stops the remaining background cards as well as the queued request", async () => {
+    const prefetch = cardPrefetch();
+    let queued!: () => void; let release!: () => void;
+    const entered = new Promise<void>((resolve) => { queued = resolve; });
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const { changes, provider } = await cardSession({
+      prefetch, schedule: async (task, priority) => {
+        if (priority === "prefetch") { queued(); await gate; }
+        return task();
+      }
+    });
+    prefetch.enabled.mockReturnValue(true);
+    const pending = changes.prefetch();
+    await entered;
+    changes.cancel();
+    release(); await pending;
+    expect(provider.requests).toBe(1);
+    expect(prefetch.background).toHaveBeenCalledTimes(1);
+  });
+
   it("restores cached added and removed details when returning to a saved diff without provider requests", async () => {
     const { changes, provider, view } = await cardSession();
     const added = view().result!.added![0]!.id;

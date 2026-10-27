@@ -80,6 +80,9 @@ async function testSnapshotFunctionCards(api: DownsideUpTestApi, document: vscod
   const root = await findRepositoryRoot(resolve(document.uri.fsPath, ".."));
   const path = document.uri.fsPath;
   const before = document.getText();
+  const settings = vscode.workspace.getConfiguration("downsideUp");
+  const prefetchKeys = ["prefetch.enabled", "prefetch.diff.added", "prefetch.diff.changed", "prefetch.diff.removed"];
+  const savedPrefetch = prefetchKeys.map((key) => settings.inspect<boolean>(key)?.globalValue);
   const replace = async (text: string) => {
     const edit = new vscode.WorkspaceEdit();
     edit.replace(document.uri, new vscode.Range(document.positionAt(0), document.positionAt(document.getText().length)), text);
@@ -106,6 +109,16 @@ async function testSnapshotFunctionCards(api: DownsideUpTestApi, document: vscod
     assert.deepEqual(comparison.removed.map((card) => card.name), ["CartItem"]);
     assert.equal(comparison.added[0]?.explanation, undefined, "Comparison generation never generates Added details.");
     assert.equal(comparison.removed[0]?.explanation, undefined, "Comparison generation never generates Removed details.");
+    await settings.update("prefetch.diff.changed", false, vscode.ConfigurationTarget.Global);
+    await settings.update("prefetch.diff.removed", true, vscode.ConfigurationTarget.Global);
+    await settings.update("prefetch.enabled", true, vscode.ConfigurationTarget.Global);
+    await waitFor(async () => api.shownChange()?.removed[0]?.explanation?.status === "current" ? true : undefined,
+      "opted-in Removed details to prefetch from the historical diff side");
+    assert.equal(api.shownChange()?.added[0]?.explanation, undefined, "Added detail prefetch is independently off.");
+    await settings.update("prefetch.diff.added", true, vscode.ConfigurationTarget.Global);
+    await waitFor(async () => api.shownChange()?.added[0]?.explanation?.status === "current" ? true : undefined,
+      "Added details to prefetch after enabling their separate setting");
+    await settings.update("prefetch.enabled", false, vscode.ConfigurationTarget.Global);
     const tabsBefore = vscode.window.tabGroups.all.flatMap((group) => group.tabs).length;
     for (const [side, card, expected, firstLine] of [
       ["modified", comparison.added[0]!, "modified-side", 0],
@@ -144,6 +157,9 @@ async function testSnapshotFunctionCards(api: DownsideUpTestApi, document: vscod
     assert.equal(api.shownChange()?.removed[0]?.explanation?.detail, "Saved explanation");
     console.log("Downside Up integration tests: Added/Removed details and three formats reveal their exact native Git diff side.");
   } finally {
+    for (let index = 0; index < prefetchKeys.length; index++) {
+      await settings.update(prefetchKeys[index]!, savedPrefetch[index], vscode.ConfigurationTarget.Global);
+    }
     await replace(before);
   }
 }
@@ -832,6 +848,12 @@ async function runWithCommitRepository(commitRoot: string): Promise<void> {
     assert.equal(await api.reviewChanges("HEAD"), 3);
     await assertReviewLayout(api, "src/CartItem.tsx");
     await waitFor(async () => api.reviewItems().every((item) => item.status === "done") ? true : undefined, "the cached review to finish");
+    const scmCartItem = cartItemDocument.uri.with({
+      scheme: "git", query: JSON.stringify({ path: cartItemDocument.uri.fsPath, ref: "~" })
+    });
+    await vscode.commands.executeCommand("vscode.diff", scmCartItem, cartItemDocument.uri, "Source Control Changes (test)");
+    await assertReviewLayout(api, "src/CartItem.tsx");
+    assert.equal(api.reviewItems().length, 3, "Selecting a reviewed file in Source Control keeps the confirmed review.");
     const returnPair = api.reviewDiffUris("src/Badge.tsx")!;
     const oldToken = api.reviewNavigation()!.token;
 
@@ -847,6 +869,12 @@ async function runWithCommitRepository(commitRoot: string): Promise<void> {
     await vscode.commands.executeCommand("vscode.diff", returnPair.original, nextBadgeUri, "Different pair (test)");
     await waitFor(async () => api.shownChange()?.fileName === "Badge.next.tsx" ? true : undefined, "an unrelated diff to be read");
     assert.equal(api.reviewItems().length, 0, "One matching side cannot restore review context.");
+    await vscode.commands.executeCommand("vscode.diff", scmCartItem, cartItemDocument.uri, "Return from Source Control (test)");
+    await waitFor(async () => api.reviewItems().length === 3 ? true : undefined, "restoring the confirmed working review from SCM");
+    await assertReviewLayout(api, "src/CartItem.tsx");
+    assert.equal(api.reviewItems().length, 3, "SCM selection can also restore the retained working review.");
+    await vscode.window.showTextDocument(cartViewDocument, vscode.ViewColumn.One);
+    await waitFor(async () => api.reviewItems().length === 0 ? true : undefined, "leaving the restored working review");
     await vscode.commands.executeCommand("vscode.diff", returnPair.original, returnPair.modified, "Return to review (test)");
     await assertReviewLayout(api, "src/Badge.tsx");
     assert.deepEqual(api.reviewProgress(), { text: "Review: 3/3 ready", canStop: false });

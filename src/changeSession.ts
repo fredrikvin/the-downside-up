@@ -28,6 +28,9 @@ export interface ChangeSessionHost {
   readonly schedule: <T>(task: () => Promise<T>, priority?: "explicit" | "prefetch") => Promise<T>;
   readonly prefetch?: {
     readonly enabled: () => boolean;
+    readonly comparisons?: () => boolean;
+    readonly cards?: (category: "added" | "removed") => boolean;
+    readonly cardsAllowed?: (root: string) => Promise<boolean>;
     readonly allowed: (root: string) => Promise<boolean>;
     readonly background: (signal: AbortSignal) => void;
   };
@@ -65,6 +68,8 @@ interface Shown {
   controller?: AbortController;
   prefetching?: boolean;
   prefetchAttempted?: boolean;
+  initialSnapshot?: string;
+  cardAttempts?: Set<string>;
 }
 
 /** Reading options for a snapshot: unsaved editor text stands in for the working file, and exclusions are checked per side. */
@@ -93,6 +98,8 @@ export class ChangeSession {
   private readonly cardLoads = new Map<string, Promise<ChangeCardState | undefined>>();
   private readonly cardErrors = new Map<string, string>();
   private readonly cardRequests = new Map<string, AbortController>();
+  private readonly backgroundCards = new Set<AbortController>();
+  private cardPrefetchEpoch = 0;
 
   constructor(private readonly host: ChangeSessionHost) {}
 
@@ -128,12 +135,14 @@ export class ChangeSession {
   }
 
   cancel(): void {
+    this.cardPrefetchEpoch++;
     this.shown?.controller?.abort();
     for (const controller of this.cardRequests.values()) controller.abort();
     for (const card of this.cards.values()) card.controller?.abort();
   }
 
   private clearCards(): void {
+    this.cardPrefetchEpoch++;
     this.bindingEpoch++;
     for (const controller of this.cardRequests.values()) controller.abort();
     this.cardRequests.clear();
@@ -147,7 +156,9 @@ export class ChangeSession {
   invalidateCards(): void { this.clearCards(); }
 
   stopPrefetch(): void {
+    this.cardPrefetchEpoch++;
     if (this.shown?.prefetching) this.shown.controller?.abort();
+    for (const controller of this.backgroundCards) controller.abort();
   }
 
   /** Looks up a saved comparison, then prefetches on first showing when opted in. */
@@ -173,6 +184,7 @@ export class ChangeSession {
     if (epoch === this.epoch && this.shown === shown) {
       this.host.changed();
       if (!previous) void this.prefetch();
+      else void this.prefetchCards();
     }
   }
 
@@ -226,6 +238,7 @@ export class ChangeSession {
     if (this.shown !== shown || this.epoch !== epoch) return;
     if (!saved?.current || (shown.snapshot && JSON.stringify(shown.snapshot) !== JSON.stringify(snapshot))) this.clearCards();
     apply({ root, ref: resolved.ref, snapshot, problem, saved });
+    shown.initialSnapshot ??= snapshotSignature(snapshot);
     await this.restoreCards(shown, epoch);
   }
 
@@ -339,10 +352,23 @@ export class ChangeSession {
     return state;
   }
 
-  /** Only panel Explain/Regenerate/Generate actions call this method; render, review and prefetch never do. */
+  /** Explicit card actions may ask for sharing approval. */
   async explainCard(id: string, format?: ExplanationFormat): Promise<void> {
+    await this.generateCard(id, format, false);
+  }
+
+  private async generateCard(id: string, format: ExplanationFormat | undefined, prefetching: boolean): Promise<void> {
     if (!this.hasCard(id) || this.cardRequests.has(id)) return;
     const controller = new AbortController();
+    const shown = this.shown!;
+    const category = shown.saved!.catalogue!.entries.find((entry) => this.cardId(entry) === id)!.category;
+    const mayPrefetch = () => this.shown === shown && vscode.workspace.isTrusted &&
+      this.host.prefetch?.enabled() === true && category !== "changed" &&
+      this.host.prefetch.cards?.(category) === true && !controller.signal.aborted;
+    if (prefetching) {
+      this.backgroundCards.add(controller);
+      this.host.prefetch?.background(controller.signal);
+    }
     this.cardRequests.set(id, controller);
     let state: ChangeCardState | undefined;
     try {
@@ -359,12 +385,15 @@ export class ChangeSession {
       const { root, target, document } = card.value;
       const result = await this.host.schedule(async () => {
         await card.validate();
-        if (controller.signal.aborted) throw new DOMException("Cancelled.", "AbortError");
+        if (controller.signal.aborted || (prefetching && (!mayPrefetch() ||
+          !(await this.host.prefetch?.cardsAllowed?.(root)) || !mayPrefetch()))) {
+          throw new DOMException("Background function explanation stopped.", "AbortError");
+        }
         return card.scope
           ? this.host.service.explainSnapshot(root, target, card.scope, controller.signal, format)
           : format ? this.host.service.addExplanationFormat(root, target, document, format, controller.signal, card.validate)
           : this.host.service.explain(root, target, document, controller.signal, undefined, card.validate);
-      }, "explicit");
+      }, prefetching ? "prefetch" : "explicit");
       if (this.cards.get(id) !== card) return;
       this.applyCardResult(card, result);
     } catch (error) {
@@ -380,6 +409,7 @@ export class ChangeSession {
         detail: state.controller?.signal.aborted ? "Cancelled; nothing was saved" : "Generation failed",
         ...(state.controller?.signal.aborted ? {} : { error: error instanceof Error ? error.message : "Could not explain this function." }) };
     } finally {
+      this.backgroundCards.delete(controller);
       if (this.cardRequests.get(id) === controller) this.cardRequests.delete(id);
       if (state) { state.controller = undefined; state.loadingFormat = undefined; }
       this.host.changed();
@@ -394,8 +424,44 @@ export class ChangeSession {
   /** Never prompts, retries a failed attempt, or regenerates an outdated saved comparison. */
   async prefetch(): Promise<void> {
     const shown = this.shown;
-    if (!this.host.prefetch?.enabled() || !shown || shown.saved || shown.error || shown.problem || shown.prefetchAttempted) return;
-    await this.generate(true);
+    if (!this.host.prefetch?.enabled() || !shown) return;
+    if (this.host.prefetch.comparisons?.() !== false && !shown.saved && !shown.error && !shown.problem && !shown.prefetchAttempted) {
+      await this.generate(true);
+    }
+    if (this.shown === shown) await this.prefetchCards();
+  }
+
+  private async prefetchCards(): Promise<void> {
+    const shown = this.shown;
+    try {
+      await this.runCardPrefetch();
+    } catch (error) {
+      if (shown && this.shown === shown) {
+        shown.error = `Could not prefetch function details: ${error instanceof Error ? error.message : String(error)}`;
+        this.host.changed();
+      }
+    }
+  }
+
+  private async runCardPrefetch(): Promise<void> {
+    const epoch = this.cardPrefetchEpoch;
+    const shown = this.shown;
+    const background = this.host.prefetch;
+    if (!shown?.saved?.current || !shown.snapshot || shown.problem ||
+      shown.initialSnapshot !== snapshotSignature(shown.snapshot) || !vscode.workspace.isTrusted ||
+      !background?.enabled() || !background.cards || !background.cardsAllowed) return;
+    for (const entry of shown.saved.catalogue?.entries ?? []) {
+      if (this.shown !== shown || epoch !== this.cardPrefetchEpoch || !background.enabled() || !vscode.workspace.isTrusted) return;
+      if (entry.category === "changed" || !background.cards(entry.category)) continue;
+      const id = this.cardId(entry);
+      if (shown.cardAttempts?.has(id) || this.cards.has(id) || this.cardErrors.has(id) || this.cardRequests.has(id)) continue;
+      if (!(await background.cardsAllowed(shown.snapshot.root))) return;
+      if (this.shown !== shown || epoch !== this.cardPrefetchEpoch || !background.enabled() || !background.cards(entry.category) || !vscode.workspace.isTrusted) return;
+      // Recheck after asynchronous consent lookup: another caller may have queued this card.
+      if (shown.cardAttempts?.has(id) || this.cards.has(id) || this.cardRequests.has(id)) continue;
+      (shown.cardAttempts ??= new Set()).add(id);
+      await this.generateCard(id, undefined, true);
+    }
   }
 
   private async generate(prefetching: boolean): Promise<void> {
@@ -406,7 +472,8 @@ export class ChangeSession {
     const epoch = this.epoch;
     const controller = new AbortController();
     const mayPrefetch = () => this.shown === shown && epoch === this.epoch
-      && vscode.workspace.isTrusted && background?.enabled() === true && !controller.signal.aborted;
+      && vscode.workspace.isTrusted && background?.enabled() === true &&
+      background.comparisons?.() !== false && !controller.signal.aborted;
     shown.controller = controller;
     shown.prefetching = prefetching;
     if (prefetching) this.host.prefetch?.background(controller.signal);
@@ -452,6 +519,7 @@ export class ChangeSession {
       shown.detail = undefined;
       if (this.shown === shown) this.host.changed();
     }
+    if (this.shown === shown) await this.prefetchCards();
   }
 
   /** The panel's view of the shown pair; link ids are registered through `register` and resolved by the host only. */

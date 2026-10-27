@@ -39,6 +39,11 @@ describe("extension settings", () => {
     expect(properties["downsideUp.explanations.initialFormat"]?.default).toBe("steps");
     expect(properties["downsideUp.prefetch.enabled"]?.default).toBe(false);
     expect(properties["downsideUp.prefetch.enabled"]?.scope).toBe("application");
+    for (const [category, enabled] of [["added", false], ["changed", true], ["removed", false]] as const) {
+      expect(properties[`downsideUp.prefetch.diff.${category}`]).toMatchObject({
+        type: "boolean", scope: "application", default: enabled
+      });
+    }
   });
 
   it("declares every downsideUp setting the code reads or writes", () => {

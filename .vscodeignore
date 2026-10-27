@@ -8,6 +8,10 @@ src/**
 dist/test/**
 dist/**/*.map
 coverage/**
+docs/development.md
+docs/*-plan.md
+docs/*-handover.md
+docs/*-todo.md
 *.ts
 *.tsbuildinfo
 package-lock.json
