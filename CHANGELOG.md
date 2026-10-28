@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.54.2
 
 - Open the Review Changes picker immediately while model availability and
   comparison bases are checked, instead of appearing to do nothing on slow
