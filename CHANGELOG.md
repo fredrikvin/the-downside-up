@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.54.4
 
 - Replace outdated-state text buttons (Explain again, Regenerate) with a refresh
   icon beside the outdated item's heading: changed-file names, function
