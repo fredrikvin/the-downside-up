@@ -126,6 +126,9 @@ billing; see `docs/configuration.md` in the extension package.
   restores its navigation with that file selected. For working reviews,
   selecting a reviewed file in Source Control's
   **Changes** list opens its confirmed review comparison, keeping the review base.
+  Graph diffs can also return to that review when both complete file versions
+  match its confirmed content, even after commit IDs change. Different content
+  stays a separate comparison; rebasing does not silently update a review's scope.
   Staged and unrelated historical comparisons are not redirected. Unfinished preparation stays
   stopped until you choose **Continue explaining changed files**. This context
   is kept only in the current window; explicitly closing/cancelling the review,

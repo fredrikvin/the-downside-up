@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.54.1
+
+- Fix graph diff routing while the preview retains focus, and avoid leaving
+  review while a newly selected comparison is still resolving.
+- Reconnect equivalent graph diffs to confirmed working-review comparisons by
+  checking both complete file versions, including rewritten commit identities.
+
 ## 0.54.0
 
 - Preload the review summary asynchronously when starting a review, reusing

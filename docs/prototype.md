@@ -613,6 +613,13 @@ for working reviews, selecting a confirmed file from Source Control's Changes
 list (HEAD/index to working tree) opens its confirmed review pair instead,
 preserving the review base even when it differs from HEAD. Both side paths must
 match; staged comparisons and arbitrary historical diffs are not redirected.
+A graph's Git-to-Git pair may reopen the confirmed working pair only when both
+side paths, presence states, and complete source texts match the still-current
+confirmed snapshots. Rewritten commit IDs alone do not prevent this equivalence;
+changed source or a stale confirmed snapshot does. Never substitute by path alone.
+Graph selections that preserve preview focus still route their native diff,
+rather than treating a side as a standalone Git document. Tab/editor event
+reconciliation must finish resolving the pair before deciding to leave review.
 This also restores a retained working review without restarting preparation.
 Ordinary files and single historical documents do not restore it. Any aborted
 in-flight items return to pending and preparation stays stopped until explicit

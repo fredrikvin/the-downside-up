@@ -1986,8 +1986,8 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     if (!editor) return undefined;
     // The active tab owns both exact sides, also while an inline/collapsed
     // editor is being recreated. Its TextEditor/column can lag layout events;
-    // neither is the comparison identity. Never borrow a diff from another
-    // group merely because its side has the same document URI.
+    // neither is the comparison identity. A focused text tab must never borrow
+    // another group's comparison just because it shares a document URI.
     const tab = vscode.window.tabGroups.activeTabGroup.activeTab;
     const input = tab?.input;
     if (input instanceof vscode.TabInputTextDiff &&
@@ -1995,9 +1995,25 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       lastNativeDiffTab = tab;
       return { original: input.original, modified: input.modified, nativeDiff: true };
     }
+    // Graph selections may open a diff with preserveFocus, leaving the webview
+    // group active. Match its actual editor to one unambiguous active diff tab.
+    if (!(input instanceof vscode.TabInputText) && !(input instanceof vscode.TabInputTextDiff)) {
+      const candidates = vscode.window.tabGroups.all.flatMap((group) => {
+        const candidate = group.activeTab;
+        const pair = candidate?.input;
+        return candidate && pair instanceof vscode.TabInputTextDiff &&
+          (editor.viewColumn === undefined || editor.viewColumn === group.viewColumn) &&
+          (sameUri(pair.original, editor.document.uri) || sameUri(pair.modified, editor.document.uri))
+          ? [{ tab: candidate, pair }] : [];
+      });
+      if (candidates.length === 1) {
+        lastNativeDiffTab = candidates[0]!.tab;
+        return { original: candidates[0]!.pair.original, modified: candidates[0]!.pair.modified, nativeDiff: true };
+      }
+    }
     // Preview focus has no TextEditor. Retain only the tab already associated
-    // above, while that exact tab still owns its group; do not search other
-    // groups for a URI match. Ordinary text tabs never take this branch.
+    // above, while that exact tab still owns its group. Ordinary text tabs
+    // never take this branch.
     const previous = lastNativeDiffTab?.input;
     if (!vscode.window.activeTextEditor && panel?.panel.active && editor === lastTextEditor &&
       lastNativeDiffTab?.isActive && lastNativeDiffTab.group.tabs.includes(lastNativeDiffTab) &&
@@ -2043,7 +2059,37 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
         }
       }
     }
+    // A graph can show the same before/after content using immutable Git URIs.
+    // Path matches alone must not relabel another commit or a rebased change.
+    if (diff.nativeDiff && workingReview?.kind === "working" && vscode.workspace.isTrusted &&
+        diff.original.scheme === "git" && diff.modified.scheme === "git") {
+      const tab = lastNativeDiffTab;
+      const resolved = await resolveNativeDiff(workingReview.root, diff.original, diff.modified);
+      if ("ref" in resolved) {
+        const item = workingReview.items.find((candidate) =>
+          candidate.ref.original.path === resolved.ref.original.path && candidate.ref.modified.path === resolved.ref.modified.path);
+        if (item) {
+          const options = snapshotOptions();
+          const [graph, confirmed] = await Promise.all([
+            readComparison(resolved.ref, options), readComparison(item.ref, options)
+          ]);
+          if (!summarySelected && (reviewSession ?? retainedReview) === workingReview &&
+              lastNativeDiffTab === tab && tab?.group.activeTab === tab &&
+              !comparisonProblem(graph) && !comparisonProblem(confirmed) &&
+              snapshotSignature(confirmed) === item.confirmed &&
+              (["original", "modified"] as const).every((side) =>
+                graph[side].state === confirmed[side].state && graph[side].text === confirmed[side].text)) {
+            const pair = reviewDiffUris(item);
+            await vscode.commands.executeCommand("vscode.diff", pair.original, pair.modified,
+              `${basename(item.path)} (${workingReview.base})`, { viewColumn: vscode.ViewColumn.One, preview: true });
+            await showChange({ ...pair, nativeDiff: true }, force);
+            return;
+          }
+        }
+      }
+    }
     const restored = restoreReviewForDiff(diff);
+    if (notice?.text.startsWith("No confirmed comparison for this Git document.")) notice = undefined;
     const surfaceChanged = changeIsNativeDiff !== diff.nativeDiff;
     changeIsNativeDiff = diff.nativeDiff;
     regeneration?.abort();
@@ -2911,8 +2957,14 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
    * review ends quietly (its results are saved); one still preparing asks first.
    * Ending re-enables ordinary prefetching for the newly shown file.
    */
-  const leaveReviewIfOutside = async (editor: vscode.TextEditor, session: Review): Promise<void> => {
-    if (reviewSession !== session || vscode.window.activeTextEditor !== editor || leaveReviewPrompt) return;
+  const leaveReviewIfOutside = async (editor: Pick<vscode.TextEditor, "document">, session: Review): Promise<void> => {
+    const activeInput = vscode.window.tabGroups.activeTabGroup.activeTab?.input;
+    const ordinarySelected = activeInput instanceof vscode.TabInputText && sameUri(activeInput.uri, editor.document.uri);
+    if (reviewSession !== session || (vscode.window.activeTextEditor !== editor && !ordinarySelected) || leaveReviewPrompt) return;
+    if (change.reading) return;
+    if (session.kind === "working" && activeInput instanceof vscode.TabInputText &&
+        editor.document.uri.scheme === "file" && session.items.some((item) =>
+          sameUri(vscode.Uri.file(resolve(session.root, item.path)), editor.document.uri))) return;
     const shownHere = change.active || Boolean(preview && sameUri(preview.document.uri, editor.document.uri));
     if (!shownHere || showsReviewItem(session) || previewInReview(session)) return;
     const end = (): void => {
@@ -4037,6 +4089,9 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     if (selectionTimer) clearTimeout(selectionTimer);
     // Returning focus to a shown document does not change its outline or explanation.
     const diff = diffForEditor(editor);
+    const selectedInput = vscode.window.tabGroups.activeTabGroup.activeTab?.input;
+    if ((reviewSession || change.active || summarySelected) &&
+        selectedInput instanceof vscode.TabInputText && !sameUri(selectedInput.uri, editor.document.uri)) return;
     if (summarySelected) {
       const key = diff ? JSON.stringify([diff.original.toString(), diff.modified.toString()]) : undefined;
       if ((summaryEditorPair && key === summaryEditorPair) || (!summaryEditorPair && editor === summaryEditor)) return;
@@ -4051,7 +4106,10 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       }
       return;
     }
-    if (preview && !change.active && sameUri(preview.document.uri, editor.document.uri) && !diff) return;
+    if (preview && !change.active && sameUri(preview.document.uri, editor.document.uri) && !diff) {
+      if (reviewSession) void leaveReviewIfOutside(editor, reviewSession);
+      return;
+    }
     if (outlineTimer) clearTimeout(outlineTimer);
     if (!panel?.panel.visible) return;
     const session = reviewSession;
@@ -4061,16 +4119,95 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
           render();
         })
       : previewDocument(editor.document);
-    if (session) void shown.then(() => leaveReviewIfOutside(editor, session)).catch(() => undefined);
+    if (session) void shown.then(() => {
+      const current = vscode.window.activeTextEditor;
+      if (!diff) return leaveReviewIfOutside(editor, session);
+      const selected = diffForEditor(current);
+      if (current && selected && sameUri(selected.original, diff.original) && sameUri(selected.modified, diff.modified)) {
+        return leaveReviewIfOutside(current, session);
+      }
+      return undefined;
+    }).catch(() => undefined);
   };
   const onActiveEditorChange = vscode.window.onDidChangeActiveTextEditor(followActiveEditor);
+  const editorForActiveTab = (): vscode.TextEditor | undefined => {
+    const input = vscode.window.tabGroups.activeTabGroup.activeTab?.input;
+    return input instanceof vscode.TabInputText
+      ? vscode.window.visibleTextEditors.find((candidate) => sameUri(candidate.document.uri, input.uri)) ?? vscode.window.activeTextEditor
+      : vscode.window.activeTextEditor;
+  };
+  const followNativeTab = (tab: vscode.Tab | undefined): boolean => {
+    const input = tab?.input;
+    if (!tab?.isActive || !(input instanceof vscode.TabInputTextDiff) || !panel?.panel.visible) return false;
+    lastNativeDiffTab = tab;
+    const key = JSON.stringify([input.original.toString(), input.modified.toString()]);
+    if (summarySelected && key === summaryEditorPair) return true;
+    summarySelected = false;
+    summaryEditor = undefined;
+    summaryEditorPair = undefined;
+    if (change.shows(input.original, input.modified)) return true;
+    const session = reviewSession;
+    void showChange({ original: input.original, modified: input.modified, nativeDiff: true }, true).then(async () => {
+      const current = vscode.window.activeTextEditor;
+      if (session && current && tab.group.activeTab === tab &&
+          (sameUri(current.document.uri, input.original) || sameUri(current.document.uri, input.modified))) {
+        await leaveReviewIfOutside(current, session);
+      }
+    }).catch((error: unknown) => {
+      notice = { tone: "error", text: `Could not read the change: ${errorMessage(error)}` };
+      render();
+    });
+    return true;
+  };
+  const followOrdinaryTab = (tab: vscode.Tab | undefined): boolean => {
+    const input = tab?.input;
+    if ((!reviewSession && !change.active && !summarySelected) ||
+        !tab || !(input instanceof vscode.TabInputText) || !panel?.panel.visible ||
+        (vscode.window.activeTextEditor && sameUri(input.uri, vscode.window.activeTextEditor.document.uri))) return false;
+    const session = reviewSession;
+    const openingPreview = previewEpoch;
+    const openingFolder = folderEpoch;
+    void vscode.workspace.openTextDocument(input.uri).then(async (document) => {
+      if (vscode.window.tabGroups.activeTabGroup.activeTab !== tab ||
+          openingPreview !== previewEpoch || openingFolder !== folderEpoch) return;
+      summarySelected = false;
+      summaryEditor = undefined;
+      summaryEditorPair = undefined;
+      await previewDocument(document);
+      if (session) await leaveReviewIfOutside({ document }, session);
+    }).then(undefined, (error: unknown) => {
+      notice = { tone: "error", text: `Could not read the selected document: ${errorMessage(error)}` };
+      render();
+    });
+    return true;
+  };
+  const onTabGroupsChange = vscode.window.tabGroups.onDidChangeTabGroups(() => {
+    if (!reviewSession && !change.active && !summarySelected) return;
+    if (followOrdinaryTab(vscode.window.tabGroups.activeTabGroup.activeTab)) return;
+    if (followNativeTab(vscode.window.tabGroups.activeTabGroup.activeTab)) return;
+    const editor = editorForActiveTab();
+    const input = vscode.window.tabGroups.activeTabGroup.activeTab?.input;
+    if (editor && ((input instanceof vscode.TabInputTextDiff &&
+        (sameUri(input.original, editor.document.uri) || sameUri(input.modified, editor.document.uri))) ||
+        (input instanceof vscode.TabInputText && sameUri(input.uri, editor.document.uri)))) {
+      followActiveEditor(editor);
+    }
+  });
 
-  const onTabsChange = vscode.window.tabGroups.onDidChangeTabs(() => {
+  const onTabsChange = vscode.window.tabGroups.onDidChangeTabs((event) => {
+    if (followOrdinaryTab(vscode.window.tabGroups.activeTabGroup.activeTab)) return;
     // Tab and TextEditor notifications may arrive in either order. Reconcile
     // ordinary tabs too, so a stale diff tab seen by the earlier editor event
     // cannot keep a real file navigation associated with the comparison.
-    const activeEditor = vscode.window.activeTextEditor;
+    const activeEditor = editorForActiveTab();
     const input = vscode.window.tabGroups.activeTabGroup.activeTab?.input;
+    if (panel?.panel.active) {
+      const selected = [...new Set([...event.opened, ...event.changed])].filter((tab) =>
+        tab.isActive && tab.input instanceof vscode.TabInputTextDiff);
+      if (selected.length === 1) {
+        if (followNativeTab(selected[0])) return;
+      }
+    }
     if (activeEditor && (input instanceof vscode.TabInputTextDiff ||
       ((change.active || summarySelected) && input instanceof vscode.TabInputText && sameUri(input.uri, activeEditor.document.uri)))) {
       followActiveEditor(activeEditor);
@@ -4238,6 +4375,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     }),
     onDocumentChange,
     onActiveEditorChange,
+    onTabGroupsChange,
     onTabsChange,
     onWindowState,
     onVisibleRangesChange,

@@ -57,8 +57,7 @@ async function waitForPanel(): Promise<vscode.Tab> {
 /** Review startup must open the exact confirmed native pair, not an ordinary file tab. */
 async function assertReviewLayout(api: DownsideUpTestApi, path: string): Promise<void> {
   if (api.shownReviewSummary()) await api.openReviewedFile(path);
-  const pair = api.reviewDiffUris(path);
-  assert.ok(pair, `${path} belongs to the confirmed review.`);
+  const pair = await waitFor(async () => api.reviewDiffUris(path), `${path} to belong to the confirmed review`);
   await waitFor(async () => {
     const group = vscode.window.tabGroups.activeTabGroup;
     const input = group.activeTab?.input;
@@ -68,7 +67,8 @@ async function assertReviewLayout(api: DownsideUpTestApi, path: string): Promise
   }, `the exact ${path} diff focused in column One`);
   const panel = await waitForPanel();
   assert.equal(panel.group.viewColumn, vscode.ViewColumn.Two, "The preview is beside the review diff.");
-  await waitFor(async () => api.reviewNavigation()?.fileName === path.split("/").at(-1) ? true : undefined,
+  await waitFor(async () => api.reviewNavigation()?.fileName === path.split("/").at(-1) &&
+      api.renderedReviewNavigation().at(-1)?.loading !== true ? true : undefined,
     `the preview to render ${path} with review navigation`);
 }
 
@@ -111,6 +111,16 @@ async function testInlineReview(api: DownsideUpTestApi, root: string): Promise<v
       await api.showReviewSummary();
       assert.equal(api.shownReviewSummary()?.summary, summary);
     }
+    await api.openReviewedFile("main.ts");
+    await vscode.commands.executeCommand("workbench.action.focusSecondEditorGroup");
+    const graphPair = api.reviewDiffUris("renamed.ts")!;
+    await vscode.commands.executeCommand("vscode.diff", graphPair.original, graphPair.modified, "Graph selection without editor focus (test)",
+      { viewColumn: vscode.ViewColumn.One, preserveFocus: true, preview: true });
+    await waitFor(async () => api.shownChange()?.fileName === "renamed.ts" && api.reviewNavigation()?.fileName === "renamed.ts"
+      ? true : undefined, "a graph diff selected while preview retains focus");
+    assert.deepEqual(api.reviewItems(), items, "Graph selection does not lose the confirmed review.");
+    await vscode.commands.executeCommand("workbench.action.focusFirstEditorGroup");
+    await api.openReviewedFile("main.ts");
     // Both groups expose the same exact documents, but in opposite roles.
     // A column-less diff TextEditor must not match the first group's pair.
     await vscode.commands.executeCommand("vscode.diff", pair.modified, pair.original, "Other group, reversed pair (test)",
@@ -280,7 +290,37 @@ async function testCommitPreparation(api: DownsideUpTestApi, root: string): Prom
     return file.with({ scheme: "git", query: JSON.stringify({ path: file.fsPath, ref: hash }) });
   };
   try {
+    await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(resolve(root, "main.ts")), vscode.ViewColumn.One);
+    await vscode.commands.executeCommand("downsideUp.showFileOverview");
+    assert.equal(await api.reviewChanges(parent), 4, "A working review against the branch base includes the committed changes.");
+    await waitFor(async () => api.reviewItems().every((item) => item.status === "done") ? true : undefined,
+      "branch-base working comparisons to finish");
+    await api.openReviewedFile("main.ts");
+    await vscode.commands.executeCommand("workbench.action.focusSecondEditorGroup");
+    await vscode.commands.executeCommand("vscode.diff", side("old.ts", parent), side("renamed.ts", commit), "Graph from branch-base review (test)",
+      { viewColumn: vscode.ViewColumn.One, preserveFocus: true, preview: true });
+    await waitFor(async () => api.reviewNavigation()?.fileName === "renamed.ts" ? true : undefined,
+      "equivalent graph content to keep the working review");
+    assert.equal(api.reviewItems().length, 4);
+    const workingPair = api.reviewDiffUris("renamed.ts")!;
+    const selected = vscode.window.tabGroups.all.flatMap((group) => group.tabs).find((tab) =>
+      tab.isActive && tab.input instanceof vscode.TabInputTextDiff &&
+      tab.input.original.toString() === workingPair.original.toString() &&
+      tab.input.modified.toString() === workingPair.modified.toString());
+    assert.ok(selected, "Equivalent graph content reopens the confirmed working pair, not a relabelled commit diff.");
+    git("commit", "--amend", "-q", "-m", "rewritten history");
+    const rewritten = git("rev-parse", "HEAD");
+    assert.notEqual(rewritten, commit);
+    await vscode.commands.executeCommand("vscode.diff", side("main.ts", parent), side("main.ts", rewritten), "Rewritten graph commit (test)",
+      { viewColumn: vscode.ViewColumn.One });
+    await waitFor(async () => api.reviewNavigation()?.fileName === "main.ts" ? true : undefined,
+      "unchanged confirmed content under rewritten commit identities to retain review");
     await writeFile(resolve(root, "main.ts"), "export function main() { return 999; }\n");
+    await vscode.commands.executeCommand("vscode.diff", side("main.ts", parent), side("main.ts", rewritten), "Different working content (test)",
+      { viewColumn: vscode.ViewColumn.One });
+    await waitFor(async () => api.reviewItems().length === 0 && api.shownChange()?.fileName === "main.ts" ? true : undefined,
+      "a graph diff differing from confirmed working content to remain separate");
+    assert.equal(api.reviewNavigation(), undefined, "Rewritten history is not matched by file path alone.");
     await vscode.commands.executeCommand("vscode.diff", side("main.ts", parent), side("main.ts", commit), "Commit main (test)");
     await vscode.commands.executeCommand("downsideUp.showFileOverview");
     await waitFor(async () => api.shownChange()?.fileName === "main.ts" && api.shownChange()?.status === "ready" ? true : undefined, "an immutable native graph pair");
@@ -958,10 +998,12 @@ async function runWithCommitRepository(commitRoot: string): Promise<void> {
     const emptyBadge = badgeUri.with({ scheme: "downside-up-empty", query: "HEAD" });
     await vscode.commands.executeCommand("vscode.diff", emptyBadge, badgeUri, "Badge (test)");
     await vscode.commands.executeCommand("downsideUp.showFileOverview");
-    const reviewed = await waitFor(async () => api.shownChange()?.fileName === "Badge.tsx" ? api.shownChange() : undefined, "the reviewed file's diff in the preview");
+    const reviewed = await waitFor(async () => api.shownChange()?.fileName === "Badge.tsx" && api.shownChange()?.status === "current"
+      ? api.shownChange() : undefined, "the reviewed file's saved diff explanation in the preview");
     assert.equal(reviewed.explained, true, "A diff opened from review shows the explanation the batch saved.");
     assert.equal(reviewed.status, "current");
     assert.match(reviewed.facts, /added/);
+    assert.equal(api.reviewItems().length, 3, "The equivalent added-file diff retains its review.");
     // An ordinary working editor in the set takes precedence over path order.
     await vscode.window.showTextDocument(cartItemDocument, vscode.ViewColumn.One);
     await waitFor(async () => api.shownChange() === undefined ? true : undefined, "the active reviewed working document");
