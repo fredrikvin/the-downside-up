@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Replace outdated-state text buttons (Explain again, Regenerate) with a refresh
+  icon beside the outdated item's heading: changed-file names, function
+  headings, Main flows, and folder summaries. Tooltips explain cost and sharing.
+
 ## 0.54.3
 
 - Keep chart edge labels readable: long labels sit beside their line within

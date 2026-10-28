@@ -190,7 +190,8 @@ file's functions and shows those with a current saved explanation, open,
 so saved explanations remain visible after the preview is closed and reopened
 or VS Code restarts; misses retain their Explain button. Saved, generated,
 and prefetched explanations stay inline, with outdated, failed, and cancelled
-states and their existing Regenerate or Try again actions visible.
+states visible; an outdated explanation has a refresh icon in its heading
+and a failed one keeps its Try again action.
 When content above the reader changes, the preview preserves the visible entry's
 position, including after charts finish fitting. Repository and
 function context are gathered only for functions that have a saved record.
@@ -1180,7 +1181,7 @@ to the column. Diagram ResizeObservers are disconnected when the document
 is rendered again.
 
 Folder summaries are AI-generated only on an explicit **Summarize this
-folder** (or **Regenerate**) in the folder preview, which may ask for
+folder** (or the refresh icon on an outdated summary) in the folder preview, which may ask for
 code-sharing approval like an explanation and uses an explicit request slot.
 The project and groups do not offer it once mapped, since the map describes
 them.
@@ -1211,7 +1212,7 @@ bottom-up. Every text sent (saved summaries' files and the README) passes the
 same sharing exclusion as an explained file.
 
 Main flows are AI-generated only on an explicit **Describe the main flows**
-(or **Regenerate**) in a folder preview, with the overview model, at the
+(or the refresh icon beside an outdated **Main flows** heading) in a folder preview, with the overview model, at the
 preview's level. For the project, groups, and components with a drawn map
 that has connections, the request (`partFlowsPrompt`) holds the map's boxes
 (id, name, sentence, and whether they are inside, elsewhere, or outside) and
@@ -1475,8 +1476,9 @@ once. Step links record both ends of their source range and tolerate spacing
 outside quoted text and blank-line shifts; when reflow changes an anchor so it
 cannot be resolved, that item has no source range rather than using an old offset.
 
-Invalidation never regenerates automatically. Use the preview's
-**Regenerate** link, or select text in the function and run **Open Preview to
+Invalidation never regenerates automatically. Use the refresh icon beside an
+outdated item's heading (a function, the main flows, a folder summary, or a
+changed file's name), or select text in the function and run **Open Preview to
 the Side**, to regenerate, or use the page heading's **Refresh** icon
 for the checked outdated items in the shown preview. **Refresh Repository
 Context** explicitly reviews or rebuilds the overview. **Clear Repository

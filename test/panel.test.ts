@@ -81,7 +81,7 @@ function webviewHelpers() {
     scrollBy: vi.fn()
   };
   const listeners = new Map<string, (event: { data: unknown }) => void>();
-  const helpers = new Function("acquireVsCodeApi", "document", "window", "requestAnimationFrame", "cancelAnimationFrame", script + "\n  return { render, layoutFlow, downwardPath, renderPseudocode, renderFlowchart, renderEntry, renderAiBody, missingFormat, renderHeader, renderCrumbs, renderActivity, renderPageActions, renderReviewNavigation, renderReviewBands, renderChange, highlightSteps, setFormats: (formats) => { state = { formats }; } };")(
+  const helpers = new Function("acquireVsCodeApi", "document", "window", "requestAnimationFrame", "cancelAnimationFrame", script + "\n  return { render, layoutFlow, downwardPath, renderPseudocode, renderFlowchart, renderEntry, renderAiBody, missingFormat, renderHeader, renderCrumbs, renderActivity, renderPageActions, renderReviewNavigation, renderReviewBands, renderChange, renderFolderSummary, renderFolderFlows, highlightSteps, setFormats: (formats) => { state = { formats }; } };")(
     () => ({
       getState: () => savedState,
       setState: (next: Record<string, unknown>) => { savedState = next; },
@@ -105,6 +105,8 @@ function webviewHelpers() {
     renderPseudocode(lines: NonNullable<NonNullable<ExplanationView["explanation"]>["pseudocode"]>, view: ExplanationView): TestElement;
     renderFlowchart(chart: Flowchart, view: Pick<ExplanationView, "entryId"> & Partial<ExplanationView>, links?: Array<{ target: string; caption: string } | null>): TestElement;
     renderEntry(entry: Record<string, unknown>, views: Map<string, ExplanationView>): TestElement;
+    renderFolderSummary(folder: Record<string, unknown>, withTree: boolean): TestElement;
+    renderFolderFlows(folder: Record<string, unknown>): TestElement;
     renderAiBody(view: ExplanationView): TestElement;
     missingFormat(view: ExplanationView, format: string): TestElement;
     renderHeader(state: Pick<PanelState, "models" | "provider" | "busy" | "hasRepository" | "needsInitialization" | "stats" | "statsError">): void;
@@ -635,6 +637,27 @@ describe("preview webview document", () => {
     expect(element("pageActions").children).toHaveLength(0);
   });
 
+  it("puts refresh icons for outdated folder summaries and main flows beside them", () => {
+    const { renderFolderSummary, renderFolderFlows, messages } = webviewHelpers();
+    const folder = {
+      level: "module", canSummarize: true, canDescribeFlows: true,
+      ai: { summary: "Handles requests.", current: false },
+      flows: { items: [], current: false }
+    };
+    const summary = renderFolderSummary(folder, false).elements();
+    expect(summary.some((node) => node.textContent === "Regenerate")).toBe(false);
+    const summaryParagraph = summary.find((node) => node.className === "summary")!;
+    summaryParagraph.elements().find((node) => node.className === "icon-action")!.listeners.get("click")?.({ preventDefault() {}, stopPropagation() {} });
+    const flows = renderFolderFlows(folder).elements();
+    expect(flows.some((node) => node.textContent === "Regenerate")).toBe(false);
+    const heading = flows.find((node) => node.tagName === "h2")!;
+    heading.elements().find((node) => node.className === "icon-action")!.listeners.get("click")?.({ preventDefault() {}, stopPropagation() {} });
+    expect(messages).toEqual([{ type: "summarizeFolder" }, { type: "describeFlows" }]);
+    const current = { ...folder, ai: { ...folder.ai, current: true }, flows: { items: [], current: true } };
+    expect(renderFolderSummary(current, false).elements().some((node) => node.className === "icon-action")).toBe(false);
+    expect(renderFolderFlows(current).elements().some((node) => node.className === "icon-action")).toBe(false);
+  });
+
   it("keeps a restrictive policy and renders content only as text", () => {
     const html = panelHtml("nonce-value");
     expect(html).toContain("default-src 'none'; style-src 'nonce-nonce-value'; script-src 'nonce-nonce-value';");
@@ -978,6 +1001,27 @@ describe("preview webview document", () => {
     );
     expect(pending.some((node) => node.textContent === "Cancel")).toBe(true);
     expect(pending.some((node) => node.className === "ai-toggle")).toBe(false);
+  });
+
+  it("puts an outdated explanation's refresh icon in its heading", () => {
+    const { renderEntry, messages } = webviewHelpers();
+    const entry = {
+      id: "f", kind: "function", kindLabel: "Function", name: "run",
+      depth: 0, startLine: 0, explainable: true, description: [], notes: []
+    };
+    const view: ExplanationView = {
+      entryId: "f", functionName: "run", status: "outdated", detail: "Outdated: the source changed",
+      references: [], limitations: []
+    };
+    const nodes = renderEntry(entry, new Map([["f", view]])).elements();
+    expect(nodes.some((node) => node.textContent === "Regenerate")).toBe(false);
+    const heading = nodes.find((node) => node.tagName === "h2")!;
+    const refresh = heading.elements().find((node) => node.className === "icon-action")!;
+    expect(refresh.getAttribute("aria-label")).toBe("Explain run again");
+    refresh.listeners.get("click")?.({ preventDefault() {}, stopPropagation() {} });
+    expect(messages).toEqual([{ type: "regenerate", entryId: "f" }]);
+    const current = renderEntry(entry, new Map([["f", { ...view, status: "current" as const }]])).elements();
+    expect(current.some((node) => node.className === "icon-action")).toBe(false);
   });
 
   it("keeps failures actionable and gives added formats the same accessible skeletons", () => {
@@ -1466,9 +1510,27 @@ describe("change view", () => {
     };
     const nodes = renderChange(view).flatMap((node) => node.elements());
     expect(texts(renderChange(view)).join(" ")).toContain("Outdated");
+    expect(nodes.some((node) => node.tagName === "button")).toBe(false);
     expect(nodes.some((node) => node.tagName === "script" || node.tagName === "b")).toBe(false);
     nodes.find((node) => node.textContent === "Modified lines 3–5")?.listeners.get("click")?.(event);
     expect(messages).toContainEqual({ type: "navigate", referenceId: "ref-1" });
+  });
+
+  it("puts an outdated change's refresh icon beside the file name, not in the body", () => {
+    const { renderPageActions, element, messages } = webviewHelpers();
+    const result = { summary: "Earlier result.", changes: [], outside: "", possibleEffects: [], limitations: [], model: "m" };
+    const page = (change: ChangeView, busy = false) => {
+      renderPageActions({ busy, change } as unknown as PanelState);
+      return element("pageActions").elements().find((node) => node.id === "refreshChange");
+    };
+    const refresh = page({ ...base, status: "outdated", result })!;
+    expect(refresh.textContent).toBe("");
+    expect(refresh.getAttribute("aria-label")).toBe("Explain these changes again");
+    expect(refresh.title).toContain("outdated");
+    refresh.listeners.get("click")?.(event);
+    expect(messages).toEqual([{ type: "explainChanges" }]);
+    expect(page({ ...base, status: "ready", result })).toBeUndefined();
+    expect(page({ ...base, status: "outdated", result, canExplain: false })).toBeUndefined();
   });
 
   it("offers to try again when an attempt failed while an earlier result is still shown", () => {

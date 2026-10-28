@@ -488,9 +488,10 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
 
     .ai-section { margin: 0 0 14px; }
     .explain { flex: none; font: inherit; font-size: 12px; color: var(--vscode-textLink-foreground); background: none; border: 1px solid var(--separator); border-radius: 4px; padding: 2px 8px; cursor: pointer; }
-    .callers { flex: none; display: inline-flex; align-items: center; padding: 3px; color: var(--vscode-descriptionForeground); background: transparent; border: 0; border-radius: 3px; cursor: pointer; }
-    .callers svg { width: 14px; height: 14px; }
-    .callers:is(:hover, :focus-visible) { color: var(--vscode-foreground); background: var(--vscode-toolbar-hoverBackground); }
+    .callers, .icon-action { flex: none; display: inline-flex; align-items: center; padding: 3px; color: var(--vscode-descriptionForeground); background: transparent; border: 0; border-radius: 3px; cursor: pointer; }
+    .callers svg, .icon-action svg { width: 14px; height: 14px; }
+    .icon-action:disabled { opacity: .5; cursor: default; }
+    .callers:is(:hover, :focus-visible), .icon-action:not(:disabled):is(:hover, :focus-visible) { color: var(--vscode-foreground); background: var(--vscode-toolbar-hoverBackground); }
     .prefetch-consent { max-width: 860px; box-sizing: border-box; margin: 12px 0; padding: 10px 14px; border: 1px solid var(--vscode-textLink-foreground); border-radius: 4px; }
     .prefetch-consent p { margin-bottom: 6px; }
     .prefetch-consent button { font: inherit; cursor: pointer; }
@@ -794,13 +795,23 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
       return link;
     }
 
+    /** An icon-only refresh beside what it refreshes; the tooltip names the cost and what is sent. */
+    function refreshButton(label, tooltip, handler) {
+      const button = el("button", "icon-action");
+      button.type = "button";
+      button.disabled = Boolean(state && state.busy);
+      button.title = tooltip;
+      button.setAttribute("aria-label", label);
+      button.append(icon("refresh"));
+      button.addEventListener("click", (event) => { event.stopPropagation(); handler(); });
+      return button;
+    }
+
     function statusLine(view) {
       const meta = el("div", "ai-meta");
       meta.append(el("span", "", [view.detail, view.usage].filter(Boolean).join(" · ")));
       if (view.status === "failed" || view.status === "cancelled") {
         meta.append(action("Try again", () => post({ type: "regenerate", entryId: view.entryId })));
-      } else if (view.status === "outdated") {
-        meta.append(action("Regenerate", () => post({ type: "regenerate", entryId: view.entryId })));
       }
       return meta;
     }
@@ -950,6 +961,18 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
           button.setAttribute("aria-label", "Refresh outdated review summary");
           button.append(icon("refresh"));
           button.addEventListener("click", () => post({ type: "reviewSummary", token: summary.token, operation: "generate" }));
+          container.append(button);
+        }
+        return;
+      }
+      const change = next.loading ? undefined : next.change;
+      if (change) {
+        if (change.result && change.status === "outdated" && change.canExplain) {
+          const button = refreshButton("Explain these changes again",
+            "This explanation is outdated. Explain the changes again: sends both versions of this file to the Functions model; uses provider quota or billing and asks for sharing approval if needed.",
+            () => post({ type: "explainChanges" }));
+          button.id = "refreshChange";
+          button.className = "";
           container.append(button);
         }
         return;
@@ -1599,6 +1622,11 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
           callers.addEventListener("click", () => post({ type: "showCallers", entryId: entry.id }));
           heading.append(callers);
         }
+        if (view && view.status === "outdated") {
+          heading.append(refreshButton("Explain " + entry.name + " again",
+            "This explanation is outdated. Explain it again with the Functions model; uses provider quota or billing and asks for sharing approval if needed.",
+            () => post({ type: "regenerate", entryId: view.entryId })));
+        }
         if (entry.explainable && !view && !(state && state.welcome)) {
           const explain = el("button", "explain", "Explain");
           explain.type = "button";
@@ -1897,7 +1925,19 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
     function renderFolderFlows(folder) {
       const box = el("div", "folder-flows");
       if (!folder.flows && !folder.describingFlows && !folder.canDescribeFlows && !folder.flowsError) return box;
-      box.append(el("h2", "folder-heading", "Main flows"));
+      const heading = el("h2", "folder-heading", "Main flows");
+      box.append(heading);
+      const betweenParts = folder.level === "project" || folder.level === "group" || folder.level === "component";
+      const sends = betweenParts
+        ? "Sends the parts on this map, their one-line summaries, and how they connect; no code. Steps open the folders they pass through."
+        : "Sends file paths, saved summaries, function names, and imports; no code. Steps link to the files and functions they name.";
+      const canRefresh = folder.canDescribeFlows && !folder.describingFlows && folder.flows && !folder.flows.current;
+      if (canRefresh) {
+        heading.append(refreshButton("Describe the main flows again",
+          "The main flows are outdated. Describe them again with the Overview model. " + sends + " Uses provider quota or billing.",
+          () => post({ type: "describeFlows" })));
+        box.append(el("p", "muted small", betweenParts ? "Outdated: the project map changed since." : "Outdated: the files, summaries, or function names changed since."));
+      }
       for (const [index, flow] of ((folder.flows && folder.flows.items) || []).entries()) {
         box.append(el("h3", "flow-title", flow.title));
         if (flow.summary) box.append(el("p", "", flow.summary));
@@ -1908,18 +1948,20 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
         loading.setAttribute("role", "status");
         loading.append(el("span", "spinner"), el("span", "", "Describing the main flows…"));
         box.append(loading);
-      } else if (folder.canDescribeFlows && (!folder.flows || !folder.flows.current)) {
+      } else if (folder.canDescribeFlows && !folder.flows) {
         const note = el("p", "muted small");
-        const betweenParts = folder.level === "project" || folder.level === "group" || folder.level === "component";
-        if (folder.flows) note.append(document.createTextNode(betweenParts ? "Outdated: the project map changed since. " : "Outdated: the files, summaries, or function names changed since. "));
-        note.append(action(folder.flows ? "Regenerate" : "Describe the main flows", () => post({ type: "describeFlows" })));
-        note.append(document.createTextNode(betweenParts
-          ? " · sends the parts on this map, their one-line summaries, and how they connect; no code. Steps open the folders they pass through."
-          : " · sends file paths, saved summaries, function names, and imports; no code. Steps link to the files and functions they name."));
+        note.append(action("Describe the main flows", () => post({ type: "describeFlows" })));
+        note.append(document.createTextNode(" · " + sends.charAt(0).toLowerCase() + sends.slice(1)));
         box.append(note);
       }
       if (folder.flowsError) box.append(el("p", "error", folder.flowsError));
       return box;
+    }
+
+    function folderSummarySends(folder) {
+      return folder.level === "component"
+        ? "Sends the names, saved summaries, and function names of its contents, the imports between them, its README, and its API contracts; no other code."
+        : "Sends the names, saved summaries, and function names of its contents, the imports between them, and its README; no code.";
     }
 
     /** The folder's AI summary, or a way to request one; with withTree, also the run over its subfolders. */
@@ -1928,6 +1970,14 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
       if (folder.ai) {
         const summary = el("p", "summary", folder.ai.summary);
         summary.title = "AI-generated summary of this folder";
+        if (!folder.ai.current) {
+          summary.append(el("span", "muted small", " (outdated: the folder's contents changed since)"));
+          if (folder.canSummarize && !folder.summarizing) {
+            summary.append(document.createTextNode(" "), refreshButton("Summarize this folder again",
+              "This summary is outdated. Summarize the folder again with the Overview model. " + folderSummarySends(folder) + " Uses provider quota or billing.",
+              () => post({ type: "summarizeFolder" })));
+          }
+        }
         box.append(summary);
         if (folder.ai.overview) box.append(el("p", "", folder.ai.overview));
         if (folder.ai.offers) box.append(labelled("Offers", folder.ai.offers));
@@ -1938,13 +1988,11 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
         loading.setAttribute("role", "status");
         loading.append(el("span", "spinner"), el("span", "", "Summarizing this folder…"));
         box.append(loading);
-      } else if (folder.canSummarize && (!folder.ai || !folder.ai.current)) {
+      } else if (folder.canSummarize && !folder.ai) {
         const note = el("p", "muted small");
-        if (folder.ai) note.append(document.createTextNode("Outdated: the folder's contents changed since. "));
-        note.append(action(folder.ai ? "Regenerate" : "Summarize this folder", () => post({ type: "summarizeFolder" })));
-        note.append(document.createTextNode(folder.level === "component"
-          ? " · sends the names, saved summaries, and function names of its contents, the imports between them, its README, and its API contracts; no other code."
-          : " · sends the names, saved summaries, and function names of its contents, the imports between them, and its README; no code."));
+        note.append(action("Summarize this folder", () => post({ type: "summarizeFolder" })));
+        const sends = folderSummarySends(folder);
+        note.append(document.createTextNode(" · " + sends.charAt(0).toLowerCase() + sends.slice(1)));
         box.append(note);
       }
       if (folder.summaryError) box.append(el("p", "error", folder.summaryError));
@@ -2244,9 +2292,8 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
         return parts;
       }
       if (change.status === "outdated") {
-        const note = el("p", "muted small", "Outdated: one of the versions changed since this was explained, so its line links are hidden. ");
-        if (change.canExplain) note.append(explainChangesButton(change, "Explain again"));
-        parts.push(note);
+        // The refresh control sits beside the file name in the page heading.
+        parts.push(el("p", "muted small", "Outdated: one of the versions changed since this was explained, so its line links are hidden."));
       } else if (change.status === "failed") {
         // The earlier result stays visible below, and the failed attempt can be tried again.
         const note = el("p", "muted small", result.outdated ? "The explanation below is outdated: one of the versions changed since, so its line links are hidden. " : "");
