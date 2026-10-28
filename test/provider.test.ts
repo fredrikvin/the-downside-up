@@ -93,6 +93,9 @@ describe("structured generation", () => {
     const body = JSON.parse((fetch.mock.calls[0]![1] as RequestInit).body as string);
     expect(body.text.format.name).toBe("review_summary");
     expect(body.text.format.schema.properties.themes.maxItems).toBe(12);
+    expect(body.text.format.strict).toBe(true);
+    expect(body.text.format.schema.required).toContain("diagram");
+    expect(body.text.format.schema.properties.diagram.anyOf[1]).toEqual({ type: "null" });
     expect(body.max_output_tokens).toBe(8000);
     expect(body.input[0].content[0].text).toContain("NOT an independent code review");
     expect(body.input[1].content[0].text).toContain("-tryOnce()");

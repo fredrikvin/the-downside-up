@@ -109,6 +109,14 @@ export class MockProvider implements GenerationProvider {
         text: `Deterministic placeholder for ${input.files.reduce((bytes, file) => bytes + Buffer.byteLength(file.diff, "utf8"), 0)} bytes of source hunks, not an independent review.`,
         fileIds: input.files.map((file) => file.id)
       }] : [],
+      ...(input.files.length >= 2 ? {
+        diagram: {
+          nodes: input.files.slice(0, 2).map((file, index) => ({
+            id: `source-${index + 1}`, label: `Source changes ${index + 1}`, fileIds: [file.id]
+          })),
+          edges: [{ from: "source-1", to: "source-2", label: "Same confirmed review" }]
+        }
+      } : {}),
       possibleEffects: [],
       limitations: [...input.limitations, "Mock provider does not understand change semantics."]
     }, signal);

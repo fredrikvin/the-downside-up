@@ -633,11 +633,22 @@ expands that set.
 **Review summary** is a landing page for the confirmed working or commit review,
 not an extra queue item. Opening it, preparation progress, returning through
 navigation, and cache misses only inspect local review evidence and never generate
-a summary. **Generate summary / Regenerate summary** is an explicit, separately
+a summary. **Generate summary**, or the header refresh icon shown only for an
+outdated saved summary, is an explicit, separately
 cancellable request using the Overview model with per-repository/model sharing
-consent. It runs with explicit scheduler priority and neither primes a project
-overview nor requests missing file comparisons. The primary evidence is the
+consent. The refresh icon's tooltip explains staleness and model usage; current
+summaries have no status button or refresh control. The request runs with explicit
+scheduler priority and neither primes a project overview nor requests missing
+file comparisons. The primary evidence is the
 actual confirmed diff with bounded surrounding source and host-issued file IDs.
+The output leads with a brief, holistic behavioral or contract change and its
+supported significance, not an implementation walkthrough. At most three
+distinct high-level themes group related code, tests, and documentation; file
+links provide drill-down. Avoid speculative bug lists and repeated host caveats.
+An optional compact affected-parts diagram is included only when source supports
+a useful relationship across parts, not as a changed-file checklist. Its labels
+are text, and its file references are validated against included evidence.
+Current diagrams link only to confirmed diffs; outdated diagrams have no links.
 This explicitly shares source with the Overview model; file explanations do not
 need to have been generated first. Coverage counts included, unavailable, and
 budget-omitted files, and discloses excluded/skipped files or truncated review

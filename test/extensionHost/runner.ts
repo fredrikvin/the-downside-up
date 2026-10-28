@@ -224,6 +224,13 @@ async function testCommitPreparation(api: DownsideUpTestApi, root: string): Prom
     assert.equal(sourceSummary.current, true, "Source-grounded summary can be requested while file preparation is running.");
     assert.ok(sourceSummary.coverage.includes("4 of 4"));
     assert.ok(!sourceSummary.limitations.some((text) => text.includes("synthesizes saved AI explanations")));
+    assert.ok(sourceSummary.diagram?.nodes.length, "A supported affected-parts diagram is projected into the summary.");
+    const diagramFile = sourceSummary.diagram.nodes.flatMap((node) => node.files)[0];
+    assert.ok(diagramFile, "Current diagram nodes expose host-owned evidence links.");
+    await api.invokeReviewSummary("open", landingToken, diagramFile.id);
+    await assertReviewLayout(api, diagramFile.path);
+    await api.showReviewSummary();
+    assert.equal(api.shownReviewSummary()?.summary, sourceSummary.summary, "Diagram navigation does not regenerate the summary.");
     await assertReviewLayout(api, "main.ts");
     assert.deepEqual(api.reviewItems().map((item) => `${item.path} ${item.change}`), [
       "added.ts added", "deleted.ts deleted", "main.ts modified", "renamed.ts renamed"

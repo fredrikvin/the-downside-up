@@ -13,7 +13,7 @@ import {
 } from "../src/context/reviewSummary";
 import { MockProvider } from "../src/generation/mock";
 import { COMPARISON_PROMPT_VERSION, REVIEW_SUMMARY_PROMPT_VERSION, reviewSummaryPrompt } from "../src/generation/prompts";
-import { parseReviewSummary } from "../src/generation/schema";
+import { parseReviewSummary, reviewSummarySchema } from "../src/generation/schema";
 import { workspace } from "./vscode";
 
 const policy = vi.hoisted(() => ({ exclusion: undefined as string | undefined, restriction: undefined as string | undefined }));
@@ -684,6 +684,42 @@ describe("review summary freshness and persistence", () => {
     expect(h.provider.summarizeReview).toHaveBeenCalledTimes(1);
     expect((await h.store.read(root)).reviewSummaries).toBeUndefined();
   });
+
+  it("persists only diagram navigation within the exact supplied evidence, without repair", async () => {
+    const h = harness();
+    const summarize = vi.spyOn(h.provider, "summarizeReview");
+    const prepared = await h.service.summarizeReview(scopeFor([ref(), ref("b.ts")]), h.read, abortSignal());
+    const diagram = prepared.record!.value.diagram!;
+    expect(diagram.nodes).toHaveLength(2);
+    const ids = prepared.record!.evidence.map((entry) => entry.id);
+    expect(diagram.nodes.flatMap((node) => node.fileIds).every((id) => ids.includes(id))).toBe(true);
+    expect((await h.store.read(root)).reviewSummaries?.[prepared.scopeKey]?.value.diagram).toEqual(diagram);
+    expect(summarize).toHaveBeenCalledTimes(1);
+  });
+
+  it("retains and persists valid text when an optional diagram has malicious references", async () => {
+    const h = harness();
+    vi.spyOn(h.provider, "summarizeReview").mockResolvedValue({
+      provider: "mock", usage: { inputTokens: 1, outputTokens: 1, estimated: true },
+      value: {
+        summary: "Supported text.", themes: [], possibleEffects: [], limitations: ["Source is bounded."],
+        diagram: {
+          nodes: [
+            { id: "a", label: "Affected part", fileIds: ["../../secret"] },
+            { id: "b", label: "Another part", fileIds: ["command:workbench.action.openSettings"] }
+          ],
+          edges: [{ from: "a", to: "b", label: "Unsupported" }]
+        }
+      }
+    });
+    const prepared = await h.service.summarizeReview(scopeFor(), h.read, abortSignal());
+    expect(prepared.record!.value).toMatchObject({ summary: "Supported text.", themes: [] });
+    expect(prepared.record!.value.diagram).toBeUndefined();
+    expect(prepared.record!.value.limitations.join(" ")).toContain("diagram failed");
+    expect(prepared.record!.value.limitations).toContain("Source is bounded.");
+    expect((await h.store.read(root)).reviewSummaries?.[prepared.scopeKey]?.value).toEqual(prepared.record!.value);
+    expect(h.provider.summarizeReview).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("review summary response and prompt", () => {
@@ -691,6 +727,141 @@ describe("review summary response and prompt", () => {
     summary: "Reported changes.", themes: [{ title: "Retries", text: "Reported retries.", fileIds: ["file-a"] }],
     possibleEffects: ["May increase load."], limitations: ["Bounded source context only."]
   };
+  const diagram = {
+    nodes: [
+      { id: "input", label: "Input contract", fileIds: ["file-a"] },
+      { id: "consumer", label: "Consumer", fileIds: ["file-b"] }
+    ],
+    edges: [{ from: "input", to: "consumer", label: "Supplies input" }]
+  };
+  const knownIds = ["file-a", "file-b"];
+
+  it("accepts absent/null diagrams and preserves valid relationship graphs without control-flow endpoints", () => {
+    expect(parseReviewSummary(valid, knownIds)).toEqual(valid);
+    expect(parseReviewSummary({ ...valid, diagram: null }, knownIds)).toEqual(valid);
+    expect(parseReviewSummary({ ...valid, diagram }, knownIds)).toEqual({ ...valid, diagram });
+    const converging = {
+      nodes: [...diagram.nodes, { id: "output", label: "Output contract", fileIds: ["file-a"] }],
+      edges: [...diagram.edges, { from: "output", to: "consumer", label: "Shares contract" }]
+    };
+    expect(parseReviewSummary({ ...valid, diagram: converging }, knownIds).diagram).toEqual(converging);
+  });
+
+  it("uses a nullable required diagram in the strict provider schema, with bounded nested objects", () => {
+    const schema = reviewSummarySchema as {
+      required: string[];
+      properties: { diagram: { anyOf: {
+        type: string; required: string[]; additionalProperties: boolean;
+        properties: Record<string, { minItems: number; maxItems: number; items: { required: string[]; additionalProperties: boolean } }>;
+      }[] } };
+    };
+    expect(schema.required).toContain("diagram");
+    const graph = schema.properties.diagram.anyOf[0]!;
+    const nullable = schema.properties.diagram.anyOf[1];
+    expect(nullable).toEqual({ type: "null" });
+    expect(graph.required).toEqual(["nodes", "edges"]);
+    expect(graph.additionalProperties).toBe(false);
+    expect(graph.properties.nodes).toMatchObject({ minItems: 2, maxItems: 6 });
+    expect(graph.properties.edges).toMatchObject({ minItems: 1, maxItems: 8 });
+    expect(graph.properties.nodes!.items).toMatchObject({ required: ["id", "label", "fileIds"], additionalProperties: false });
+    expect(graph.properties.edges!.items).toMatchObject({ required: ["from", "to", "label"], additionalProperties: false });
+  });
+
+  it("accepts the diagram bounds, including six nodes, eight edges and 200 evidence IDs", () => {
+    const ids = Array.from({ length: 200 }, (_, index) => `file-${index}`);
+    ids[0] = "x".repeat(80);
+    const nodes = Array.from({ length: 6 }, (_, index) => ({
+      id: index === 0 ? "n".repeat(80) : `node-${index}`,
+      label: `${index}${"l".repeat(119)}`, fileIds: ids
+    }));
+    const edges = Array.from({ length: 5 }, (_, index) => ({
+      from: nodes[index]!.id, to: nodes[index + 1]!.id, label: "e".repeat(80)
+    }));
+    edges.push(...[2, 3, 4].map((index) => ({ from: nodes[0]!.id, to: nodes[index]!.id, label: "e".repeat(80) })));
+    const bounded = { nodes, edges };
+    expect(parseReviewSummary({ ...valid, themes: [], diagram: bounded }, ids).diagram).toEqual(bounded);
+  });
+
+  it("omits malformed, disconnected, duplicate, oversized or ungrounded diagrams with an explicit limitation", () => {
+    const node = diagram.nodes[0]!;
+    const edge = diagram.edges[0]!;
+    const invalid: unknown[] = [
+      false, "graph", [], {}, { nodes: diagram.nodes }, { ...diagram, nodes: null },
+      { ...diagram, nodes: [] }, { ...diagram, nodes: [node] },
+      { ...diagram, nodes: Array(7).fill(node) },
+      { ...diagram, nodes: [node, { ...diagram.nodes[1], id: node.id }] },
+      { ...diagram, nodes: [node, { ...diagram.nodes[1], label: ` ${node.label.toUpperCase()} ` }] },
+      { ...diagram, edges: [] }, { ...diagram, edges: null },
+      { ...diagram, edges: Array(9).fill(edge) },
+      { ...diagram, edges: [edge, { ...edge, label: "Different label, same edge" }] },
+      { ...diagram, edges: [{ ...edge, to: edge.from }] },
+      { ...diagram, edges: [{ ...edge, to: "unknown" }] },
+      { ...diagram, edges: [{ ...edge, from: "../../secret" }] },
+      { ...diagram, nodes: [...diagram.nodes, { id: "isolated", label: "Isolated", fileIds: ["file-a"] }] }
+    ];
+    for (const patch of [
+      { id: "" }, { id: " " }, { id: "x".repeat(81) },
+      { label: "" }, { label: " " }, { label: "x".repeat(121) },
+      { fileIds: [] }, { fileIds: ["file-a", "file-a"] }, { fileIds: Array(201).fill("file-a") },
+      { fileIds: ["unknown"] }, { fileIds: ["../../secret"] },
+      { fileIds: ["command:workbench.action.openSettings"] }, { fileIds: [null] },
+      { fileIds: ["x".repeat(81)] }, { fileIds: [""] }, { fileIds: "file-a" }
+    ]) invalid.push({ ...diagram, nodes: [{ ...node, ...patch }, diagram.nodes[1]] });
+    for (const patch of [
+      { from: "" }, { from: "x".repeat(81) }, { to: "" }, { to: "x".repeat(81) },
+      { label: "" }, { label: " " }, { label: "x".repeat(81) }
+    ]) invalid.push({ ...diagram, edges: [{ ...edge, ...patch }] });
+    for (const candidate of invalid) {
+      const parsed = parseReviewSummary({ ...valid, diagram: candidate }, [...knownIds, "x".repeat(81)]);
+      expect(parsed.diagram).toBeUndefined();
+      expect(parsed).toMatchObject({ summary: valid.summary, themes: valid.themes, possibleEffects: valid.possibleEffects });
+      expect(parsed.limitations).toContain(valid.limitations[0]);
+      expect(parsed.limitations.join(" ")).toContain("diagram failed");
+      expect(parsed.limitations.join(" ")).toContain("was omitted");
+    }
+  });
+
+  it("drops extra raw-path properties rather than returning them as navigation", () => {
+    const parsed = parseReviewSummary({
+      ...valid,
+      diagram: {
+        ...diagram, path: "../../secret",
+        nodes: diagram.nodes.map((node) => ({ ...node, path: "command:evil", uri: "file:///secret" })),
+        edges: diagram.edges.map((edge) => ({ ...edge, path: "https://evil.invalid" }))
+      }
+    }, knownIds);
+    expect(parsed.diagram).toEqual(diagram);
+    expect(parsed.diagram!.nodes.flatMap((node) => node.fileIds)).toEqual(knownIds);
+  });
+
+  it("retains twenty full caveats plus a bounded omission notice across provider/service revalidation", () => {
+    const limitations = Array.from({ length: 20 }, (_, index) => `${index}`.padEnd(1500, "x"));
+    const parsed = parseReviewSummary({ ...valid, limitations, diagram: {} }, knownIds);
+    expect(parsed.limitations.slice(0, 20)).toEqual(limitations);
+    expect(parsed.limitations).toHaveLength(21);
+    expect(parseReviewSummary(parsed, knownIds)).toEqual(parsed);
+    expect(() => parseReviewSummary({ ...valid, limitations: Array(21).fill("model caveat") }, knownIds)).toThrow();
+  });
+
+  it("provides one deterministic, evidence-linked mock diagram only for at least two source files", async () => {
+    const provider = new MockProvider();
+    for (const count of [0, 1, 2, 7]) {
+      const request = await sourceRequest(Array.from({ length: count }, (_, index) => {
+        const reference = ref(`part-${index}.ts`);
+        return { reference, source: snapshot(reference) };
+      }));
+      const value = (await provider.summarizeReview(request.input)).value;
+      const ids = request.input.files.map((file) => file.id);
+      if (count < 2) expect(value.diagram).toBeUndefined();
+      else {
+        expect(value.diagram!.nodes).toHaveLength(2);
+        expect(value.diagram!.edges).toEqual([{ from: "source-1", to: "source-2", label: "Same confirmed review" }]);
+        expect(value.diagram!.nodes.flatMap((node) => node.fileIds)).toEqual(ids.slice(0, 2));
+        expect((await provider.summarizeReview(request.input)).value.diagram).toEqual(value.diagram);
+      }
+      expect(parseReviewSummary(value, ids)).toEqual(value);
+    }
+  });
   it("bounds all output and rejects unknown, duplicate or absent theme references", () => {
     expect(parseReviewSummary(valid, ["file-a"])).toEqual(valid);
     for (const invalid of [
@@ -712,6 +883,19 @@ describe("review summary response and prompt", () => {
     expect(system).toContain("confirmed source diffs");
     expect(system).toContain("NOT an independent code review");
     expect(system).toContain("Do not invent certainty, intent");
+    expect(system).toContain("holistic change overview");
+    expect(system).toContain("externally observable behavior or contract change");
+    expect(system).toContain("2–3 short sentences");
+    expect(system).toContain("not a file-by-file changelog");
+    expect(system).toContain("Use 0–3 themes");
+    expect(system).toContain("do not repeat host coverage counts");
+    expect(system).toContain("only when the supplied source supports a useful compact flow or relationship");
+    expect(system).toContain("Otherwise set diagram to null");
+    expect(system).toContain("not a changed-file checklist");
+    expect(system).toContain("do not invent architectural edges, speculative causality, or clutter");
+    expect(system).toContain("not a control-flow chart with start/end nodes");
+    expect(system).toContain("never use raw paths for navigation");
+    expect(REVIEW_SUMMARY_PROMPT_VERSION).toBe("downside-up-review-summary-4");
     expect(JSON.parse(user).coverage.unavailable).toBe(1);
     expect(reviewSummaryScopeKey(scopeFor())).toBe(reviewSummaryScopeKey(scopeFor()));
   });

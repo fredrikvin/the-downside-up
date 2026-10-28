@@ -2992,6 +2992,16 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       ...(page.error ? { error: page.error } : {}),
       ...(record ? { model: record.model } : {}),
       ...(value ? { summary: value.summary } : {}),
+      ...(value?.diagram ? { diagram: {
+        nodes: value.diagram.nodes.map((node) => ({
+          id: node.id, label: node.label,
+          files: prepared?.current ? node.fileIds.flatMap((id) => {
+            const file = files.get(id);
+            return file ? [{ id, path: file.path }] : [];
+          }) : []
+        })),
+        edges: value.diagram.edges
+      } } : {}),
       themes: (value?.themes ?? []).map((theme) => ({
         title: theme.title, text: theme.text,
         files: prepared?.current ? theme.fileIds.flatMap((id) => {

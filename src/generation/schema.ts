@@ -20,7 +20,8 @@ import type {
   PseudocodeLine,
   RepositoryOverview,
   RepositoryPriming,
-  ReviewSummary
+  ReviewSummary,
+  ReviewSummaryDiagram
 } from "../core/types";
 import { SchemaValidationError } from "./jsonResponse";
 
@@ -35,6 +36,19 @@ function objectSchema(
   return { type: "object", properties, required, additionalProperties: false };
 }
 
+const reviewSummaryDiagramSchema = objectSchema({
+  nodes: { type: "array", minItems: 2, maxItems: 6, items: objectSchema({
+    id: { type: "string", minLength: 1, maxLength: 80 },
+    label: { type: "string", minLength: 1, maxLength: 120 },
+    fileIds: { type: "array", minItems: 1, maxItems: 200, items: { type: "string", minLength: 1, maxLength: 80 } }
+  }, ["id", "label", "fileIds"]) },
+  edges: { type: "array", minItems: 1, maxItems: 8, items: objectSchema({
+    from: { type: "string", minLength: 1, maxLength: 80 },
+    to: { type: "string", minLength: 1, maxLength: 80 },
+    label: { type: "string", minLength: 1, maxLength: 80 }
+  }, ["from", "to", "label"]) }
+}, ["nodes", "edges"]);
+
 export const reviewSummarySchema = objectSchema({
   summary: { type: "string", minLength: 1, maxLength: 3000 },
   themes: { type: "array", maxItems: 12, items: objectSchema({
@@ -43,10 +57,14 @@ export const reviewSummarySchema = objectSchema({
     fileIds: { type: "array", minItems: 1, maxItems: 200, items: { type: "string", maxLength: 80 } }
   }, ["title", "text", "fileIds"]) },
   possibleEffects: { type: "array", maxItems: 20, items: { type: "string", maxLength: 1500 } },
-  limitations: { type: "array", maxItems: 20, items: { type: "string", maxLength: 1500 } }
-}, ["summary", "themes", "possibleEffects", "limitations"]);
+  limitations: { type: "array", maxItems: 20, items: { type: "string", maxLength: 1500 } },
+  // OpenAI strict schemas require every property; nullable represents this optional view.
+  diagram: { anyOf: [reviewSummaryDiagramSchema, { type: "null" }] }
+}, ["summary", "themes", "possibleEffects", "limitations", "diagram"]);
 
-/** Reject uncertain references rather than silently dropping or repairing their meaning. */
+const reviewDiagramOmission = "The generated affected-parts diagram failed structural or evidence-reference validation and was omitted; the textual summary is still available.";
+
+/** Reject invalid text/references; omit an invalid optional diagram without repairing it. */
 export function parseReviewSummary(value: unknown, knownIds: readonly string[]): ReviewSummary {
   const source = record(value);
   const text = (object: Record<string, unknown>, key: string, limit: number) => {
@@ -55,7 +73,13 @@ export function parseReviewSummary(value: unknown, knownIds: readonly string[]):
     return result;
   };
   const ids = new Set(knownIds);
-  return {
+  const limitations = [...readStrings(source.limitations, "review summary limitations", 21)];
+  // The service revalidates parsed provider results. Permit only our fixed extra
+  // notice beyond the twenty model caveats, retaining every independently valid caveat.
+  if (limitations.length > 20 && limitations[20] !== reviewDiagramOmission) {
+    throw new SchemaValidationError("The provider response contains invalid review summary limitations.");
+  }
+  const result: ReviewSummary = {
     summary: text(source, "summary", 3000),
     themes: readObjects(source.themes, "review summary themes", 12, (theme) => {
       const fileIds = readStrings(theme.fileIds, "review summary file IDs", 200);
@@ -65,8 +89,63 @@ export function parseReviewSummary(value: unknown, knownIds: readonly string[]):
       return { title: text(theme, "title", 160), text: text(theme, "text", 2000), fileIds };
     }),
     possibleEffects: readStrings(source.possibleEffects, "review summary possible effects", 20),
-    limitations: readStrings(source.limitations, "review summary limitations", 20)
+    limitations
   };
+  if (source.diagram === undefined || source.diagram === null) return result;
+  try {
+    return { ...result, diagram: parseReviewSummaryDiagram(source.diagram, ids) };
+  } catch {
+    if (!limitations.includes(reviewDiagramOmission)) limitations.push(reviewDiagramOmission);
+    return result;
+  }
+}
+
+function parseReviewSummaryDiagram(value: unknown, knownIds: ReadonlySet<string>): ReviewSummaryDiagram {
+  const source = record(value);
+  const text = (object: Record<string, unknown>, key: string, limit: number) => {
+    const value = readText(object, key, limit);
+    if (!value.trim()) throw new SchemaValidationError("The review diagram contains empty text.");
+    return value;
+  };
+  const nodes = readObjects(source.nodes, "review diagram nodes", 6, (node) => {
+    const fileIds = readStrings(node.fileIds, "review diagram file IDs", 200);
+    if (!fileIds.length || new Set(fileIds).size !== fileIds.length ||
+        fileIds.some((id) => !id.trim() || id.length > 80 || !knownIds.has(id))) {
+      throw new SchemaValidationError("The review diagram references an unknown or duplicate file ID.");
+    }
+    return { id: text(node, "id", 80), label: text(node, "label", 120), fileIds: [...fileIds] };
+  });
+  const ids = new Set(nodes.map((node) => node.id));
+  const labels = new Set(nodes.map((node) => node.label.trim().toLowerCase()));
+  if (nodes.length < 2 || ids.size !== nodes.length || labels.size !== nodes.length) {
+    throw new SchemaValidationError("The review diagram requires distinct nodes.");
+  }
+  const pairs = new Set<string>();
+  const neighbors = new Map(nodes.map((node) => [node.id, new Set<string>()]));
+  const edges = readObjects(source.edges, "review diagram edges", 8, (edge) => {
+    const from = text(edge, "from", 80);
+    const to = text(edge, "to", 80);
+    const label = text(edge, "label", 80);
+    const pair = JSON.stringify([from, to]);
+    if (!ids.has(from) || !ids.has(to) || from === to || pairs.has(pair)) {
+      throw new SchemaValidationError("The review diagram contains invalid or duplicate edges.");
+    }
+    pairs.add(pair);
+    neighbors.get(from)!.add(to);
+    neighbors.get(to)!.add(from);
+    return { from, to, label };
+  });
+  // Relationships are directed, but connectivity is weak: converging relationships are useful too.
+  const reached = new Set<string>();
+  const pending = [nodes[0]!.id];
+  while (pending.length) {
+    const id = pending.pop()!;
+    if (reached.has(id)) continue;
+    reached.add(id);
+    pending.push(...neighbors.get(id)!);
+  }
+  if (reached.size !== nodes.length) throw new SchemaValidationError("The review diagram is disconnected.");
+  return { nodes, edges };
 }
 
 export const overviewSchema = objectSchema(

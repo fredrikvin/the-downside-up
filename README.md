@@ -97,10 +97,16 @@ billing; see `docs/configuration.md` in the extension package.
   **Generate summary** explicitly asks the Overview model to summarize the actual
   confirmed diffs and bounded surrounding source, with host-validated links to
   those diffs. Individual file explanations do not need to be ready first.
+  The overview focuses on the main behavioral or contract change, grouping
+  related edits rather than listing implementation details file by file.
+  When useful and supported by the source, a small affected-parts chart shows
+  their relationships, with links to the confirmed diffs.
   It discloses incomplete coverage, omitted context, and uncertainties; it is
   not proof of correctness. Overview-model sharing approval is separate, and
   this request shares diff source with that model. Saved summaries are reused;
   changed evidence or summary settings require explicit regeneration.
+  An outdated summary shows a refresh icon beside its heading, with an
+  explanatory tooltip; current summaries show no refresh control.
   While a confirmed
   file's native diff is shown, the review bands above the file header and at
   the bottom of the preview offer **‹ Previous** and **Next ›** to step through

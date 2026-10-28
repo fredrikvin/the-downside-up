@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.53.0
+
+- Replace the review summary status button with a header refresh icon shown
+  only for outdated summaries, with an explanatory tooltip.
+- Make review summaries concise and holistic, focusing on behavioral or contract
+  changes, with an optional source-grounded affected-parts chart.
+
 ## 0.52.1
 
 - Ground review summaries in actual confirmed diffs and bounded surrounding

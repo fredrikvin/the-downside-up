@@ -510,6 +510,20 @@ export interface ComparisonRecord {
   readonly savedAt: number;
 }
 
+/** A relationship graph, not executable control flow; navigation uses evidence IDs only. */
+export interface ReviewSummaryDiagram {
+  readonly nodes: readonly {
+    readonly id: string;
+    readonly label: string;
+    readonly fileIds: readonly string[];
+  }[];
+  readonly edges: readonly {
+    readonly from: string;
+    readonly to: string;
+    readonly label: string;
+  }[];
+}
+
 export interface ReviewSummary {
   readonly summary: string;
   readonly themes: readonly {
@@ -519,6 +533,7 @@ export interface ReviewSummary {
   }[];
   readonly possibleEffects: readonly string[];
   readonly limitations: readonly string[];
+  readonly diagram?: ReviewSummaryDiagram;
 }
 
 export interface ReviewSummaryCoverage {

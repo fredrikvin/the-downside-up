@@ -227,20 +227,70 @@ it("renders a review landing page as safe text with explicit token-bound actions
   expect(content.elements().map((node) => node.textContent).join(" ")).toContain("confirmed diff and bounded surrounding source");
   expect(messages).toEqual([]);
   const event = { preventDefault: () => undefined, stopPropagation: () => undefined };
-  content.elements().find((node) => node.textContent === "Regenerate summary")!.listeners.get("click")?.(event);
+  const refresh = element("pageActions").elements().find((node) => node.id === "refreshReviewSummary")!;
+  expect(refresh.getAttribute("aria-label")).toBe("Refresh outdated review summary");
+  expect(refresh.title).toContain("outdated");
+  expect(refresh.title).toContain("Overview model");
+  refresh.listeners.get("click")?.(event);
   content.elements().find((node) => node.textContent === "src/<img>.ts")!.listeners.get("click")?.(event);
   expect(messages).toEqual([
     { type: "reviewSummary", token: state.reviewSummary!.token, operation: "generate" },
     { type: "reviewSummary", token: state.reviewSummary!.token, operation: "open", fileId: "host-file-1" }
   ]);
   render({ ...state, reviewSummary: { ...state.reviewSummary!, loading: true, generating: true } });
+  expect(element("pageActions").children).toHaveLength(0);
   content.elements().find((node) => node.textContent === "Cancel summary")!.listeners.get("click")?.(event);
   expect(messages.at(-1)).toEqual({ type: "reviewSummary", token: state.reviewSummary!.token, operation: "cancel" });
   render({ ...state, reviewSummary: { ...state.reviewSummary!, loading: true, generating: false } });
   expect(content.elements().some((node) => node.textContent === "Cancel summary")).toBe(false);
   expect(content.elements().some((node) => node.textContent === "Checking review sources…")).toBe(true);
   render({ ...state, reviewSummary: { ...state.reviewSummary!, current: true } });
-  expect(content.elements().find((node) => node.textContent === "Summary up to date")?.disabled).toBe(true);
+  expect(element("pageActions").children).toHaveLength(0);
+  expect(content.elements().some((node) => node.className === "explain")).toBe(false);
+  render({ ...state, reviewSummary: { ...state.reviewSummary!, canGenerate: false } });
+  expect(element("pageActions").elements().find((node) => node.id === "refreshReviewSummary")?.disabled).toBe(true);
+  render({ ...state, reviewSummary: { ...state.reviewSummary!, summary: undefined } });
+  expect(element("pageActions").children).toHaveLength(0);
+  content.elements().find((node) => node.textContent === "Generate summary")!.listeners.get("click")?.(event);
+  expect(messages.at(-1)).toEqual({ type: "reviewSummary", token: state.reviewSummary!.token, operation: "generate" });
+});
+
+it("renders an optional affected-parts chart with token-bound links only while current", () => {
+  const { render, element, messages, flushFrames } = webviewHelpers();
+  const state: PanelState = {
+    provider: "vscode-lm", models: { explanation: "functions", overview: "overview" },
+    hasRepository: true, busy: false, explanations: [], showDetails: false,
+    formats: { pseudocode: true, flowchart: true, initial: "steps" },
+    reviewSummary: {
+      token: "summary-diagram-token-123", base: "main", coverage: "3 files",
+      loading: false, generating: false, current: true, canGenerate: true, summary: "Events carry full identifiers.",
+      themes: [], possibleEffects: [], limitations: [],
+      diagram: {
+        nodes: [
+          { id: "events", label: "<b>Events</b>", files: [{ id: "file-a", path: "events.go" }] },
+          { id: "consumers", label: "Consumers", files: [{ id: "file-b", path: "consumer.go" }, { id: "file-c", path: "consumer_test.go" }] }
+        ],
+        edges: [{ from: "events", to: "consumers", label: "full identifiers" }]
+      }
+    }
+  };
+  render(state);
+  flushFrames();
+  const content = element("entries");
+  expect(content.elements().some((node) => node.getAttribute("aria-label") === "Affected parts and their relationships")).toBe(true);
+  expect(content.elements().some((node) => node.tagName === "b")).toBe(false);
+  const node = content.elements().find((item) => item.dataset.flowLink === "1")!;
+  expect(node.title).toBe("Open events.go");
+  node.listeners.get("keydown")?.({ key: "Enter", target: node, preventDefault() {}, stopPropagation() {} });
+  content.elements().find((item) => item.textContent === "consumer_test.go")!.listeners.get("click")?.({ preventDefault() {}, stopPropagation() {} });
+  expect(messages).toEqual([
+    { type: "reviewSummary", token: state.reviewSummary!.token, operation: "open", fileId: "file-a" },
+    { type: "reviewSummary", token: state.reviewSummary!.token, operation: "open", fileId: "file-c" }
+  ]);
+  render({ ...state, reviewSummary: { ...state.reviewSummary!, current: false } });
+  flushFrames();
+  expect(content.elements().some((item) => item.dataset.flowLink === "1")).toBe(false);
+  expect(content.elements().some((item) => item.textContent === "consumer_test.go")).toBe(false);
 });
 
 it("offers setup with host-only actions while retaining local outlines, then hides it when configured", () => {

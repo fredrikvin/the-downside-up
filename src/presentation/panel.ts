@@ -60,6 +60,14 @@ export interface ReviewSummaryView {
   readonly error?: string;
   readonly model?: string;
   readonly summary?: string;
+  readonly diagram?: {
+    readonly nodes: readonly {
+      readonly id: string;
+      readonly label: string;
+      readonly files: readonly { readonly id: string; readonly path: string }[];
+    }[];
+    readonly edges: readonly { readonly from: string; readonly to: string; readonly label: string }[];
+  };
   readonly themes: readonly {
     readonly title: string;
     readonly text: string;
@@ -931,6 +939,21 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
     function renderPageActions(next) {
       const container = byId("pageActions");
       container.replaceChildren();
+      const summary = next.reviewSummary;
+      if (summary) {
+        if (summary.summary && !summary.current && !summary.loading && !summary.generating) {
+          const button = el("button", "");
+          button.type = "button";
+          button.id = "refreshReviewSummary";
+          button.disabled = !summary.canGenerate;
+          button.title = "This review summary is outdated. Regenerate it from the confirmed diffs using the Overview model; uses provider quota or billing and asks for sharing approval if needed.";
+          button.setAttribute("aria-label", "Refresh outdated review summary");
+          button.append(icon("refresh"));
+          button.addEventListener("click", () => post({ type: "reviewSummary", token: summary.token, operation: "generate" }));
+          container.append(button);
+        }
+        return;
+      }
       if (next.welcome || next.loading || (!next.document && !next.folder)) return;
       const count = next.stats?.outdatedHere || 0;
       const needsMap = next.folder?.level === "project" && next.folder.mapState !== "current";
@@ -1812,7 +1835,8 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
       box.dataset.flowLink = "1";
       const open = (target) => {
         if (target && target.closest && target.closest("[data-flow-link]") !== box) return;
-        post({ type: "navigate", referenceId: link.target });
+        if (link.reviewToken) post({ type: "reviewSummary", token: link.reviewToken, operation: "open", fileId: link.fileId });
+        else post({ type: "navigate", referenceId: link.target });
       };
       box.addEventListener("click", (clicked) => open(clicked.target));
       box.addEventListener("keydown", (pressed) => {
@@ -2630,14 +2654,40 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
         el("p", "small muted", "Grounded in the confirmed diff and bounded surrounding source. Coverage and conclusions may be incomplete; this is not proof of correctness."));
       if (view.error) box.append(el("p", "error", view.error));
       if (view.summary && !view.current) box.append(el("p", "muted", "Review sources or summary settings changed. Regenerate explicitly to update this summary."));
-      const control = el("button", "explain", view.generating ? "Cancel summary" : view.summary && view.current ? "Summary up to date" : view.summary ? "Regenerate summary" : "Generate summary");
-      control.type = "button";
-      control.disabled = !view.generating && (view.loading || !view.canGenerate || (view.summary && view.current));
-      control.title = "Uses the Overview model and provider quota or billing; asks for repository/model sharing approval if needed.";
-      control.addEventListener("click", () => post({ type: "reviewSummary", token: view.token, operation: view.generating ? "cancel" : "generate" }));
-      box.append(control);
+      if (view.generating || !view.summary) {
+        const control = el("button", "explain", view.generating ? "Cancel summary" : "Generate summary");
+        control.type = "button";
+        control.disabled = !view.generating && (view.loading || !view.canGenerate);
+        control.title = "Uses the Overview model and provider quota or billing; asks for repository/model sharing approval if needed.";
+        control.addEventListener("click", () => post({ type: "reviewSummary", token: view.token, operation: view.generating ? "cancel" : "generate" }));
+        box.append(control);
+      }
       if (view.loading) box.append(explanationSkeleton(view.generating ? "Generating the review summary…" : "Checking review sources…"));
       if (view.summary) box.append(el("p", "lead", view.summary));
+      if (view.diagram) {
+        const chart = {
+          nodes: view.diagram.nodes.map((node) => ({ id: node.id, label: node.label, kind: "action", startLine: 0, endLine: 0 })),
+          edges: view.diagram.edges
+        };
+        const links = view.diagram.nodes.map((node) => {
+          const file = view.current && node.files.length === 1 ? node.files[0] : undefined;
+          return file ? { reviewToken: view.token, fileId: file.id, caption: file.path } : null;
+        });
+        const graph = renderFlowchart(chart, { entryId: "review-summary-diagram" }, links);
+        graph.setAttribute("aria-label", "Affected parts and their relationships");
+        box.append(el("h2", "", "Affected parts"), graph);
+        if (view.current) {
+          for (const node of view.diagram.nodes.filter((part) => part.files.length > 1)) {
+            const files = el("p", "small");
+            files.append(document.createTextNode(node.label + ": "));
+            node.files.forEach((file, index) => {
+              if (index) files.append(document.createTextNode(", "));
+              files.append(action(file.path, () => post({ type: "reviewSummary", token: view.token, operation: "open", fileId: file.id })));
+            });
+            box.append(files);
+          }
+        }
+      }
       for (const theme of view.themes) {
         const section = el("section");
         section.append(el("h2", "", theme.title), el("p", "", theme.text));
