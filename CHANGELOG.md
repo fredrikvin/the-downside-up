@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.55.0
 
 - Paired Changed views (Steps, Pseudocode, Flowchart) now follow the cursor or
   selection in either side of the diff editor, highlighting that side's items.
