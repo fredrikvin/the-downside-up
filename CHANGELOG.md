@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Keep chart edge labels readable: long labels sit beside their line within
+  the visible chart, and are shortened with a tooltip when space runs out.
+
 ## 0.54.2
 
 - Open the Review Changes picker immediately while model availability and

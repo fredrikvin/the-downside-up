@@ -1098,19 +1098,47 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
     }
 
     /** Keep labels beside their own edge, away from boxes and earlier labels. */
+    /**
+     * Labels may extend past the drawn edges into the visible chart area. When
+     * no spot fits, a label is kept in view beside its line and shortened, with
+     * its full text in a tooltip.
+     */
     function placeEdgeLabels(items, obstacles) {
       const placed = [];
       const overlaps = (a, b) => a.x < b.x + b.width + 6 && a.x + a.width + 6 > b.x && a.y < b.y + b.height + 4 && a.y + a.height + 4 > b.y;
+      const svg = items.length ? items[0].label.ownerSVGElement : undefined;
+      if (!svg) return;
+      const drawnWidth = Number(svg.getAttribute("width")) || 0;
+      let minX = 0;
+      let maxX = drawnWidth;
+      const viewport = svg.closest(".flow-scroll, .structure-scroll");
+      const own = svg.getBoundingClientRect();
+      if (viewport && own.width && drawnWidth) {
+        const scale = own.width / drawnWidth;
+        const view = viewport.getBoundingClientRect();
+        minX = Math.min(0, (view.left - own.left) / scale);
+        maxX = Math.max(drawnWidth, (view.right - own.left) / scale);
+      }
+      const fits = (rect) => rect.x >= minX && rect.x + rect.width <= maxX;
       for (const { path, label } of items) {
         let positioned = false;
+        const total = path.getTotalLength();
+        const at = (point, anchor, dx, dy) => {
+          label.setAttribute("text-anchor", anchor);
+          label.setAttribute("x", String(point.x + dx));
+          label.setAttribute("y", String(point.y + dy));
+          return label.getBBox();
+        };
+        const wide = at(path.getPointAtLength(0), "middle", 0, 0).width > 80;
         for (const fraction of [.25, .4, .55, .7, .85, .15]) {
-          const point = path.getPointAtLength(path.getTotalLength() * fraction);
-          for (const shift of [0, -16, 16, -32, 32]) {
-            label.setAttribute("x", String(point.x + shift));
-            label.setAttribute("y", String(point.y - 6));
-            const rect = label.getBBox();
-            const svg = label.ownerSVGElement;
-            if (rect.x < 0 || rect.x + rect.width > Number(svg.getAttribute("width"))) continue;
+          const point = path.getPointAtLength(total * fraction);
+          const centered = [0, -16, 16, -32, 32].map((shift) => ["middle", shift, -6]);
+          const beside = [["start", 8, 4], ["end", -8, 4]];
+          // A wide label centred on its line hides it; put it beside the line first.
+          const candidates = wide ? [...beside, ...centered] : [...centered, ...beside];
+          for (const [anchor, dx, dy] of candidates) {
+            const rect = at(point, anchor, dx, dy);
+            if (!fits(rect)) continue;
             if ([...obstacles, ...placed].some((other) => overlaps(rect, other))) continue;
             placed.push(rect);
             positioned = true;
@@ -1118,7 +1146,26 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
           }
           if (positioned) break;
         }
-        if (!positioned) placed.push(label.getBBox());
+        if (positioned) continue;
+        const full = label.textContent || "";
+        const point = path.getPointAtLength(total * .5);
+        const right = maxX - (point.x + 8);
+        const left = point.x - 8 - minX;
+        const anchor = right >= left ? "start" : "end";
+        const room = Math.max(right, left);
+        let rect = at(point, anchor, anchor === "start" ? 8 : -8, 4);
+        if (rect.width > room) {
+          let text = full;
+          while (text.length > 1 && rect.width > room) {
+            text = text.slice(0, -1);
+            label.textContent = text.trimEnd() + "…";
+            rect = label.getBBox();
+          }
+          const title = document.createElementNS(SVG, "title");
+          title.textContent = full;
+          label.append(title);
+        }
+        placed.push(rect);
       }
     }
 
