@@ -487,6 +487,10 @@ native diff editor group and the original (Before) or modified (After) side
 before selecting and revealing the range; it does not open a separate file
 tab. If that comparison is no longer visible or its side cannot be focused,
 navigation reports an error instead of opening another document.
+In the other direction, the cursor or selection in either diff side
+highlights that side's linked steps, pseudocode lines, and chart nodes
+(the innermost at a cursor, all intersecting for a multi-line selection),
+locally and only while the comparison is current.
 Switching tabs shares the ordinary preview's view preference and makes no
 request. Valid side views survive invalid operation or connection matching;
 unverified matches are omitted with a specific limitation, never inferred.

@@ -1313,6 +1313,7 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
             box.style.gridColumn = String(columnIndex + 1);
             if (tall) box.style.alignSelf = "start";
             if (links) linkFlowNode(box, links[index], content);
+            if (links && links[index] && node.side) markDiffLines(box, node.side, node);
             else linkItem(box, view, "node", index, "node");
             boxes.set(node.id, box);
             if (node.kind === "decision") decisions.push({ box, content });
@@ -1445,6 +1446,8 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
         for (const level of levels) drawLevel(level, scale);
         // Drawing replaces the nodes after the host may already have highlighted them.
         if (!links && activeSteps.entryId === view.entryId) highlightSteps(activeSteps);
+        const comparison = links ? scroll.closest(".comparison-visual") : null;
+        if (comparison) markComparison(comparison);
       };
       observeChart(scroll, draw);
       return scroll;
@@ -2168,17 +2171,17 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
           column.append(el("p", "muted", "Not present in this version."));
           return column;
         }
+        const occurrences = new Map(scope.units.filter((unit) => unit.side === sideName).map((unit) => [unit.occurrence.id, unit.occurrence]));
         if (format === "flowchart") {
           if (side.flowchartStatus !== "available" || !side.flowchart.nodes.length) {
             column.append(el("p", "muted", side.flowchartStatus === "not-applicable" ? "Flowchart not applicable." : "Flowchart unavailable."));
           }
           if (side.flowchartReason) column.append(el("p", "muted small", side.flowchartReason));
           if (side.flowchartStatus !== "available" || !side.flowchart.nodes.length) return column;
-          const occurrences = new Map(scope.units.filter((unit) => unit.side === sideName).map((unit) => [unit.occurrence.id, unit.occurrence]));
           const chart = {
             nodes: side.flowchart.nodes.map((node) => {
               const occurrence = occurrences.get(node.occurrenceId);
-              return { ...node, startLine: occurrence ? occurrence.startLine : 0, endLine: occurrence ? occurrence.endLine : 0 };
+              return { ...node, side: sideName, startLine: occurrence ? occurrence.startLine : 0, endLine: occurrence ? occurrence.endLine : 0 };
             }),
             edges: side.flowchart.edges
           };
@@ -2208,6 +2211,8 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
             if (item.detail) inline(row, " " + item.detail);
           }
           const referenceId = sourceReference(sideName, item.occurrenceId);
+          const occurrence = occurrences.get(item.occurrenceId);
+          if (referenceId && occurrence) markDiffLines(row, sideName, occurrence);
           if (referenceId) {
             row.classList.add("linked");
             row.tabIndex = 0;
@@ -2233,6 +2238,7 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
         const sides = el("div", "comparison-sides");
         sides.append(drawSide("original", format), drawSide("modified", format));
         pane.replaceChildren(sides);
+        markComparison(section);
       }
       for (const [format, label] of formats) {
         const button = el("button", "tab", label);
@@ -2634,6 +2640,7 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
     function highlightSteps(next) {
       activeSteps = next;
       for (const node of document.querySelectorAll(".step.active, .pseudo-line.active, .flow-node.active")) node.classList.remove("active");
+      highlightComparison();
       const body = next.entryId ? byId(next.entryId + "-ai") : null;
       if (!body) return;
       const mark = (attribute, indices) => {
@@ -2642,6 +2649,37 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
       mark("step", next.steps);
       mark("pseudo", next.pseudocode);
       mark("node", next.nodes);
+    }
+    /** The diff side and 1-based lines at the editor's cursor or selection, for paired comparison visuals. */
+    let comparisonCursor;
+    /**
+     * Marks the items of one comparison whose source lines hold the cursor:
+     * the innermost for a cursor, all that intersect a selection of several lines.
+     * Only items with current source lines carry them, on the cursor's side only.
+     */
+    function markComparison(section) {
+      for (const node of section.querySelectorAll(".step.active, .pseudo-line.active, .flow-node.active")) node.classList.remove("active");
+      const cursor = comparisonCursor;
+      if (!cursor) return;
+      const items = [...section.querySelectorAll(".step, .pseudo-line, .flow-node")]
+        .filter((node) => node.dataset.diffSide === cursor.side)
+        .map((node) => ({ node, start: Number(node.dataset.diffStart), end: Number(node.dataset.diffEnd) }));
+      let hits;
+      if (cursor.startLine === cursor.endLine) {
+        const covering = items.filter((item) => item.start <= cursor.line && item.end >= cursor.line);
+        const span = Math.min(...covering.map((item) => item.end - item.start));
+        hits = covering.filter((item) => item.end - item.start === span);
+      } else hits = items.filter((item) => item.start <= cursor.endLine && item.end >= cursor.startLine);
+      for (const item of hits) item.node.classList.add("active");
+    }
+    /** Records the current source lines of a comparison item; only these follow the editor's cursor. */
+    function markDiffLines(node, side, lines) {
+      node.dataset.diffSide = side;
+      node.dataset.diffStart = String(lines.startLine);
+      node.dataset.diffEnd = String(lines.endLine);
+    }
+    function highlightComparison() {
+      for (const section of document.querySelectorAll(".comparison-visual")) markComparison(section);
     }
     let revealActiveFrame = 0;
     /**
@@ -2832,6 +2870,14 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
         });
         if (message.reveal === true) revealActive();
       }
+      else if (message.type === "comparisonCursor") {
+        const line = (value) => (Number.isInteger(value) && value > 0 ? value : 0);
+        const side = message.side === "original" || message.side === "modified" ? message.side : undefined;
+        const lines = { line: line(message.line), startLine: line(message.startLine), endLine: line(message.endLine) };
+        comparisonCursor = side && lines.line && lines.startLine && lines.endLine >= lines.startLine ? { side, ...lines } : undefined;
+        highlightComparison();
+        if (message.reveal === true && comparisonCursor) revealActive();
+      }
     });
     for (const [id, type, glyph] of [["chooseModel", "chooseModel"], ["chooseOverviewModel", "chooseOverviewModel"], ["cancel", "cancel", "cancel"], ["initializeProject", "refreshContext", "refresh"], ["clearCache", "clearCache", "clear"]]) {
       const button = byId(id);
@@ -2847,6 +2893,13 @@ function nonce(): string {
   return randomBytes(24).toString("hex");
 }
 
+export interface ComparisonCursor {
+  readonly side: "original" | "modified";
+  readonly line: number;
+  readonly startLine: number;
+  readonly endLine: number;
+}
+
 export class ExplanationPanel {
   readonly panel: vscode.WebviewPanel;
   private disposed = false;
@@ -2855,6 +2908,7 @@ export class ExplanationPanel {
   private cursorEntry: string | undefined;
   private activeSteps: { entryId: string; steps: number[]; pseudocode: number[]; nodes: number[] } =
     { entryId: "", steps: [], pseudocode: [], nodes: [] };
+  private comparisonCursor: ComparisonCursor | undefined;
   private readonly disposables: vscode.Disposable[] = [];
   private readonly referenceHandlers = new Map<string, () => Promise<void>>();
   private readonly fileReferenceHandlers = new Map<string, () => Promise<void>>();
@@ -2945,6 +2999,7 @@ export class ExplanationPanel {
     if (this.cursorEntry) this.postMessage({ type: "cursor", entryId: this.cursorEntry });
     if (this.scrollLine !== undefined) this.postMessage({ type: "scroll", line: this.scrollLine });
     if (this.activeSteps.entryId) this.postMessage({ type: "steps", ...this.activeSteps });
+    if (this.comparisonCursor) this.postMessage({ type: "comparisonCursor", ...this.comparisonCursor });
   }
 
   private postMessage(message: unknown): void {
@@ -2990,6 +3045,16 @@ export class ExplanationPanel {
     if (!reveal && JSON.stringify(next) === JSON.stringify(this.activeSteps)) return;
     this.activeSteps = next;
     this.postMessage({ type: "steps", ...next, ...(reveal ? { reveal: true } : {}) });
+  }
+
+  /**
+   * Highlights the items of paired comparisons whose current source lines hold
+   * the cursor or selection on one side of the diff (1-based lines).
+   */
+  highlightComparison(cursor: ComparisonCursor | undefined, reveal = false): void {
+    if (!reveal && JSON.stringify(cursor) === JSON.stringify(this.comparisonCursor)) return;
+    this.comparisonCursor = cursor;
+    this.postMessage({ type: "comparisonCursor", ...(cursor ?? {}), ...(reveal ? { reveal: true } : {}) });
   }
 
   setReferenceHandlers(handlers: Map<string, () => Promise<void>>): void {

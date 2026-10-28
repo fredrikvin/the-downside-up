@@ -127,6 +127,14 @@ export class ChangeSession {
     return Boolean(shown && (shown.originalUri.toString() === uri.toString() || shown.modifiedUri.toString() === uri.toString()));
   }
 
+  /** Which side of the shown diff a document is, if either. */
+  sideOf(uri: vscode.Uri): "original" | "modified" | undefined {
+    const shown = this.shown;
+    if (!shown) return undefined;
+    if (shown.modifiedUri.toString() === uri.toString()) return "modified";
+    return shown.originalUri.toString() === uri.toString() ? "original" : undefined;
+  }
+
   clear(): void {
     this.epoch++;
     this.shown?.controller?.abort();

@@ -1370,6 +1370,44 @@ describe("change view", () => {
     }
   });
 
+  it("highlights the comparison items at the editor's cursor on that diff side only, while current", () => {
+    const scope = visualScope();
+    const inner = { id: "inner", startLine: 3, endLine: 3 };
+    const modified: ComparisonVisualScope["modified"] = {
+      ...scope.modified,
+      steps: [...scope.modified.steps, { ...scope.modified.steps[0]!, id: "inner-step", text: "Inner step", occurrenceId: "inner" }],
+      flowchart: { ...scope.modified.flowchart, nodes: [scope.modified.flowchart.nodes[0]!, { ...scope.modified.flowchart.nodes[1]!, occurrenceId: "inner" }] }
+    };
+    const nested: ComparisonVisualScope = {
+      ...scope, modified,
+      units: [...scope.units, { id: "inner-unit", label: "Inner", side: "modified", occurrence: inner }]
+    };
+    const view = withVisual(nested);
+    const linked = { ...view.result!.visualScopes![0]!, modifiedLinks: { occurrence: "host-modified", inner: "host-inner" } };
+    for (const status of ["current", "outdated"] as const) {
+      const { renderChange, element, receive, flushFrames, messages } = webviewHelpers();
+      element("entries").append(...renderChange({ ...view, status, result: { ...view.result!, visualScopes: [linked] } }));
+      const elements = () => element("entries").elements();
+      const active = () => elements().filter((node) => node.className.split(" ").includes("active")).map((node) => node.textContent || node.elements().map((part) => part.textContent).join(""));
+      receive({ type: "comparisonCursor", side: "modified", line: 3, startLine: 3, endLine: 3 });
+      expect(active()).toEqual(status === "current" ? ["Inner step."] : []);
+      receive({ type: "comparisonCursor", side: "modified", line: 2, startLine: 2, endLine: 3 });
+      expect(active()).toEqual(status === "current" ? ["After step <script>alert(1)</script>.", "Inner step."] : []);
+      receive({ type: "comparisonCursor", side: "original", line: 2, startLine: 2, endLine: 2 });
+      expect(active()).toEqual(status === "current" ? ["Before step <script>alert(1)</script>."] : []);
+      elements().find((node) => node.textContent === "Flowchart")?.listeners.get("click")?.(event);
+      flushFrames();
+      receive({ type: "comparisonCursor", side: "modified", line: 3, startLine: 3, endLine: 3 });
+      expect(active()).toEqual(status === "current" ? ["After end"] : []);
+      receive({ type: "comparisonCursor", side: "modified", line: 9, startLine: 9, endLine: 9 });
+      expect(active()).toEqual([]);
+      receive({ type: "comparisonCursor", side: "modified", line: 3, startLine: 3, endLine: 3 });
+      receive({ type: "comparisonCursor" });
+      expect(active()).toEqual([]);
+      expect(messages).toEqual([]);
+    }
+  });
+
   it("shares subtle text highlights and shape-following flowchart halos with normal explanations", () => {
     const html = panelHtml("n");
     expect(html).toContain(".step.active, .pseudo-line.active { background: var(--item-highlight); }");

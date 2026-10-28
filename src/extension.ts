@@ -99,7 +99,8 @@ import {
   type PanelNotice,
   type PanelState,
   type ReviewNavigationView,
-  type ReviewSummaryView
+  type ReviewSummaryView,
+  type ComparisonCursor
 } from "./presentation/panel";
 import { innermostRangeAt } from "./presentation/scrollSync";
 import { ModelSetupRequired, modelBoundTask, providerConfigured, selectedProvider } from "./generation/selection";
@@ -701,6 +702,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
 
   /** The last highlight, for the extension-host tests. */
   let lastStepHighlight: { functionName: string; steps: number[]; pseudocode: number[]; nodes: number[] } | undefined;
+  let lastComparisonHighlight: ComparisonCursor | undefined;
 
   /** Highlights the items of the innermost explained function at the editor's cursor or selection. Local only. */
   const syncStepHighlight = (selection?: vscode.Selection, reveal = false, sourceEditor?: vscode.TextEditor): void => {
@@ -709,6 +711,12 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     const editor = sourceEditor ?? (change.active ? vscode.window.activeTextEditor
       : vscode.window.visibleTextEditors.find((candidate) => sameUri(candidate.document.uri, preview!.document.uri)));
     const current = selection ?? editor?.selection;
+    // Paired comparisons follow the cursor on either side of the diff; the preview only marks current lines.
+    const side = change.active && current && editor ? change.sideOf(editor.document.uri) : undefined;
+    lastComparisonHighlight = side && current
+      ? { side, line: current.active.line + 1, startLine: current.start.line + 1, endLine: current.end.line + 1 }
+      : undefined;
+    panel.highlightComparison(lastComparisonHighlight, reveal);
     if (!current) {
       panel.highlightSteps(undefined, NO_ITEMS, reveal);
       return;
@@ -4451,6 +4459,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     regenerateOutdated,
     cancel: cancelExplanations,
     stepHighlight: () => lastStepHighlight,
+    comparisonHighlight: () => lastComparisonHighlight,
     revealedLines: () => revealed ? { start: revealed.start, end: revealed.end } : undefined,
     selectionEvent: (event: vscode.TextEditorSelectionChangeEvent) => handleTextSelectionChange(event),
     revealStep: async (functionName: string, step: number, kind: LinkedKind = "step") => {
@@ -4654,6 +4663,8 @@ export interface DownsideUpTestApi {
   allExplanations(): Array<{ functionName: string; status: string; path: string; error?: string }>;
   shownOutline(): Array<{ kindLabel: string; name: string; documentation?: string }>;
   stepHighlight(): { functionName: string; steps: number[]; pseudocode: number[]; nodes: number[] } | undefined;
+  /** The diff side and 1-based lines last sent to paired comparisons. */
+  comparisonHighlight(): ComparisonCursor | undefined;
   revealStep(functionName: string, index: number, kind?: LinkedKind): Promise<void>;
   revealedLines(): { start: number; end: number } | undefined;
   selectionEvent(event: vscode.TextEditorSelectionChangeEvent): void;

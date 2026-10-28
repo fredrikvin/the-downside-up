@@ -65,7 +65,8 @@ billing; see `docs/configuration.md` in the extension package.
   paired views sit underneath with room to read. The views use the same tabs,
   text highlighting, and flowchart shapes as normal explanations.
   Click a visual item to focus and select its source lines in the matching
-  Before or After side of the existing diff editor.
+  Before or After side of the existing diff editor; moving the cursor in
+  either side highlights that side's matching items.
   With **Prefetch** enabled and sharing already approved, the comparison
   preloads automatically when the preview shows the diff. Otherwise,
   **Explain changes** sends both versions of that one file.

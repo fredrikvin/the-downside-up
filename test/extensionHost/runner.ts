@@ -223,6 +223,9 @@ async function testSnapshotFunctionCards(api: DownsideUpTestApi, document: vscod
         assert.ok(editor && !editor.selection.isEmpty, `${kind} selects source in the ${side} diff side.`);
         assert.equal(editor.selection.start.line, firstLine);
         assert.equal(api.stepHighlight()?.functionName, card.name, "The card's normal items highlight with their own entry id.");
+        assert.deepEqual(api.comparisonHighlight(), {
+          side, line: editor.selection.active.line + 1, startLine: editor.selection.start.line + 1, endLine: editor.selection.end.line + 1
+        }, "Paired comparisons follow the cursor on the same diff side.");
       }
     }
     assert.equal(vscode.window.tabGroups.all.flatMap((group) => group.tabs).length, tabsBefore,

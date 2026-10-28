@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Paired Changed views (Steps, Pseudocode, Flowchart) now follow the cursor or
+  selection in either side of the diff editor, highlighting that side's items.
+
 ## 0.54.4
 
 - Replace outdated-state text buttons (Explain again, Regenerate) with a refresh
