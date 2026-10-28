@@ -3330,25 +3330,59 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
 
   /** Asks which changes to review and starts review mode. */
   const reviewChangesCommand = async (): Promise<void> => {
-    if (!(await ensureLanguageModelSelected())) return;
-    const root = await rootForCommand() ?? (vscode.workspace.workspaceFolders?.length === 1
-      ? await findRepositoryRoot(vscode.workspace.workspaceFolders[0]!.uri.fsPath).catch(() => undefined)
-      : undefined);
-    if (!root) {
-      await vscode.window.showInformationMessage("Open a source file in the repository to review first.");
+    if (!modelConfigured()) {
+      await ensureLanguageModelSelected();
       return;
     }
-    const choices = await baseChoices(root);
-    if (choices.length === 0) {
-      await vscode.window.showInformationMessage("Review mode needs a Git repository with at least one commit.");
-      return;
-    }
-    const pickCommit = { label: "$(git-commit) Changes since a commit…", description: "choose from recent commits", phrase: "", commit: "" };
-    const picked = await vscode.window.showQuickPick([...choices, pickCommit], {
-      title: "Explain changed files",
-      placeHolder: "Compare the checked-out code with…"
+    // Model lookup and Git queries can take seconds; show the picker at once and fill it in.
+    const modelReady = ensureLanguageModelSelected().catch(() => false);
+    type BaseItem = vscode.QuickPickItem & { phrase: string; commit: string };
+    const pickCommit: BaseItem = { label: "$(git-commit) Changes since a commit…", description: "choose from recent commits", phrase: "", commit: "" };
+    const quickPick = vscode.window.createQuickPick<BaseItem>();
+    quickPick.title = "Explain changed files";
+    quickPick.placeholder = "Finding comparison bases…";
+    quickPick.busy = true;
+    quickPick.enabled = false;
+    let hidden = false;
+    const pickedPromise = new Promise<BaseItem | undefined>((resolvePick) => {
+      quickPick.onDidAccept(() => {
+        const [selected] = quickPick.selectedItems;
+        if (selected) resolvePick(selected);
+      });
+      quickPick.onDidHide(() => {
+        hidden = true;
+        resolvePick(undefined);
+      });
     });
-    if (!picked) return;
+    quickPick.show();
+    let picked: BaseItem | undefined;
+    let root: string | undefined;
+    try {
+      root = await rootForCommand() ?? (vscode.workspace.workspaceFolders?.length === 1
+        ? await findRepositoryRoot(vscode.workspace.workspaceFolders[0]!.uri.fsPath).catch(() => undefined)
+        : undefined);
+      if (hidden) return;
+      if (!root) {
+        quickPick.hide();
+        await vscode.window.showInformationMessage("Open a source file in the repository to review first.");
+        return;
+      }
+      const choices = await baseChoices(root);
+      if (hidden) return;
+      if (choices.length === 0) {
+        quickPick.hide();
+        await vscode.window.showInformationMessage("Review mode needs a Git repository with at least one commit.");
+        return;
+      }
+      quickPick.items = [...choices, pickCommit];
+      quickPick.placeholder = "Compare the checked-out code with…";
+      quickPick.busy = false;
+      quickPick.enabled = true;
+      picked = await pickedPromise;
+    } finally {
+      quickPick.dispose();
+    }
+    if (!(await modelReady) || !picked) return;
     let base = picked.commit;
     let label = picked.phrase;
     if (picked === pickCommit) {

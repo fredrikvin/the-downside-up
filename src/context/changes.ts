@@ -55,15 +55,20 @@ const optional = (promise: Promise<string>) => promise.then((value) => value.tri
  * branches, and the last commit, so only uncommitted changes count.
  */
 export async function baseChoices(root: string): Promise<BaseChoice[]> {
-  const head = await optional(git(root, ["rev-parse", "--verify", "HEAD"]));
+  const [head, remoteDefault] = await Promise.all([
+    optional(git(root, ["rev-parse", "--verify", "HEAD"])),
+    optional(git(root, ["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"]))
+  ]);
   if (!head) return [];
-  const remoteDefault = (await optional(git(root, ["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"])));
   const candidates = [...new Set([remoteDefault, "main", "master", "origin/main", "origin/master"].filter(Boolean))];
-  const choices: BaseChoice[] = [];
-  for (const branch of candidates) {
+  // Candidates are independent; query them concurrently but keep their order.
+  const resolved = await Promise.all(candidates.map(async (branch) => {
     const tip = await optional(git(root, ["rev-parse", "--verify", "--quiet", `${branch}^{commit}`]));
+    return { branch, tip, base: tip ? await optional(git(root, ["merge-base", "HEAD", tip])) : "" };
+  }));
+  const choices: BaseChoice[] = [];
+  for (const { branch, tip, base } of resolved) {
     if (!tip) continue;
-    const base = await optional(git(root, ["merge-base", "HEAD", tip]));
     if (base && base !== head) {
       choices.push({
         label: `Changes on this branch since ${branch}`,
