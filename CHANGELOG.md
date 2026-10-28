@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.54.3
 
 - Keep chart edge labels readable: long labels sit beside their line within
   the visible chart, and are shortened with a tooltip when space runs out.
