@@ -72,6 +72,80 @@ async function assertReviewLayout(api: DownsideUpTestApi, path: string): Promise
     `the preview to render ${path} with review navigation`);
 }
 
+/** Layout changes must not turn a native comparison into an ordinary Git document. */
+async function testInlineReview(api: DownsideUpTestApi, root: string): Promise<void> {
+  const settings = vscode.workspace.getConfiguration("diffEditor");
+  const keys = ["renderSideBySide", "renderSideBySideInlineBreakpoint"] as const;
+  const saved = keys.map((key) => settings.inspect(key)?.globalValue);
+  const items = api.reviewItems();
+  const progress = api.reviewProgress();
+  const summary = api.shownReviewSummary()?.summary;
+  const pair = api.reviewDiffUris("main.ts")!;
+  const tabsBefore = new Set(vscode.window.tabGroups.all.flatMap((group) => group.tabs));
+  try {
+    // Both an explicitly inline diff and the narrow-window automatic collapse.
+    for (const [sideBySide, breakpoint] of [[false, 900], [true, 100000], [true, 0]] as const) {
+      await settings.update(keys[1], breakpoint, vscode.ConfigurationTarget.Global);
+      await settings.update(keys[0], sideBySide, vscode.ConfigurationTarget.Global);
+      for (const side of ["Primary", "Secondary", "Primary"] as const) {
+        await vscode.commands.executeCommand(`workbench.action.compareEditor.focus${side}Side`);
+        assert.equal(api.shownReviewSummary()?.summary, summary, "Changing layout or diff side retains the selected summary.");
+        assert.deepEqual(api.reviewItems(), items, "Layout and focus do not change the confirmed preparation queue.");
+      }
+      await api.openReviewedFile("main.ts");
+      await assertReviewLayout(api, "main.ts");
+      await waitFor(async () => api.shownChange()?.status === "current" ? true : undefined, "the current inline comparison");
+      const navigation = api.reviewNavigation()!;
+      for (const side of ["Primary", "Secondary", "Primary"] as const) {
+        await vscode.commands.executeCommand(`workbench.action.compareEditor.focus${side}Side`);
+        assert.equal(api.shownChange()?.status, "current");
+        assert.equal(api.reviewNavigation()?.fileName, "main.ts");
+        assert.equal(api.reviewNavigation()?.token, navigation.token, "Focusing an unchanged pair preserves navigation authority.");
+        assert.deepEqual(api.reviewProgress(), progress);
+      }
+      await vscode.commands.executeCommand("workbench.action.focusSecondEditorGroup");
+      await vscode.commands.executeCommand("downsideUp.showFileOverview");
+      assert.equal(api.reviewNavigation()?.fileName, "main.ts", "Preview focus retains the previously associated exact diff tab.");
+      assert.equal(api.shownChange()?.status, "current");
+      await vscode.commands.executeCommand("workbench.action.focusFirstEditorGroup");
+      await api.showReviewSummary();
+      assert.equal(api.shownReviewSummary()?.summary, summary);
+    }
+    // Both groups expose the same exact documents, but in opposite roles.
+    // A column-less diff TextEditor must not match the first group's pair.
+    await vscode.commands.executeCommand("vscode.diff", pair.modified, pair.original, "Other group, reversed pair (test)",
+      { viewColumn: vscode.ViewColumn.Three });
+    await waitFor(async () => api.reviewItems().length === 0 && api.shownChange()?.status === "ready" ? true : undefined,
+      "the active group's reversed pair, not the review diff in another group");
+    assert.equal(api.reviewNavigation(), undefined);
+    await vscode.commands.executeCommand("vscode.diff", pair.original, pair.modified, "Restore exact active pair (test)",
+      { viewColumn: vscode.ViewColumn.One });
+    await assertReviewLayout(api, "main.ts");
+    // The same historical side in an ordinary tab must not borrow a diff from
+    // another group, and a real working-file navigation must still leave review.
+    await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(pair.modified), vscode.ViewColumn.Three);
+    await waitFor(async () => !api.reviewNavigation() && api.shownChange()?.status === "current" ? true : undefined,
+      "an ordinary historical tab to retain only its commit single-side association");
+    assert.deepEqual(api.reviewItems(), items, "Confirmed historical documents retain commit review without borrowing native navigation.");
+    await vscode.commands.executeCommand("vscode.diff", pair.original, pair.modified, "Restore after inline review (test)",
+      { viewColumn: vscode.ViewColumn.One });
+    await assertReviewLayout(api, "main.ts");
+    await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(resolve(root, "main.ts")), vscode.ViewColumn.One);
+    await waitFor(async () => api.reviewItems().length === 0 && !api.shownChange() ? true : undefined, "a genuine working file to leave review");
+    await vscode.commands.executeCommand("vscode.diff", pair.original, pair.modified, "Restore inline review (test)",
+      { viewColumn: vscode.ViewColumn.One });
+    await assertReviewLayout(api, "main.ts");
+    await api.showReviewSummary();
+    assert.equal(api.shownReviewSummary()?.summary, summary);
+  } finally {
+    await vscode.window.tabGroups.close(vscode.window.tabGroups.all.flatMap((group) => group.tabs)
+      .filter((tab) => !tabsBefore.has(tab) && tab.group.viewColumn === vscode.ViewColumn.Three));
+    for (let index = 0; index < keys.length; index++) {
+      await settings.update(keys[index]!, saved[index], vscode.ConfigurationTarget.Global);
+    }
+  }
+}
+
 async function findFunctionTarget(document: vscode.TextDocument, position: vscode.Position) {
   return javascriptSupport.findFunction(document, position);
 }
@@ -213,13 +287,18 @@ async function testCommitPreparation(api: DownsideUpTestApi, root: string): Prom
     await vscode.window.tabGroups.close(await waitForPanel());
     await waitFor(async () => api.shownChange() === undefined ? true : undefined, "the preview to close before commit preparation");
     assert.ok((await vscode.commands.getCommands(true)).includes("downsideUp.prepareCommit"), "The stable commit preparation command is registered.");
+    api.mockDelay(1_500);
     assert.equal(await api.prepareCommit(root, commit), 4, "The committed secret file is excluded from the bounded preparation.");
-    assert.ok(api.shownReviewSummary(), "Commit preparation opens the review summary without generating it.");
+    assert.ok(api.shownReviewSummary(), "Commit preparation opens the review summary while it loads.");
     assert.equal(api.shownReviewSummary()?.summary, undefined);
+    assert.equal(api.shownReviewSummary()?.generating, true, "Preparation returns before the summary provider completes, with a skeleton.");
     assert.equal(api.reviewNavigation()?.fileName, "Review summary");
     const landingToken = api.reviewNavigation()!.token;
-    await api.invokeReviewSummary("generate", landingToken);
-    const sourceSummary = api.shownReviewSummary();
+    const sourceSummary = await waitFor(async () => {
+      const summary = api.shownReviewSummary();
+      return summary?.summary ? summary : undefined;
+    }, "the initial review summary to preload asynchronously");
+    api.mockDelay(0);
     assert.ok(sourceSummary?.summary, sourceSummary?.error);
     assert.equal(sourceSummary.current, true, "Source-grounded summary can be requested while file preparation is running.");
     assert.ok(sourceSummary.coverage.includes("4 of 4"));
@@ -304,6 +383,7 @@ async function testCommitPreparation(api: DownsideUpTestApi, root: string): Prom
     await assertReviewLayout(api, summaryLink.path);
     await api.showReviewSummary();
     assert.equal(api.shownReviewSummary()?.summary, synthesized.summary, "Returning restores the saved summary cache-only.");
+    await testInlineReview(api, root);
     const currentSummaryNavigation = api.reviewNavigation()!;
     await api.invokeReviewNavigation("next", firstNavigation.token);
     assert.ok(api.shownReviewSummary(), "Old file authority cannot control the summary page.");
@@ -378,6 +458,7 @@ async function testCommitPreparation(api: DownsideUpTestApi, root: string): Prom
     assert.equal(await api.prepareCommit(root, commit), 4, "Late cancellation updates cannot poison a new review session.");
   } finally {
     api.stopReview();
+    api.mockDelay(0);
   }
   console.log("Downside Up integration tests: immutable commit preparation, graph diff cache alignment, historical add/delete documents, compact progress, and background refresh.");
 }

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.54.0
+
+- Preload the review summary asynchronously when starting a review, reusing
+  current saved results and showing a skeleton without blocking file preparation.
+- Keep review association and navigation when native diffs switch between
+  side-by-side and inline layouts, including automatic narrow-window collapse.
+
 ## 0.53.0
 
 - Replace the review summary status button with a header refresh icon shown

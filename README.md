@@ -93,8 +93,10 @@ billing; see `docs/configuration.md` in the extension package.
   applies only to the diff being viewed. After
   you confirm, the first file's diff opens on the left with the preview on the
   right (the active editor's file if it is in the review). The preview starts
-  on **Review summary**, showing scope and progress without generating a summary.
-  **Generate summary** explicitly asks the Overview model to summarize the actual
+  on **Review summary**. Starting the review also requests its summary: a current
+  saved summary is reused, otherwise it loads asynchronously with a skeleton
+  while file preparation and navigation remain available.
+  The Overview model summarizes the actual
   confirmed diffs and bounded surrounding source, with host-validated links to
   those diffs. Individual file explanations do not need to be ready first.
   The overview focuses on the main behavioral or contract change, grouping
@@ -107,9 +109,12 @@ billing; see `docs/configuration.md` in the extension package.
   changed evidence or summary settings require explicit regeneration.
   An outdated summary shows a refresh icon beside its heading, with an
   explanatory tooltip; current summaries show no refresh control.
-  While a confirmed
-  file's native diff is shown, the review bands above the file header and at
-  the bottom of the preview offer **‹ Previous** and **Next ›** to step through
+  Returning to the summary or editing source never starts generation. A failed
+  or cancelled initial request is not retried automatically.
+  While a confirmed file's native diff is shown, the review stays associated
+  with that comparison in either side-by-side or inline layout, including
+  automatic collapse on narrow windows. Review bands above the file header and
+  at the bottom of the preview offer **‹ Previous** and **Next ›** to step through
   the review in path order, plus **Review: 3/8 ready** progress at the top.
   The filename and position open the existing **Show Changed Files** picker,
   with **Review summary** first. Previous from the first file returns to the

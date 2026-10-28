@@ -631,9 +631,17 @@ requests already in the confirmed set; it never starts a provider request or
 expands that set.
 
 **Review summary** is a landing page for the confirmed working or commit review,
-not an extra queue item. Opening it, preparation progress, returning through
-navigation, and cache misses only inspect local review evidence and never generate
-a summary. **Generate summary**, or the header refresh icon shown only for an
+whose native diff association is independent of side-by-side or inline layout.
+Layout transitions and automatic narrow-window collapse preserve the exact
+original/modified pair, summary selection, and review navigation.
+The summary is
+not an extra file queue item. Starting a newly confirmed review explicitly
+requests one initial summary alongside the confirmed file comparisons, disclosed
+in the confirmation. A current saved summary is reused; otherwise generation
+starts asynchronously with a skeleton and does not block file preparation or
+navigation. Returning through navigation, preparation progress, source edits,
+and cache invalidation never generate or retry a summary. Declines, cancellations,
+and failures are not retried automatically. **Generate summary**, or the header refresh icon shown only for an
 outdated saved summary, is an explicit, separately
 cancellable request using the Overview model with per-repository/model sharing
 consent. The refresh icon's tooltip explains staleness and model usage; current

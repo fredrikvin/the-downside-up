@@ -1980,16 +1980,30 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     return folder ? findRepositoryRoot(folder.uri.fsPath) : undefined;
   };
 
+  let lastNativeDiffTab: vscode.Tab | undefined;
   /** The native diff an editor belongs to, taken from the tab that shows it. */
   const diffForEditor = (editor: vscode.TextEditor | undefined): { original: vscode.Uri; modified: vscode.Uri; nativeDiff: boolean } | undefined => {
     if (!editor) return undefined;
-    for (const group of vscode.window.tabGroups.all) {
-      if (editor.viewColumn !== undefined && group.viewColumn !== editor.viewColumn) continue;
-      const input = group.activeTab?.input;
-      if (input instanceof vscode.TabInputTextDiff &&
-        (sameUri(input.modified, editor.document.uri) || sameUri(input.original, editor.document.uri))) {
-        return { original: input.original, modified: input.modified, nativeDiff: true };
-      }
+    // The active tab owns both exact sides, also while an inline/collapsed
+    // editor is being recreated. Its TextEditor/column can lag layout events;
+    // neither is the comparison identity. Never borrow a diff from another
+    // group merely because its side has the same document URI.
+    const tab = vscode.window.tabGroups.activeTabGroup.activeTab;
+    const input = tab?.input;
+    if (input instanceof vscode.TabInputTextDiff &&
+      (editor === vscode.window.activeTextEditor || (!vscode.window.activeTextEditor && editor === lastTextEditor))) {
+      lastNativeDiffTab = tab;
+      return { original: input.original, modified: input.modified, nativeDiff: true };
+    }
+    // Preview focus has no TextEditor. Retain only the tab already associated
+    // above, while that exact tab still owns its group; do not search other
+    // groups for a URI match. Ordinary text tabs never take this branch.
+    const previous = lastNativeDiffTab?.input;
+    if (!vscode.window.activeTextEditor && panel?.panel.active && editor === lastTextEditor &&
+      lastNativeDiffTab?.isActive && lastNativeDiffTab.group.tabs.includes(lastNativeDiffTab) &&
+      previous instanceof vscode.TabInputTextDiff &&
+      (sameUri(previous.original, editor.document.uri) || sameUri(previous.modified, editor.document.uri))) {
+      return { original: previous.original, modified: previous.modified, nativeDiff: true };
     }
     // The graph opens additions/deletions as one Git document, not a diff.
     // Bind only an exact immutable side of this confirmed commit set.
@@ -3046,7 +3060,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     }, 300);
   };
 
-  const showReviewSummary = async (session: Review): Promise<void> => {
+  const showReviewSummary = async (session: Review, initialRequest = false): Promise<void> => {
     if (reviewSession !== session) return;
     ensurePanel();
     stopPrefetch();
@@ -3068,7 +3082,8 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     panel!.panel.title = "Downside Up: Review summary";
     render();
     updateReviewStatus();
-    await refreshReviewSummary();
+    if (initialRequest) void generateReviewSummary();
+    else await refreshReviewSummary();
     if (reviewSession === session && headerData?.root !== session.root) void loadHeaderData(session.root);
   };
 
@@ -3156,13 +3171,13 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       if (confirm) await vscode.window.showInformationMessage(`No changed files could be explained ${baseLabel}. ${notes}`.trim());
       return 0;
     }
-    if (confirm && (pending > 0 || committed)) {
+    if (confirm) {
       const accept = committed ? "Prepare Explanations" : "Explain Changed Files";
       const requests = committed
         ? `${plural(pending, "initial request")}, up to ${pending * 2} requests including at most one retry per failed file`
         : plural(pending, "request");
       const answer = await vscode.window.showInformationMessage(
-        `Explain ${plural(pending, "changed file")} ${baseLabel} in the background? That is ${requests} to your model provider, each sending the two versions of one file. The other ${items.length - pending} of ${items.length} already have a current explanation.`,
+        `Prepare this review ${baseLabel}? Explain ${plural(pending, "changed file")} in the background: ${requests} to your Functions model, each sending the two versions of one file. The other ${items.length - pending} of ${items.length} already have a current explanation. Also prepare one summary of the confirmed diffs with the Overview model, reusing a current saved summary when available. Model sharing approval is separate; provider quota or billing applies.`,
         { modal: true, detail: notes || undefined },
         accept
       );
@@ -3198,7 +3213,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     // confirmed pair explicitly, cache-only, before any sharing-consent await.
     await showChange({ ...reviewDiffUris(first), nativeDiff: true }, false);
     if (reviewSession !== session) return items.length;
-    await showReviewSummary(session);
+    await showReviewSummary(session, true);
     updateReviewStatus();
     render();
     const sharingAllowed = pending === 0 || await reviewSharingAllowed(root);
@@ -4014,7 +4029,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     }
   });
 
-  const onActiveEditorChange = vscode.window.onDidChangeActiveTextEditor((editor) => {
+  const followActiveEditor = (editor: vscode.TextEditor | undefined): void => {
     // Focus moving to the preview or another panel leaves no active text editor.
     if (!editor) return;
     lastTextEditor = editor;
@@ -4047,9 +4062,20 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
         })
       : previewDocument(editor.document);
     if (session) void shown.then(() => leaveReviewIfOutside(editor, session)).catch(() => undefined);
-  });
+  };
+  const onActiveEditorChange = vscode.window.onDidChangeActiveTextEditor(followActiveEditor);
 
   const onTabsChange = vscode.window.tabGroups.onDidChangeTabs(() => {
+    // Tab and TextEditor notifications may arrive in either order. Reconcile
+    // ordinary tabs too, so a stale diff tab seen by the earlier editor event
+    // cannot keep a real file navigation associated with the comparison.
+    const activeEditor = vscode.window.activeTextEditor;
+    const input = vscode.window.tabGroups.activeTabGroup.activeTab?.input;
+    if (activeEditor && (input instanceof vscode.TabInputTextDiff ||
+      ((change.active || summarySelected) && input instanceof vscode.TabInputText && sameUri(input.uri, activeEditor.document.uri)))) {
+      followActiveEditor(activeEditor);
+      return;
+    }
     const editor = vscode.window.activeTextEditor ?? lastTextEditor;
     const diff = panel?.panel.visible ? diffForEditor(editor) : undefined;
     if (summarySelected) {
