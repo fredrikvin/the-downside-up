@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.56.2
+
+- Remove duplicate file lists beneath the review-summary chart; use its
+  clickable nodes and file picker to navigate instead.
+
 ## 0.56.1
 
 - Add public source-code and issue-tracker links to the README and extension

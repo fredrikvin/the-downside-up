@@ -288,12 +288,11 @@ it("renders an optional affected-parts chart with token-bound links only while c
   expect(groupedNode.title).toBe("Choose from 2 changed files");
   groupedNode.listeners.get("click")?.({ target: groupedNode, preventDefault() {}, stopPropagation() {} });
   groupedNode.listeners.get("keydown")?.({ key: " ", target: groupedNode, preventDefault() {}, stopPropagation() {} });
-  content.elements().find((item) => item.textContent === "consumer_test.go")!.listeners.get("click")?.({ preventDefault() {}, stopPropagation() {} });
+  expect(content.elements().some((item) => item.textContent === "consumer.go" || item.textContent === "consumer_test.go")).toBe(false);
   expect(messages).toEqual([
     { type: "reviewSummary", token: state.reviewSummary!.token, operation: "open", fileId: "file-a" },
     { type: "reviewSummary", token: state.reviewSummary!.token, operation: "openPart", nodeId: "consumers" },
-    { type: "reviewSummary", token: state.reviewSummary!.token, operation: "openPart", nodeId: "consumers" },
-    { type: "reviewSummary", token: state.reviewSummary!.token, operation: "open", fileId: "file-c" }
+    { type: "reviewSummary", token: state.reviewSummary!.token, operation: "openPart", nodeId: "consumers" }
   ]);
   render({ ...state, reviewSummary: { ...state.reviewSummary!, current: false } });
   flushFrames();

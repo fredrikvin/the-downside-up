@@ -2814,17 +2814,6 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
         const graph = renderFlowchart(chart, { entryId: "review-summary-diagram" }, links);
         graph.setAttribute("aria-label", "Affected parts and their relationships");
         box.append(el("h2", "", "Affected parts"), graph);
-        if (view.current) {
-          for (const node of view.diagram.nodes.filter((part) => part.files.length > 1)) {
-            const files = el("p", "small");
-            files.append(document.createTextNode(node.label + ": "));
-            node.files.forEach((file, index) => {
-              if (index) files.append(document.createTextNode(", "));
-              files.append(action(file.path, () => post({ type: "reviewSummary", token: view.token, operation: "open", fileId: file.id })));
-            });
-            box.append(files);
-          }
-        }
       }
       for (const theme of view.themes) {
         const section = el("section");
