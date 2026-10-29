@@ -6,6 +6,14 @@
   "version": "0.56.0",
   "publisher": "FredrikVinkvist",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/fredrikvin/the-downside-up.git"
+  },
+  "homepage": "https://github.com/fredrikvin/the-downside-up#readme",
+  "bugs": {
+    "url": "https://github.com/fredrikvin/the-downside-up/issues"
+  },
   "engines": {
     "vscode": "^1.90.0"
   },

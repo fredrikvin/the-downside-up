@@ -1,5 +1,7 @@
 # The Downside Up
 
+[Source code](https://github.com/fredrikvin/the-downside-up) | [Report an issue](https://github.com/fredrikvin/the-downside-up/issues)
+
 **Understand unfamiliar code beside the source.** Downside Up turns functions
 into plain-language explanations, pseudocode, and flowcharts in a synchronized
 VS Code preview. Explore the project's architecture or prepare explanations

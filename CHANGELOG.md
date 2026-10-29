@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.56.1
+
+- Add public source-code and issue-tracker links to the README and extension
+  metadata.
+
 ## 0.56.0
 
 - Make multi-file nodes in the review-summary chart clickable, with a picker
