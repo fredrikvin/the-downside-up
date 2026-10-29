@@ -173,7 +173,13 @@ or running **Open Preview to the Side** (the
 editor title-bar button) while text inside the function is selected is an
 explicit request (with a selection, an outdated, failed, or cancelled
 explanation is regenerated); with only a cursor, opening the preview never
-generates. For a request, the extension first looks
+generates. Opening a file preview from Explorer also opens or focuses that
+file's source editor to the left of the preview. Folder previews remain
+folder-only. Without a visible source editor or an explicit file target,
+the command asks for a local source file (or shows setup if unconfigured);
+it never reuses a closed editor. A selection restored by opening the source
+is not an explanation request.
+For a request, the extension first looks
 for a current saved explanation (local only) and generates one only when none
 exists. Explanations are always shown inline rather than in an accordion.
 Loading, including queued and prefetched requests, shows skeleton lines
@@ -668,7 +674,10 @@ links provide drill-down. Avoid speculative bug lists and repeated host caveats.
 An optional compact affected-parts diagram is included only when source supports
 a useful relationship across parts, not as a changed-file checklist. Its labels
 are text, and its file references are validated against included evidence.
-Current diagrams link only to confirmed diffs; outdated diagrams have no links.
+Current diagrams link only to confirmed diffs: a single-file node opens its
+diff directly, while a node covering several files opens a picker of its
+host-validated evidence files. Choosing rechecks evidence freshness and policy
+before opening the confirmed native pair. Outdated diagrams have no links.
 This explicitly shares source with the Overview model; file explanations do not
 need to have been generated first. Coverage counts included, unavailable, and
 budget-omitted files, and discloses excluded/skipped files or truncated review

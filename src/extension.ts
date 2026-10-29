@@ -3529,8 +3529,19 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
           owner.item || !summarySelected || page?.session !== owner.session) return;
         if (action.operation === "cancel") page.controller?.abort();
         else if (action.operation === "generate") await generateReviewSummary();
-        else if (page.prepared?.current && action.fileId) {
-          const fileId = action.fileId;
+        else if (page.prepared?.current && (action.fileId || action.nodeId)) {
+          let fileId = action.fileId;
+          if (action.operation === "openPart") {
+            const node = page.prepared.record?.value.diagram?.nodes.find((candidate) => candidate.id === action.nodeId);
+            if (!node) return;
+            const choices = page.prepared.evidence.filter((file) => node.fileIds.includes(file.id))
+              .map((file) => ({ label: file.path, fileId: file.id }));
+            const picked = await vscode.window.showQuickPick(choices, {
+              title: node.label, placeHolder: "Choose a changed file to review"
+            });
+            if (!picked) return;
+            fileId = picked.fileId;
+          }
           // Revalidate evidence and policy before accepting a saved link.
           const prepared = await service.prepareReviewSummary(summaryScope(owner.session),
             (ref) => readComparison(ref, snapshotOptions()));
@@ -4001,8 +4012,10 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
    */
   const openPreviewCommand = async (resource?: vscode.Uri): Promise<void> => {
     let document: vscode.TextDocument | undefined;
+    const sourceEditor = vscode.window.activeTextEditor ??
+      (lastTextEditor && vscode.window.visibleTextEditors.includes(lastTextEditor) ? lastTextEditor : undefined);
     // From either side of a native diff, the preview shows the change; opening it only looks up a saved explanation.
-    const diff = diffForEditor(vscode.window.activeTextEditor ?? lastTextEditor);
+    const diff = diffForEditor(sourceEditor);
     if (diff && (!(resource instanceof vscode.Uri) || sameUri(resource, diff.modified) || sameUri(resource, diff.original))) {
       const existing = panel;
       ensurePanel();
@@ -4017,7 +4030,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     if (resource instanceof vscode.Uri && resource.scheme === "file") {
       document = await vscode.workspace.openTextDocument(resource);
     } else {
-      const editor = vscode.window.activeTextEditor ?? lastTextEditor;
+      const editor = sourceEditor;
       document = editor?.document;
       if (editor) lastTextEditor = editor;
     }
@@ -4036,13 +4049,23 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       await vscode.window.showWarningMessage("Open the source file inside a workspace folder to preview it.");
       return;
     }
-    const editor = vscode.window.activeTextEditor ?? lastTextEditor;
-    const selection = editor && sameUri(editor.document.uri, document.uri) && editor.selections.length === 1 && !editor.selection.isEmpty
-      ? editor.selection
-      : undefined;
+    const selection = sourceEditor && sameUri(sourceEditor.document.uri, document.uri) &&
+      sourceEditor.selections.length === 1 && !sourceEditor.selection.isEmpty ? sourceEditor.selection : undefined;
+    const visibleEditor = vscode.window.visibleTextEditors.find((candidate) => sameUri(candidate.document.uri, document.uri));
+    const previewColumn = panel?.panel.viewColumn;
+    const editor = await vscode.window.showTextDocument(document, {
+      viewColumn: visibleEditor?.viewColumn ?? (previewColumn && previewColumn > vscode.ViewColumn.One
+        ? previewColumn - 1 : sourceEditor?.viewColumn ?? vscode.ViewColumn.One),
+      preserveFocus: false
+    });
+    lastTextEditor = editor;
     const existing = panel;
     ensurePanel();
-    if (existing) existing.panel.reveal(undefined, true);
+    if (existing) existing.panel.reveal(
+      existing.panel.viewColumn !== undefined && editor.viewColumn !== undefined && existing.panel.viewColumn <= editor.viewColumn
+        ? vscode.ViewColumn.Beside : undefined,
+      true
+    );
     await previewDocument(document);
     if (selection) await explainSelection(document, selection);
   };

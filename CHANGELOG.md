@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.56.0
+
+- Make multi-file nodes in the review-summary chart clickable, with a picker
+  for their confirmed diffs.
+- Open or focus the source beside file previews requested from Explorer;
+  never reuse a closed editor when opening a preview without a file target.
+
 ## 0.55.0
 
 - Paired Changed views (Steps, Pseudocode, Flowchart) now follow the cursor or

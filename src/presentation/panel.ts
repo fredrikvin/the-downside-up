@@ -323,7 +323,7 @@ export type PanelAction =
   | { readonly type: "cancel" }
   | { readonly type: "stopReview" }
   | { readonly type: "reviewNavigation"; readonly token: string; readonly direction: "previous" | "next" | "picker" }
-  | { readonly type: "reviewSummary"; readonly token: string; readonly operation: "generate" | "cancel" | "open"; readonly fileId?: string }
+  | { readonly type: "reviewSummary"; readonly token: string; readonly operation: "generate" | "cancel" | "open" | "openPart"; readonly fileId?: string; readonly nodeId?: string }
   | { readonly type: "explainChanges" }
   | { readonly type: "summarizeFolder" }
   | { readonly type: "summarizeTree" }
@@ -1909,11 +1909,14 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
       content.append(el("div", "flow-ref", link.caption));
       box.classList.add("linked");
       box.tabIndex = 0;
-      box.title = "Open " + link.caption;
+      box.title = link.nodeId ? link.caption : "Open " + link.caption;
       box.dataset.flowLink = "1";
       const open = (target) => {
         if (target && target.closest && target.closest("[data-flow-link]") !== box) return;
-        if (link.reviewToken) post({ type: "reviewSummary", token: link.reviewToken, operation: "open", fileId: link.fileId });
+        if (link.reviewToken) post({
+          type: "reviewSummary", token: link.reviewToken,
+          ...(link.nodeId ? { operation: "openPart", nodeId: link.nodeId } : { operation: "open", fileId: link.fileId })
+        });
         else post({ type: "navigate", referenceId: link.target });
       };
       box.addEventListener("click", (clicked) => open(clicked.target));
@@ -2802,8 +2805,11 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
           edges: view.diagram.edges
         };
         const links = view.diagram.nodes.map((node) => {
-          const file = view.current && node.files.length === 1 ? node.files[0] : undefined;
-          return file ? { reviewToken: view.token, fileId: file.id, caption: file.path } : null;
+          if (!view.current || !node.files.length) return null;
+          const file = node.files.length === 1 ? node.files[0] : undefined;
+          return file
+            ? { reviewToken: view.token, fileId: file.id, caption: file.path }
+            : { reviewToken: view.token, nodeId: node.id, caption: "Choose from " + node.files.length + " changed files" };
         });
         const graph = renderFlowchart(chart, { entryId: "review-summary-diagram" }, links);
         graph.setAttribute("aria-label", "Affected parts and their relationships");
@@ -2961,9 +2967,12 @@ export class ExplanationPanel {
           const token = stringField("token");
           const operation = fields.operation;
           const fileId = stringField("fileId");
+          const nodeId = stringField("nodeId");
           if (token && token.length >= 16 &&
-            (operation === "generate" || operation === "cancel" || (operation === "open" && fileId))) {
-            onAction({ type, token, operation, ...(operation === "open" ? { fileId } : {}) });
+            (operation === "generate" || operation === "cancel" || (operation === "open" && fileId) ||
+              (operation === "openPart" && nodeId))) {
+            onAction({ type, token, operation, ...(operation === "open" ? { fileId } : {}),
+              ...(operation === "openPart" ? { nodeId } : {}) });
           }
         } else if (type === "revealItem") {
           const entryId = stringField("entryId");

@@ -41,15 +41,19 @@ describe("header action validation", () => {
     harness.receive({ type: "reviewSummary", token: "short", operation: "generate" });
     harness.receive({ type: "reviewSummary", token, operation: "open", fileId: "../outside".repeat(30) });
     harness.receive({ type: "reviewSummary", token, operation: "open" });
+    harness.receive({ type: "reviewSummary", token, operation: "openPart" });
+    harness.receive({ type: "reviewSummary", token, operation: "openPart", nodeId: "a".repeat(201) });
     harness.receive({ type: "reviewSummary", token, operation: "execute" });
     expect(actions).toEqual([]);
     harness.receive({ type: "reviewSummary", token, operation: "generate" });
     harness.receive({ type: "reviewSummary", token, operation: "cancel" });
     harness.receive({ type: "reviewSummary", token, operation: "open", fileId: "host-file" });
+    harness.receive({ type: "reviewSummary", token, operation: "openPart", nodeId: "host-node", fileId: "untrusted-file" });
     expect(actions).toEqual([
       { type: "reviewSummary", token, operation: "generate" },
       { type: "reviewSummary", token, operation: "cancel" },
-      { type: "reviewSummary", token, operation: "open", fileId: "host-file" }
+      { type: "reviewSummary", token, operation: "open", fileId: "host-file" },
+      { type: "reviewSummary", token, operation: "openPart", nodeId: "host-node" }
     ]);
     panel.dispose();
   });

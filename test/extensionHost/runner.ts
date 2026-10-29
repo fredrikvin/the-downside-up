@@ -524,7 +524,7 @@ async function runWithCommitRepository(commitRoot: string): Promise<void> {
   const rustRoot = resolve(__dirname, "../../fixtures/rust-app");
   const rustFile = resolve(rustRoot, "src/main.rs");
   const rustDocument = await vscode.workspace.openTextDocument(vscode.Uri.file(rustFile));
-  const rustEditor = await vscode.window.showTextDocument(rustDocument, vscode.ViewColumn.One);
+  let rustEditor = await vscode.window.showTextDocument(rustDocument, vscode.ViewColumn.One);
   await initializeRustParserAt(extension.extensionPath);
   await javascriptSupport.initialize!(extension.extensionPath);
   const rustSource = rustDocument.getText();
@@ -551,6 +551,18 @@ async function runWithCommitRepository(commitRoot: string): Promise<void> {
   assert.deepEqual(setupApi.setupState(), { welcome: true, skippedAutoMaps: 0 }, "A fresh installation requires model setup.");
   assert.equal(setupApi.allExplanations().length, 0, "Opening an unconfigured file never generates placeholders.");
   assert.ok(setupApi.shownOutline().some((entry) => entry.name === "checkout"), "Local outlines remain available during setup.");
+  await vscode.commands.executeCommand("workbench.action.closeAllEditors");
+  await vscode.commands.executeCommand("downsideUp.showFileOverview");
+  assert.deepEqual(setupApi.shownOutline(), [], "Opening a preview without a source must not reuse a closed editor.");
+  await vscode.commands.executeCommand("downsideUp.showFileOverview", rustDocument.uri);
+  const reopened = vscode.window.visibleTextEditors.find((editor) => editor.document.uri.toString() === rustDocument.uri.toString());
+  assert.ok(reopened?.viewColumn, "An Explorer file preview also opens its source editor.");
+  await waitFor(async () => vscode.window.tabGroups.all.some((group) => group.viewColumn > reopened.viewColumn! &&
+    group.tabs.some((tab) => tab.input instanceof vscode.TabInputWebview && tab.label.startsWith("Downside Up"))) ? true : undefined,
+  "the preview to settle to the right of the opened source");
+  assert.ok(setupApi.shownOutline().some((entry) => entry.name === "checkout"));
+  assert.equal(setupApi.allExplanations().length, 0, "Opening an Explorer file preview never requests an explanation.");
+  rustEditor = await vscode.window.showTextDocument(rustDocument, reopened.viewColumn);
   await vscode.commands.executeCommand("downsideUp.previewProject");
   assert.equal(setupApi.shownFolder()?.mapping, false);
   assert.equal(setupApi.shownFolder()?.mapState, "missing");

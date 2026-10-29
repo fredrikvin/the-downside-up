@@ -35,7 +35,7 @@ class TestElement {
   setAttribute(name: string, value: string): void { this.attributes.set(name, value); }
   getAttribute(name: string): string | undefined { return this.attributes.get(name); }
   matches(selector: string): boolean {
-    if (selector.startsWith("[data-")) return selector.slice(6, -1) in this.dataset;
+    if (selector.startsWith("[data-")) return selector.slice(6, -1).replace(/-([a-z])/g, (_match, letter: string) => letter.toUpperCase()) in this.dataset;
     if (selector.startsWith(".")) return selector.slice(1).split(".").every((name) => this.className.split(" ").includes(name));
     return this.tagName === selector;
   }
@@ -284,9 +284,15 @@ it("renders an optional affected-parts chart with token-bound links only while c
   const node = content.elements().find((item) => item.dataset.flowLink === "1")!;
   expect(node.title).toBe("Open events.go");
   node.listeners.get("keydown")?.({ key: "Enter", target: node, preventDefault() {}, stopPropagation() {} });
+  const groupedNode = content.elements().filter((item) => item.dataset.flowLink === "1")[1]!;
+  expect(groupedNode.title).toBe("Choose from 2 changed files");
+  groupedNode.listeners.get("click")?.({ target: groupedNode, preventDefault() {}, stopPropagation() {} });
+  groupedNode.listeners.get("keydown")?.({ key: " ", target: groupedNode, preventDefault() {}, stopPropagation() {} });
   content.elements().find((item) => item.textContent === "consumer_test.go")!.listeners.get("click")?.({ preventDefault() {}, stopPropagation() {} });
   expect(messages).toEqual([
     { type: "reviewSummary", token: state.reviewSummary!.token, operation: "open", fileId: "file-a" },
+    { type: "reviewSummary", token: state.reviewSummary!.token, operation: "openPart", nodeId: "consumers" },
+    { type: "reviewSummary", token: state.reviewSummary!.token, operation: "openPart", nodeId: "consumers" },
     { type: "reviewSummary", token: state.reviewSummary!.token, operation: "open", fileId: "file-c" }
   ]);
   render({ ...state, reviewSummary: { ...state.reviewSummary!, current: false } });

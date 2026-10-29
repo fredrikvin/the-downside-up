@@ -45,6 +45,9 @@ billing; see `docs/configuration.md` in the extension package.
   Saved explanations reappear when you return to a file.
   Click a function's name to navigate to its source;
   use **Explain** to request an explanation.
+  Opening a file preview from Explorer also opens its source to the left.
+  With no source editor or Explorer file target, the command asks you to open
+  a local source file instead of reusing a closed editor.
 - **Explore the project.** Run **Downside Up: Preview Project**, preview a
   folder from the Explorer, or navigate the breadcrumbs. Project maps show
   parts and connections; folder pages offer summaries and main flows.
@@ -103,7 +106,8 @@ billing; see `docs/configuration.md` in the extension package.
   The overview focuses on the main behavioral or contract change, grouping
   related edits rather than listing implementation details file by file.
   When useful and supported by the source, a small affected-parts chart shows
-  their relationships, with links to the confirmed diffs.
+  their relationships. Click a node to open its confirmed diff; nodes covering
+  several files offer a file picker.
   It discloses incomplete coverage, omitted context, and uncertainties; it is
   not proof of correctness. Overview-model sharing approval is separate, and
   this request shares diff source with that model. Saved summaries are reused;
