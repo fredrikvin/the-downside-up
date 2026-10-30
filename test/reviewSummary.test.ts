@@ -226,6 +226,46 @@ describe("local source-grounded review summary preparation", () => {
     ]);
   });
 
+  it("lists a confirmed file that changed before export as unavailable instead of failing every export", async () => {
+    const h = harness();
+    const main = ref("src/main.ts");
+    const saved = ref("# Review summary export.md");
+    const mainSnapshot = snapshot(main);
+    const confirmedExport = sourceSnapshot(saved, undefined, "# Review summary export\n");
+    const deletedExport = sourceSnapshot(saved, undefined, undefined);
+    await save(h.store, mainSnapshot);
+    const scope: ReviewSummaryScope = {
+      kind: "working", root, base: hash,
+      items: [
+        { path: main.modified.path, ref: main, confirmed: snapshotSignature(mainSnapshot) },
+        { path: saved.modified.path, ref: saved, confirmed: snapshotSignature(confirmedExport) }
+      ]
+    };
+    h.read.mockImplementation(async (reference) => reference === saved ? deletedExport : mainSnapshot);
+    await h.service.summarizeReview(scope, h.read, abortSignal());
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const exported = await h.service.prepareReviewExport(scope, h.read, { head: "b".repeat(40) });
+      expect(exported.data.files).toMatchObject([
+        { path: "src/main.ts", status: "current" },
+        { path: "# Review summary export.md", status: "unavailable", reason: "the confirmed source is no longer available or has changed" }
+      ]);
+    }
+  });
+
+  it("still rejects an export when a confirmed file changes while it is being prepared", async () => {
+    const h = harness();
+    await save(h.store, snapshot());
+    await h.service.summarizeReview(scopeFor(), h.read, abortSignal());
+    const before = h.read.mock.calls.length;
+    await h.service.prepareReviewExport(scopeFor(), h.read, {});
+    const readsPerExport = h.read.mock.calls.length - before;
+    let calls = 0;
+    h.read.mockImplementation(async (reference) =>
+      ++calls === readsPerExport ? snapshot(reference, "edited during export") : snapshot(reference));
+    await expect(h.service.prepareReviewExport(scopeFor(), h.read, {}))
+      .rejects.toThrow("The confirmed source for a.ts changed while the export was prepared.");
+  });
+
   it("fails closed when repository policy becomes restrictive or cannot be verified", async () => {
     const h = harness();
     await h.service.summarizeReview(scopeFor(), h.read, abortSignal());

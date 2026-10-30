@@ -1582,16 +1582,21 @@ export class ExplanationService {
     }
 
     const files: ReviewExportFile[] = [];
+    // What the export reports for each item, so the final fence only rejects changes made while preparing it.
+    const observed: { readonly signature: string; readonly allowed?: boolean }[] = [];
     for (const item of scope.items) {
       const snapshot = await read(item.ref);
+      const signature = snapshotSignature(snapshot);
       if (!reviewSnapshotMatches(item.ref, snapshot) ||
-          snapshotSignature(snapshot) !== item.confirmed ||
+          signature !== item.confirmed ||
           comparisonProblem(snapshot)) {
+        observed.push({ signature });
         files.push({ path: item.path, oldPath: item.ref.original.path !== item.path ? item.ref.original.path : undefined,
           status: "unavailable", reason: "the confirmed source is no longer available or has changed" });
         continue;
       }
       const allowed = await this.reviewSummaryAllowed(item.ref);
+      observed.push({ signature, allowed });
       if (!allowed) {
         files.push({ path: item.path, oldPath: item.ref.original.path !== item.path ? item.ref.original.path : undefined,
           status: "unavailable", reason: "a sharing exclusion now applies" });
@@ -1610,10 +1615,12 @@ export class ExplanationService {
             record ? "saved comparison is outdated or was made with another model" : "no saved current comparison" });
       }
     }
-    for (const item of scope.items) {
+    for (const [index, item] of scope.items.entries()) {
+      const first = observed[index]!;
       const latest = await read(item.ref);
-      if (!reviewSnapshotMatches(item.ref, latest) || comparisonProblem(latest) ||
-          snapshotSignature(latest) !== item.confirmed || !(await this.reviewSummaryAllowed(item.ref))) {
+      if (snapshotSignature(latest) !== first.signature ||
+          (first.allowed !== undefined && (!reviewSnapshotMatches(item.ref, latest) ||
+            (await this.reviewSummaryAllowed(item.ref)) !== first.allowed))) {
         throw new Error(`The confirmed source for ${item.path} changed while the export was prepared.`);
       }
     }
