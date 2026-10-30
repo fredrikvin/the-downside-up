@@ -712,8 +712,15 @@ not select a Functions model or approve code sharing.
 
 Export assembles a Markdown document from the current saved summary and current
 saved per-file comparisons only. It never generates missing file comparisons,
-requests consent, writes to GitHub, or overwrites a file; the result opens as
-an untitled Markdown document for inspection and explicit saving. A missing or
+requests consent, or writes to GitHub. It writes only the file the user
+chooses in a native save dialog (which confirms replacing an existing file),
+then opens it; cancelling writes nothing. The dialog suggests
+`review-<repository>-<base or commit>-<date>.md` in the last export folder,
+else `Downloads` or the home folder, and a location inside the reviewed
+repository needs a separate confirmation, since the file would otherwise join
+later working reviews. The last folder is kept in extension global state, not
+settings or the repository cache. The working-review `HEAD` check is repeated
+after the dialog, before writing. A missing or
 outdated summary can be generated only after a separate confirmation through
 the existing Overview-model consent flow. Missing, outdated, and unavailable
 file explanations are listed with reasons. Each saved change scope shows
@@ -729,7 +736,11 @@ For working reviews, export checks each confirmed path against `HEAD`, including
 staged and working-tree changes and dirty editor buffers. If a reviewed path
 differs, export is blocked and identifies the path; unrelated changes do not
 block. This is a point-in-time check, with `HEAD`, sources, trust, and sharing
-policy rechecked before delivery. Commit reviews use their immutable commit
+policy rechecked before delivery. A confirmed file that changed or disappeared
+before export (for example, a deleted untracked file, which no longer differs
+from `HEAD`) is listed as unavailable; the source recheck compares with what
+this export read, so only a change made while it is prepared stops it.
+Commit reviews use their immutable commit
 and parent provenance. No file is staged, saved, or committed by export.
 
 `downsideUp.review.lowValuePatterns` classifies common lockfiles, vendored,

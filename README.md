@@ -132,7 +132,8 @@ its ID or ref), and confirm the file scope and request count.
 ### Export a review summary
 
 Run **Downside Up: Export Review Summary…**, or click **Export** on the summary
-page, to open an untitled Markdown document containing:
+page, and choose where to save the Markdown file in the save dialog. The file
+then opens beside the review. It contains:
 
 - the summary, themes, possible effects, limitations, and coverage, with the
   base and `HEAD` (or commit and parent) it describes;
@@ -144,6 +145,10 @@ page, to open an untitled Markdown document containing:
 
 How it behaves:
 
+- The suggested name is `review-<repository>-<base or commit>-<date>.md`, in
+  the folder you last exported to, or else `Downloads`. Saving inside the
+  repository asks first, because the file would join the next review of
+  working changes.
 - Export is cache-only: it never generates missing comparisons, asks for
   sharing consent, or posts to GitHub. A missing or outdated summary needs a
   separate confirmation before an Overview-model request.
@@ -214,7 +219,7 @@ All commands are in the Command Palette under **Downside Up**.
 | **Choose Overview Model** | Chooses the Project overview model. With no model configured, sets up only the Overview model, for review summaries. |
 | **Review Changes…** | Prepares comparisons for changed files against a chosen base. |
 | **Prepare Commit Explanations…** | Prepares comparisons for one commit against its parent. |
-| **Export Review Summary…** | Exports the active or most recent review's saved summary to an untitled Markdown document, or prepares a new review to export. |
+| **Export Review Summary…** | Saves the active or most recent review's saved summary as a Markdown file you choose, or prepares a new review to export. |
 | **Show Changed Files** | While a review is active, opens one of its files or stops it. |
 | **Refresh Repository Context** | Updates the repository overview and project map. |
 | **Clear Repository Cache** | Removes this repository's cached results and saved sharing consent. |

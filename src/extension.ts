@@ -1,6 +1,7 @@
-import { readFile, stat } from "node:fs/promises";
+import { readFile, realpath, stat } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
-import { basename, isAbsolute, relative, resolve, sep } from "node:path";
+import { homedir } from "node:os";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import * as vscode from "vscode";
 import { hasConsent, unapprovedModels, withConsent } from "./cache/consent";
 import { ChangeSession, snapshotOptions } from "./changeSession";
@@ -32,7 +33,8 @@ import {
   type FlowsRequest,
   type ProviderDescriptor
 } from "./controller";
-import { renderReviewExport } from "./presentation/reviewExport";
+import { renderReviewExport, type ReviewExportData } from "./presentation/reviewExport";
+import { defaultReviewExportFolder, isInsideFolder, reviewExportFileName } from "./presentation/reviewExportFile";
 import {
   findRepositoryRoot,
   gatherInventory,
@@ -285,6 +287,8 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
   } | undefined;
   let summarySelected = false;
   const reviewExportDocuments = new Set<string>();
+  /** Test/development hosts only: replaces the native save dialog, which tests cannot answer. */
+  let reviewExportTargetForTest: vscode.Uri | undefined;
   let summaryEditor: vscode.TextEditor | undefined;
   let summaryEditorPair: string | undefined;
   let summaryLookupEpoch = 0;
@@ -3233,6 +3237,41 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     return result.head;
   };
 
+  const REVIEW_EXPORT_FOLDER = "downsideUp.reviewExportFolder";
+  const isFolder = (path: string): Promise<boolean> => stat(path).then((info) => info.isDirectory(), () => false);
+  /** Resolves symlinks in the chosen folder; the file itself may not exist yet. */
+  const resolvedTarget = (path: string): Promise<string> =>
+    realpath(dirname(path)).then((folder) => join(folder, basename(path)), () => resolve(path));
+
+  /** Native Save As, warning before a location inside the reviewed repository. Undefined when cancelled. */
+  const chooseReviewExportTarget = async (root: string, data: ReviewExportData): Promise<vscode.Uri | undefined> => {
+    if (allowMock && reviewExportTargetForTest) return reviewExportTargetForTest;
+    const name = reviewExportFileName({ root, kind: data.kind, base: data.base, ...(data.commit ? { commit: data.commit } : {}), date: new Date() });
+    const repository = await realpath(root).catch(() => resolve(root));
+    let folder = await defaultReviewExportFolder(context.globalState.get<string>(REVIEW_EXPORT_FOLDER), homedir(), isFolder);
+    for (;;) {
+      const target = await vscode.window.showSaveDialog({
+        defaultUri: vscode.Uri.file(join(folder, name)),
+        filters: { Markdown: ["md"] },
+        title: "Export Review Summary",
+        saveLabel: "Export"
+      });
+      if (!target) return undefined;
+      if (target.scheme !== "file" || !isInsideFolder(repository, await resolvedTarget(target.fsPath))) return target;
+      const answer = await vscode.window.showWarningMessage(
+        `Save the export inside ${basename(repository)}?`,
+        {
+          modal: true,
+          detail: "A file saved in the repository is included in the next review of working changes unless Git ignores it or it matches downsideUp.review.lowValuePatterns."
+        },
+        "Save Here", "Choose Another Location"
+      );
+      if (answer === "Save Here") return target;
+      if (answer !== "Choose Another Location") return undefined;
+      folder = await defaultReviewExportFolder(undefined, homedir(), isFolder);
+    }
+  };
+
   const exportReviewDocument = async (
     session: Review,
     token?: string,
@@ -3261,14 +3300,19 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
           ...(session.provenance.parent ? { parent: session.provenance.parent } : {})
         });
       if (!ownsSession()) return;
+      const markdown = renderReviewExport(prepared.data);
+      const target = await chooseReviewExportTarget(session.root, prepared.data);
+      if (!target || !ownsSession()) return;
+      // Recheck after the dialog, so time spent choosing a file is covered too.
       if (session.kind === "working") {
         const latestHead = await workingReviewExportGate(session);
         if (latestHead !== head) throw new Error("HEAD moved while the export was being prepared. Try again.");
       }
       if (!ownsSession()) return;
-      const markdown = renderReviewExport(prepared.data);
-      const document = await vscode.workspace.openTextDocument({ language: "markdown", content: markdown });
-      reviewExportDocuments.add(document.uri.toString());
+      await vscode.workspace.fs.writeFile(target, new TextEncoder().encode(markdown));
+      if (target.scheme === "file") await context.globalState.update(REVIEW_EXPORT_FOLDER, dirname(target.fsPath));
+      reviewExportDocuments.add(target.toString());
+      const document = await vscode.workspace.openTextDocument(target);
       await vscode.window.showTextDocument(document, {
         viewColumn: vscode.ViewColumn.Beside,
         preserveFocus: true,
@@ -4764,6 +4808,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       return item ? reviewDiffUris(item) : undefined;
     },
     reviewItems: () => (reviewSession?.items ?? []).map((item) => ({ path: item.path, change: item.file.status, status: item.status })),
+    setReviewExportTarget: (target) => { reviewExportTargetForTest = target; },
     reviewNavigation: () => {
       const owner = activeReviewNavigation;
       if (owner && owner.session === reviewSession && !owner.item && summarySelected) {
@@ -4880,6 +4925,8 @@ export interface DownsideUpTestApi {
   reviewProgress(): { text: string; canStop: boolean } | undefined;
   reviewDiffUris(path: string): { original: vscode.Uri; modified: vscode.Uri } | undefined;
   reviewItems(): Array<{ path: string; change: string; status: string }>;
+  /** Where Export Review Summary writes instead of asking with a native save dialog. */
+  setReviewExportTarget(target: vscode.Uri | undefined): void;
   reviewNavigation(): { token: string; fileName: string; position: number; total: number; canPrevious: boolean; canNext: boolean; summary?: boolean } | undefined;
   invokeReviewNavigation(direction: "previous" | "next" | "picker", token: string): Promise<void>;
   shownReviewSummary(): ReviewSummaryView | undefined;

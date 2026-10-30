@@ -732,14 +732,22 @@ patterns. **Explain changes** remains available for an individual low-value
 file, subject to normal privacy and size checks.
 
 **Exporting a summary.** Use **Downside Up: Export Review Summary…** or
-**Export** on the Review summary page to open an untitled Markdown document.
+**Export** on the Review summary page, then choose a file in the native save
+dialog; the saved file opens beside the review. The suggested name is
+`review-<repository>-<base or commit>-<YYYY-MM-DD>.md` in the folder you last
+exported to, or else `Downloads` (or your home folder). Choosing a location
+inside the reviewed repository asks first, because the file would then be
+included in the next review of working changes unless Git ignores it or it
+matches `downsideUp.review.lowValuePatterns`. Cancelling the dialog writes
+nothing.
 It contains only the current saved summary and current saved per-file
 comparisons, plus coverage and any saved diagram; missing or outdated records
 are listed rather than generated. Each change shows Before and After side by
 side in collapsible **Steps**, **Pseudocode**, and **Flowchart** sections;
 flowcharts are Mermaid diagrams, which GitHub renders but VS Code's built-in
 Markdown preview shows as code. Export does not call a model, request
-consent, write to GitHub, or save over a file. If the summary is missing or
+consent, or write to GitHub; it writes only the file you choose, and the save
+dialog asks before replacing an existing one. If the summary is missing or
 outdated, the command offers a separate, explicitly confirmed Overview-model
 request. Without an active or retained review, choose **Summary only** to keep
 the confirmed file set navigable without background Functions comparisons, or

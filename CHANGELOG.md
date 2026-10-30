@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.59.0
+
+- Save review exports through a native save dialog instead of an untitled
+  document. The suggested name is `review-<repository>-<base or
+  commit>-<date>.md` in the last export folder or `Downloads`, the saved file
+  opens beside the review, and saving inside the repository asks first because
+  the file would join the next working review.
+- Fix review export failing on every attempt with "changed while the export
+  was prepared" when a confirmed file had changed or been deleted before the
+  export. Such files are listed as unavailable; only a change made while the
+  export is being prepared stops it.
+
 ## 0.58.0
 
 - Show each change in exported review Markdown as collapsible Steps,

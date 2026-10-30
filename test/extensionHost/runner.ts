@@ -1,6 +1,6 @@
 import * as assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import * as vscode from "vscode";
@@ -426,16 +426,22 @@ async function testCommitPreparation(api: DownsideUpTestApi, root: string): Prom
     await assertReviewLayout(api, summaryLink.path);
     await api.showReviewSummary();
     assert.equal(api.shownReviewSummary()?.summary, synthesized.summary, "Returning restores the saved summary cache-only.");
-    const documentsBeforeExport = new Set(vscode.workspace.textDocuments.map((document) => document.uri.toString()));
-    await vscode.commands.executeCommand("downsideUp.exportReviewSummary");
-    const exported = await waitFor(async () => vscode.workspace.textDocuments.find((document) =>
-      !documentsBeforeExport.has(document.uri.toString()) &&
-      document.uri.scheme === "untitled" &&
-      document.languageId === "markdown" &&
-      document.getText().startsWith("# Review summary export")) ?? undefined,
-    "the active review summary to open as an untitled Markdown document");
-    assert.ok(exported.getText().includes(commit), "The Markdown export includes immutable commit provenance.");
-    assert.ok(exported.getText().includes("## Saved file explanations"), "The Markdown export includes saved comparison details.");
+    const exportFolder = await realpath(await mkdtemp(resolve(tmpdir(), "dsu-export-")));
+    const exportTarget = vscode.Uri.file(resolve(exportFolder, "review-export.md"));
+    api.setReviewExportTarget(exportTarget);
+    try {
+      await vscode.commands.executeCommand("downsideUp.exportReviewSummary");
+      const exported = await waitFor(async () => vscode.workspace.textDocuments.find((document) =>
+        document.uri.toString() === exportTarget.toString() &&
+        document.getText().startsWith("# Review summary export")) ?? undefined,
+      "the active review summary to be saved to the chosen file and opened");
+      assert.equal(await readFile(exportTarget.fsPath, "utf8"), exported.getText(), "The export is written to the chosen file.");
+      assert.ok(exported.getText().includes(commit), "The Markdown export includes immutable commit provenance.");
+      assert.ok(exported.getText().includes("## Saved file explanations"), "The Markdown export includes saved comparison details.");
+    } finally {
+      api.setReviewExportTarget(undefined);
+      await rm(exportFolder, { recursive: true, force: true });
+    }
     await testInlineReview(api, root);
     const currentSummaryNavigation = api.reviewNavigation()!;
     await api.invokeReviewNavigation("next", firstNavigation.token);
@@ -572,13 +578,17 @@ async function testLowValueReviews(api: DownsideUpTestApi, root: string): Promis
       theme.files.every((file) => file.path === "review-source.ts")), "Only source evidence can be cited.");
     await waitFor(async () => api.reviewItems().find((item) => item.path === "review-source.ts")?.status === "done" ? true : undefined,
       "eligible source comparison to finish");
-    const documentsBeforeBlockedExport = new Set(vscode.workspace.textDocuments.map((document) => document.uri.toString()));
-    await vscode.commands.executeCommand("downsideUp.exportReviewSummary");
-    assert.equal(vscode.workspace.textDocuments.some((document) =>
-      !documentsBeforeBlockedExport.has(document.uri.toString()) &&
-      document.uri.scheme === "untitled" &&
-      document.getText().startsWith("# Review summary export")), false,
-    "A working review with changed files cannot be exported while those paths differ from HEAD.");
+    const blockedFolder = await realpath(await mkdtemp(resolve(tmpdir(), "dsu-export-")));
+    const blockedTarget = resolve(blockedFolder, "blocked-export.md");
+    api.setReviewExportTarget(vscode.Uri.file(blockedTarget));
+    try {
+      await vscode.commands.executeCommand("downsideUp.exportReviewSummary");
+      assert.equal(await readFile(blockedTarget, "utf8").then(() => true, () => false), false,
+        "A working review with changed files cannot be exported while those paths differ from HEAD.");
+    } finally {
+      api.setReviewExportTarget(undefined);
+      await rm(blockedFolder, { recursive: true, force: true });
+    }
     assert.equal(api.reviewItems().find((item) => item.path === "package-lock.json")?.status, "low-value");
   } finally {
     api.stopReview();
