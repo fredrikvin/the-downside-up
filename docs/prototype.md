@@ -724,9 +724,9 @@ after the dialog, before writing. A missing or
 outdated summary can be generated only after a separate confirmation through
 the existing Overview-model consent flow. Missing, outdated, and unavailable
 file explanations are listed with reasons. Each saved change scope shows
-Before and After steps and pseudocode in two-column HTML tables inside
-collapsible `<details>` sections, and its saved flowcharts as one Mermaid
-diagram with Before and After subgraphs. Mermaid diagrams are rebuilt with
+Before and After steps, pseudocode, and flowcharts in two-column HTML tables
+inside collapsible `<details>` sections, with one Mermaid diagram per side.
+Mermaid diagrams are rebuilt with
 host-assigned node IDs, host-chosen shapes, and conservative quoted labels
 that drop quotes, brackets, markup, entities, `%`, `:`, `/`, and `@`, so
 model text cannot add directives, styles, click handlers, or links; other

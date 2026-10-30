@@ -121,17 +121,20 @@ describe("review export Markdown", () => {
     expect(output).toContain("<summary>Flowchart</summary>");
     expect(output).toContain('<td valign="top">\n\n<em>Not present</em>\n\n</td>');
     expect(output).toContain([
+      "<summary>Flowchart</summary>",
+      "",
+      "<table>",
+      "<thead><tr><th>Before</th><th>After</th></tr></thead>",
+      "<tbody><tr>",
+      '<td valign="top">',
+      "",
       "```mermaid",
       "flowchart TB",
-      '  subgraph s0["Before"]',
-      "    direction TB",
-      '    b0(["Saved comparison"])',
-      '    b1{"Is it ready?"}',
-      "    b0 -->|Saved comparison| b1",
-      "  end",
-      '  subgraph s1["After"]'
+      '  n0(["Saved comparison"])',
+      '  n1{"Is it ready?"}',
+      "  n0 -->|Saved comparison| n1"
     ].join("\n"));
-    expect(output).toContain('    bx["Not present"]');
+    expect(output).not.toContain("subgraph");
     expect(output).not.toContain("model-start");
     expect(output).toContain("- Low-value: 0");
     expect(output).toContain("- Overview model: overview&#45;model (vscode&#45;lm)");
@@ -174,9 +177,9 @@ describe("review export Markdown", () => {
     expect(output).not.toContain("model-start");
     expect(output).not.toContain("%%");
     const diagrams = [...output.matchAll(/```mermaid\n([\s\S]*?)```/g)].map((match) => match[1]!);
-    expect(diagrams).toHaveLength(3);
+    expect(diagrams).toHaveLength(4);
     for (const diagram of diagrams) expect(diagram).not.toMatch(/^\s*(click|style|classDef|linkStyle)\b/m);
-    expect(output).toMatch(/b0\(\["[^"\]\[<>{}%#&:\/@`]*"\]\)/);
+    expect(output).toMatch(/ {2}n0\(\["[^"\]\[<>{}%#&:\/@`]*"\]\)/);
   });
 
   it("explains low-value, missing, and outdated per-file entries", () => {

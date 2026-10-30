@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.59.1
+
+- Show exported flowcharts in the same Before and After columns as Steps and
+  Pseudocode, with one diagram per side, instead of one diagram whose Before
+  and After groups could appear in either order.
+
 ## 0.59.0
 
 - Save review exports through a native save dialog instead of an untitled

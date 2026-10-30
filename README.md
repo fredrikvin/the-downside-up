@@ -140,7 +140,7 @@ then opens beside the review. It contains:
 - the affected-parts chart as a Mermaid diagram;
 - each saved file comparison. For each change, collapsible **Steps** (open),
   **Pseudocode**, and **Flowchart** sections show Before and After side by
-  side; the flowchart is one Mermaid diagram with Before and After groups;
+  side, with one Mermaid diagram per side;
 - a list of files without a current comparison.
 
 How it behaves:

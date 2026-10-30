@@ -125,30 +125,25 @@ const NODE_SHAPES: Record<FlowNodeKind, readonly [string, string]> = {
   show: ["[[", "]]"]
 };
 
-function renderComparisonFlowchart(scope: ComparisonVisualScope): string {
+/** One diagram per side, so it sits in the same Before/After columns as steps and pseudocode. */
+function flowchartCell(side: ComparisonVisualSide): string {
+  const nodes = side.flowchartStatus === "available" ? side.flowchart.nodes : [];
+  if (!nodes.length) {
+    return side.presence === "absent" ? emptySide(side, "flowchart")
+      : `<em>${htmlText(side.flowchartReason || "No saved flowchart", true)}</em>`;
+  }
   const lines = ["```mermaid", "flowchart TB"];
-  for (const [sideIndex, [label, key]] of SIDES.entries()) {
-    const side = scope[key];
-    const prefix = key === "original" ? "b" : "a";
-    lines.push(`  subgraph s${sideIndex}["${label}"]`, "    direction TB");
-    const nodes = side.flowchartStatus === "available" ? side.flowchart.nodes : [];
-    if (!nodes.length) {
-      const reason = side.presence === "absent" ? "Not present" : side.flowchartReason || "No saved flowchart";
-      lines.push(`    ${prefix}x["${mermaidNodeText(reason, "No saved flowchart")}"]`);
-    }
-    const ids = new Map(nodes.map((node, index) => [node.id, `${prefix}${index}`]));
-    for (const [index, node] of nodes.entries()) {
-      const [open, close] = NODE_SHAPES[node.kind] ?? NODE_SHAPES.action;
-      lines.push(`    ${prefix}${index}${open}"${mermaidNodeText(node.label, `Step ${index + 1}`)}"${close}`);
-    }
-    for (const edge of nodes.length ? side.flowchart.edges : []) {
-      const from = ids.get(edge.from);
-      const to = ids.get(edge.to);
-      if (!from || !to) continue;
-      const text = mermaidLabel(edge.label, "");
-      lines.push(text ? `    ${from} -->|${text}| ${to}` : `    ${from} --> ${to}`);
-    }
-    lines.push("  end");
+  const ids = new Map(nodes.map((node, index) => [node.id, `n${index}`]));
+  for (const [index, node] of nodes.entries()) {
+    const [open, close] = NODE_SHAPES[node.kind] ?? NODE_SHAPES.action;
+    lines.push(`  n${index}${open}"${mermaidNodeText(node.label, `Step ${index + 1}`)}"${close}`);
+  }
+  for (const edge of side.flowchart.edges) {
+    const from = ids.get(edge.from);
+    const to = ids.get(edge.to);
+    if (!from || !to) continue;
+    const text = mermaidLabel(edge.label, "");
+    lines.push(text ? `  ${from} -->|${text}| ${to}` : `  ${from} --> ${to}`);
   }
   lines.push("```");
   return lines.join("\n");
@@ -162,7 +157,7 @@ function renderVisualScope(scope: ComparisonVisualScope): string {
     "",
     accordion("Pseudocode", pairedTable(scope, pseudocodeCell)),
     "",
-    accordion("Flowchart", renderComparisonFlowchart(scope))
+    accordion("Flowchart", pairedTable(scope, flowchartCell))
   ].join("\n");
 }
 
