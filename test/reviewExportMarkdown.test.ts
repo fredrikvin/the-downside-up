@@ -105,28 +105,36 @@ describe("review export Markdown", () => {
     expect(output).toContain("n0 -->|A contract change| n1");
     expect(output).toContain("<summary>src&#47;main&#46;ts</summary>");
     expect(output).toContain("addedFunction&#58; Saved comparison");
-    expect(output).toContain("<pre><code>Saved comparison</code></pre>");
+    expect(output).toContain("<code>Saved comparison</code>");
+    expect(output).not.toContain("<pre>");
+    const headings = "<thead><tr><th>The committed version &#40;aaaaaaa&#41;</th>" +
+      "<th>The working tree&#44; including unsaved edits</th></tr></thead>";
     expect(output).toContain([
       "<details open>",
       "<summary>Steps</summary>",
       "",
       "<table>",
-      "<thead><tr><th>Before</th><th>After</th></tr></thead>",
+      headings,
       "<tbody><tr>",
       '<td valign="top">',
       "",
-      "<ol>\n<li>Saved comparison</li>\n</ol>"
+      "<sub>Coverage&#58; whole function</sub>",
+      "",
+      "<ol>\n<li><strong>Saved comparison&#46;</strong></li>\n</ol>"
     ].join("\n"));
     expect(output).toContain("<summary>Pseudocode</summary>");
     expect(output).toContain("<summary>Flowchart</summary>");
-    expect(output).toContain('<td valign="top">\n\n<em>Not present</em>\n\n</td>');
+    expect(output).toContain("<th>The committed version &#40;aaaaaaa&#41; &#40;no file&#41;</th>");
+    expect(output).toContain('<td valign="top">\n\n<sub>Coverage&#58; whole function</sub>\n\n<em>Not present in this version.</em>\n\n</td>');
     expect(output).toContain([
       "<summary>Flowchart</summary>",
       "",
       "<table>",
-      "<thead><tr><th>Before</th><th>After</th></tr></thead>",
+      headings,
       "<tbody><tr>",
       '<td valign="top">',
+      "",
+      "<sub>Coverage&#58; whole function</sub>",
       "",
       "```mermaid",
       "flowchart TB",
@@ -140,6 +148,34 @@ describe("review export Markdown", () => {
     expect(output).toContain("- Overview model: overview&#45;model (vscode&#45;lm)");
     expect(output).toContain("- Functions model: test&#45;model (vscode&#45;lm)");
     expect(output).not.toContain("- Functions model: overview&#45;model");
+  });
+
+  it("shows each side's own step details, region, and indented pseudocode like the preview", () => {
+    const record = comparisonWith("Saved comparison");
+    const scope = record.comparison.visualScopes![0]!;
+    const side = (detail: string, region: string, line: string) => ({
+      ...scope.original,
+      region,
+      steps: [{ ...scope.original.steps[0]!, text: "Create the configuration messages", detail }],
+      pseudocode: [
+        { ...scope.original.pseudocode[0]!, text: line, depth: 0 },
+        { ...scope.original.pseudocode[0]!, id: "pseudo-2", text: "Set up configuration", depth: 1 }
+      ]
+    });
+    const output = renderReviewExport({
+      kind: "working", base: "main", head: "b".repeat(40), summary: summaryWith("Change"), coverage, evidence, exportedAt: 2,
+      files: [{ path: "src/main.ts", status: "current", comparison: { ...record, comparison: { ...record.comparison, visualScopes: [{
+        ...scope,
+        original: side("Includes a general failure message", "170-182", "Create general failure messages"),
+        modified: side("Includes cloud-storage failure messages", "170-184", "Create cloud-storage failure messages")
+      }] } } }]
+    });
+    expect(output).toContain("<li><strong>Create the configuration messages&#46;</strong> Includes a general failure message</li>");
+    expect(output).toContain("<li><strong>Create the configuration messages&#46;</strong> Includes cloud&#45;storage failure messages</li>");
+    expect(output).toContain("<sub>Region&#58; 170&#45;182</sub>");
+    expect(output).toContain("<sub>Region&#58; 170&#45;184</sub>");
+    expect(output).toContain("<code>Create general failure messages</code><br>\n&emsp;<code>Set up configuration</code>");
+    expect(output).toContain("<code>Create cloud&#45;storage failure messages</code>");
   });
 
   it("keeps hostile model text, paths, and saved pseudocode inert", () => {

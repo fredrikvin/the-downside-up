@@ -7,6 +7,7 @@ import type {
   ReviewSummaryEvidence,
   ReviewSummaryRecord
 } from "../core/types";
+import { describeIdentity } from "../context/comparison";
 
 export interface ReviewExportFile {
   readonly path: string;
@@ -56,22 +57,44 @@ const htmlText = (value: string, singleLine = false): string => {
   }).join("");
 };
 
-const codeBlock = (lines: readonly string[]): string =>
-  `<pre><code>${htmlText(lines.join("\n"))}</code></pre>`;
+const SIDES = ["original", "modified"] as const;
+type SideName = typeof SIDES[number];
 
-const SIDES = [["Before", "original"], ["After", "modified"]] as const;
+/** The same column headings as the preview, such as "The committed version (1a2b3c4)". */
+type SideLabels = Readonly<Record<SideName, string>>;
 
-const emptySide = (side: ComparisonVisualSide, format: string): string =>
-  `<em>${side.presence === "absent" ? "Not present" : `No saved ${format}`}</em>`;
+function sideLabels(record: Pick<ComparisonRecord, "original" | "modified">, scope?: ComparisonVisualScope): SideLabels {
+  const label = (side: SideName): string => {
+    const text = describeIdentity(record[side].identity);
+    const capitalized = text.charAt(0).toUpperCase() + text.slice(1);
+    return scope?.[side].presence === "absent" ? `${capitalized} (no file)` : capitalized;
+  };
+  return { original: label("original"), modified: label("modified") };
+}
+
+const muted = (text: string): string => `<sub>${htmlText(text, true)}</sub>`;
+
+/** Region and coverage notes shown above each side, as in the preview. */
+function sideNotes(side: ComparisonVisualSide): string[] {
+  return [
+    side.region ? muted(`Region: ${side.region}`) : "",
+    side.coverage ? muted(`Coverage: ${side.coverage}`) : ""
+  ].filter(Boolean);
+}
 
 function pairedTable(
   scope: ComparisonVisualScope,
+  labels: SideLabels,
   cell: (side: ComparisonVisualSide) => string
 ): string {
-  const cells = SIDES.map(([, key]) => `<td valign="top">\n\n${cell(scope[key])}\n\n</td>`);
+  const cells = SIDES.map((key) => {
+    const side = scope[key];
+    const body = side.presence === "absent" ? "<em>Not present in this version.</em>" : cell(side);
+    return `<td valign="top">\n\n${[sideNotes(side).join("<br>\n"), body].filter(Boolean).join("\n\n")}\n\n</td>`;
+  });
   return [
     "<table>",
-    "<thead><tr><th>Before</th><th>After</th></tr></thead>",
+    `<thead><tr>${SIDES.map((key) => `<th>${htmlText(labels[key], true)}</th>`).join("")}</tr></thead>`,
     "<tbody><tr>",
     ...cells,
     "</tr></tbody>",
@@ -80,12 +103,17 @@ function pairedTable(
 }
 
 const stepsCell = (side: ComparisonVisualSide): string => side.steps.length
-  ? `<ol>\n${side.steps.map((item) => `<li>${htmlText(item.text, true)}</li>`).join("\n")}\n</ol>`
-  : emptySide(side, "steps");
+  ? `<ol>\n${side.steps.map((item) =>
+    `<li><strong>${htmlText(item.text.replace(/[.:]?$/, "."), true)}</strong>${item.detail ? ` ${htmlText(item.detail, true)}` : ""}</li>`
+  ).join("\n")}\n</ol>`
+  : "<em>No steps recorded for this region.</em>";
 
+/** One wrapping line per item, indented by depth, so long lines are not cut off. */
 const pseudocodeCell = (side: ComparisonVisualSide): string => side.pseudocode.length
-  ? codeBlock(side.pseudocode.map((item) => `${"  ".repeat(item.depth ?? 0)}${item.text}`))
-  : emptySide(side, "pseudocode");
+  ? side.pseudocode.map((item) =>
+    `${"&emsp;".repeat(Math.max(0, Math.min(4, item.depth ?? 0)))}<code>${htmlText(item.text, true)}</code>`
+  ).join("<br>\n")
+  : "<em>No pseudocode recorded for this region.</em>";
 
 const accordion = (title: string, body: string, open = false): string =>
   [`<details${open ? " open" : ""}>`, `<summary>${title}</summary>`, "", body, "", "</details>"].join("\n");
@@ -125,12 +153,14 @@ const NODE_SHAPES: Record<FlowNodeKind, readonly [string, string]> = {
   show: ["[[", "]]"]
 };
 
-/** One diagram per side, so it sits in the same Before/After columns as steps and pseudocode. */
+/** One diagram per side, so it sits in the same columns as steps and pseudocode. */
 function flowchartCell(side: ComparisonVisualSide): string {
   const nodes = side.flowchartStatus === "available" ? side.flowchart.nodes : [];
   if (!nodes.length) {
-    return side.presence === "absent" ? emptySide(side, "flowchart")
-      : `<em>${htmlText(side.flowchartReason || "No saved flowchart", true)}</em>`;
+    return [
+      `<em>${side.flowchartStatus === "not-applicable" ? "Flowchart not applicable." : "Flowchart unavailable."}</em>`,
+      ...(side.flowchartReason ? [muted(side.flowchartReason)] : [])
+    ].join("<br>\n");
   }
   const lines = ["```mermaid", "flowchart TB"];
   const ids = new Map(nodes.map((node, index) => [node.id, `n${index}`]));
@@ -149,15 +179,16 @@ function flowchartCell(side: ComparisonVisualSide): string {
   return lines.join("\n");
 }
 
-function renderVisualScope(scope: ComparisonVisualScope): string {
+function renderVisualScope(scope: ComparisonVisualScope, record: ComparisonRecord): string {
+  const labels = sideLabels(record, scope);
+  const hasPseudocode = SIDES.some((key) => scope[key].pseudocode.length);
+  const hasFlowchart = SIDES.some((key) => scope[key].flowchart.nodes.length);
   return [
     `##### ${markdownText(scope.title)}`,
     "",
-    accordion("Steps", pairedTable(scope, stepsCell), true),
-    "",
-    accordion("Pseudocode", pairedTable(scope, pseudocodeCell)),
-    "",
-    accordion("Flowchart", pairedTable(scope, flowchartCell))
+    accordion("Steps", pairedTable(scope, labels, stepsCell), true),
+    ...(hasPseudocode ? ["", accordion("Pseudocode", pairedTable(scope, labels, pseudocodeCell))] : []),
+    ...(hasFlowchart ? ["", accordion("Flowchart", pairedTable(scope, labels, flowchartCell))] : [])
   ].join("\n");
 }
 
@@ -224,7 +255,7 @@ function renderFile(file: ReviewExportFile): string {
     "#### Saved steps, pseudocode, and flowcharts"
   ].filter(Boolean);
   const scopes = comparison.visualScopes ?? [];
-  for (const scope of scopes) headings.push("", renderVisualScope(scope));
+  for (const scope of scopes) headings.push("", renderVisualScope(scope, record));
   if (!scopes.length) headings.push("No saved steps, pseudocode, or flowcharts.");
   return [
     "<details>",

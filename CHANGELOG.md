@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.59.2
+
+- Make exported changes match the preview: each step's detail is included (so
+  sides with the same step titles no longer look identical), columns use the
+  preview's version labels with region and coverage, and pseudocode wraps
+  instead of being cut off.
+
 ## 0.59.1
 
 - Show exported flowcharts in the same Before and After columns as Steps and

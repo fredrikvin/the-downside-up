@@ -726,6 +726,11 @@ the existing Overview-model consent flow. Missing, outdated, and unavailable
 file explanations are listed with reasons. Each saved change scope shows
 Before and After steps, pseudocode, and flowcharts in two-column HTML tables
 inside collapsible `<details>` sections, with one Mermaid diagram per side.
+Columns use the preview's side labels (such as the committed version and the
+working tree) and show each side's region, coverage, step titles with their
+details, and wrapping indented pseudocode, so the export matches the saved
+explanation shown in the preview. Pseudocode and Flowchart sections appear
+only when the preview would offer those tabs.
 Mermaid diagrams are rebuilt with
 host-assigned node IDs, host-chosen shapes, and conservative quoted labels
 that drop quotes, brackets, markup, entities, `%`, `:`, `/`, and `@`, so

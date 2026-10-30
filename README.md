@@ -139,8 +139,9 @@ then opens beside the review. It contains:
   base and `HEAD` (or commit and parent) it describes;
 - the affected-parts chart as a Mermaid diagram;
 - each saved file comparison. For each change, collapsible **Steps** (open),
-  **Pseudocode**, and **Flowchart** sections show Before and After side by
-  side, with one Mermaid diagram per side;
+  **Pseudocode**, and **Flowchart** sections match the preview's columns
+  (for example the committed version beside the working tree), including each
+  step's detail, the region and coverage, and one Mermaid diagram per side;
 - a list of files without a current comparison.
 
 How it behaves:
