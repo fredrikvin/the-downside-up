@@ -31,9 +31,9 @@ import type {
   ReviewSummaryRecord,
   Usage
 } from "./core/types";
-import { comparisonProblem, describeIdentity, snapshotSignature, type ComparisonSnapshot, type SideSnapshot } from "./context/comparison";
+import { comparisonProblem, describeIdentity, snapshotSignature, type ChangedFile, type ComparisonSnapshot, type SideSnapshot } from "./context/comparison";
 import {
-  buildReviewSummaryRequest, reviewSnapshotMatches, validateReviewSummaryScope,
+  buildReviewSummaryRequest, reviewComparisonCurrent, reviewSnapshotMatches, validateReviewSummaryScope,
   type PreparedReviewSummary, type ReviewSummaryRead, type ReviewSummaryScope
 } from "./context/reviewSummary";
 import { parseReviewSummary } from "./generation/schema";
@@ -48,6 +48,7 @@ import { addLocalSymbolOutline } from "./context/symbolIndex";
 import { currentPolicy } from "./context/policy";
 import { bundledLanguageIdForPath, languageFor, sourceFingerprint } from "./languages/registry";
 import { normalizeStepLines } from "./presentation/stepLines";
+import type { ReviewExportData, ReviewExportFile } from "./presentation/reviewExport";
 import { ModelSetupRequired, providerConfigured } from "./generation/selection";
 import {
   COMPARISON_PROMPT_VERSION,
@@ -137,6 +138,8 @@ export interface SnapshotExplanationSource {
 }
 
 export interface ExplanationServiceOptions {
+  /** Current host-owned review filter, rechecked before dispatch and persistence. */
+  readonly reviewFilterFingerprint?: (root: string) => string;
   /** Only extension development/test harnesses may opt in to deterministic placeholders. */
   readonly allowMock?: boolean;
   readonly store: RepositoryCacheStore;
@@ -161,6 +164,11 @@ export interface ExplanationServiceOptions {
   readonly maxRequestBytes?: () => number;
   /** Complete repository priming/review budget; defaults to 256 KiB. */
   readonly maxProjectContextRequestBytes?: () => number;
+}
+
+export interface PreparedReviewExport {
+  readonly data: ReviewExportData;
+  readonly head?: string;
 }
 
 /** Default limit for every request but priming, which has its own. */
@@ -1486,6 +1494,12 @@ export class ExplanationService {
   /** Local source preparation and summary cache lookup; never generates or prompts. */
   async prepareReviewSummary(scope: ReviewSummaryScope, read: ReviewSummaryRead): Promise<PreparedReviewSummary> {
     validateReviewSummaryScope(scope);
+    const checkFilter = (): void => {
+      if (this.options.reviewFilterFingerprint && this.options.reviewFilterFingerprint(scope.root) !== scope.filterFingerprint) {
+        throw new Error("The review filter changed. Confirm the review again before summarizing.");
+      }
+    };
+    checkFilter();
     const cache = await this.readCache(scope.root);
     const restricted = await (await currentPolicy()).repositoryRestriction(scope.root);
     const request = await buildReviewSummaryRequest(
@@ -1493,6 +1507,7 @@ export class ExplanationService {
       (ref) => restricted ? Promise.resolve(false) : this.reviewSummaryAllowed(ref), this.maxRequestBytes()
     );
     const saved = cache.reviewSummaries?.[request.scopeKey];
+    checkFilter();
     // Explanation-only historical summaries must not appear as source-grounded content.
     const record = saved?.promptVersion === REVIEW_SUMMARY_PROMPT_VERSION ? saved : undefined;
     return {
@@ -1505,6 +1520,129 @@ export class ExplanationService {
   }
 
   /**
+   * Builds a review export from saved records only. No provider, consent,
+   * priming, or cache-write path is reachable here.
+   */
+  async prepareReviewExport(
+    scope: ReviewSummaryScope,
+    read: ReviewSummaryRead,
+    provenance: { readonly head?: string; readonly commit?: string; readonly parent?: string }
+  ): Promise<PreparedReviewExport> {
+    const trusted = (): boolean => vscode.workspace.isTrusted !== false;
+    if (!trusted()) throw new Error("Export requires a trusted workspace.");
+    validateReviewSummaryScope(scope);
+    const filterFingerprint = this.options.reviewFilterFingerprint?.(scope.root);
+    if (filterFingerprint !== undefined && filterFingerprint !== scope.filterFingerprint) {
+      throw new Error("The review filter changed. Confirm the review again before exporting.");
+    }
+    const startingFence = this.fence(scope.root);
+    const policy = await currentPolicy();
+    const report = await policy.repositoryReport(scope.root);
+    if (report.restricted || report.error) {
+      throw new Error(report.restricted
+        ? "Repository sharing is now restricted; the review cannot be exported."
+        : "Repository sharing policy could not be verified; the review cannot be exported.");
+    }
+    const cache = await this.readCache(scope.root);
+    const functions = { ...this.options.describeProvider() };
+    const overview = { ...this.overviewDescriptor() };
+    const requestLimit = this.maxRequestBytes();
+    const settingsMatch = (): boolean => {
+      const currentFunctions = this.options.describeProvider();
+      const currentOverview = this.overviewDescriptor();
+      return currentFunctions.kind === functions.kind && currentFunctions.modelId === functions.modelId &&
+        currentOverview.kind === overview.kind && currentOverview.modelId === overview.modelId &&
+        this.maxRequestBytes() === requestLimit;
+    };
+    const request = await buildReviewSummaryRequest(
+      scope, cache, functions, overview, read,
+      async (ref) => {
+        if (!trusted()) return false;
+        const [original, modified] = await Promise.all([
+          sharingExclusion(ref.root, resolve(ref.root, ref.original.path)),
+          sharingExclusion(ref.root, resolve(ref.root, ref.modified.path))
+        ]);
+        return !original && !modified;
+      },
+      requestLimit
+    );
+    if (!trusted() || !settingsMatch() || this.fence(scope.root) !== startingFence ||
+        (this.options.reviewFilterFingerprint && this.options.reviewFilterFingerprint(scope.root) !== scope.filterFingerprint)) {
+      throw new Error("Workspace trust, cache state, or review filter changed. Try exporting again.");
+    }
+    const savedSummary = cache.reviewSummaries?.[request.scopeKey];
+    if (!savedSummary || savedSummary.promptVersion !== REVIEW_SUMMARY_PROMPT_VERSION ||
+        savedSummary.fingerprint !== request.fingerprint ||
+        savedSummary.provider !== overview.kind || savedSummary.model !== overview.modelId ||
+        JSON.stringify(savedSummary.evidence) !== JSON.stringify(request.evidence)) {
+      throw new Error("The review summary is missing or outdated. Generate a current summary before exporting.");
+    }
+    if (savedSummary.coverage.lowValue === undefined) {
+      throw new Error("This saved summary predates current review coverage and cannot be exported.");
+    }
+
+    const files: ReviewExportFile[] = [];
+    for (const item of scope.items) {
+      const snapshot = await read(item.ref);
+      if (!reviewSnapshotMatches(item.ref, snapshot) ||
+          snapshotSignature(snapshot) !== item.confirmed ||
+          comparisonProblem(snapshot)) {
+        files.push({ path: item.path, oldPath: item.ref.original.path !== item.path ? item.ref.original.path : undefined,
+          status: "unavailable", reason: "the confirmed source is no longer available or has changed" });
+        continue;
+      }
+      const allowed = await this.reviewSummaryAllowed(item.ref);
+      if (!allowed) {
+        files.push({ path: item.path, oldPath: item.ref.original.path !== item.path ? item.ref.original.path : undefined,
+          status: "unavailable", reason: "a sharing exclusion now applies" });
+        continue;
+      }
+      const key = comparisonKey(snapshot, functions);
+      const record = cache.comparisons?.[key];
+      const isCurrent = Boolean(record && reviewComparisonCurrent(record, snapshot, functions));
+      if (isCurrent && record) {
+        files.push({ path: item.path, oldPath: item.ref.original.path !== item.path ? item.ref.original.path : undefined,
+          status: item.lowValue ? "low-value" : "current", comparison: record });
+      } else {
+        files.push({ path: item.path, oldPath: item.ref.original.path !== item.path ? item.ref.original.path : undefined,
+          status: item.lowValue ? "low-value" : record ? "outdated" : "missing",
+          reason: item.lowValue ? `excluded from summary evidence by ${item.lowValue.pattern}` :
+            record ? "saved comparison is outdated or was made with another model" : "no saved current comparison" });
+      }
+    }
+    for (const item of scope.items) {
+      const latest = await read(item.ref);
+      if (!reviewSnapshotMatches(item.ref, latest) || comparisonProblem(latest) ||
+          snapshotSignature(latest) !== item.confirmed || !(await this.reviewSummaryAllowed(item.ref))) {
+        throw new Error(`The confirmed source for ${item.path} changed while the export was prepared.`);
+      }
+    }
+    if (!trusted() || !settingsMatch() || this.fence(scope.root) !== startingFence ||
+        (this.options.reviewFilterFingerprint && this.options.reviewFilterFingerprint(scope.root) !== scope.filterFingerprint)) {
+      throw new Error("Workspace trust, cache state, or review filter changed. Try exporting again.");
+    }
+    const finalPolicy = await (await currentPolicy()).repositoryReport(scope.root);
+    if (finalPolicy.restricted || finalPolicy.error || !trusted() || !settingsMatch() ||
+        this.fence(scope.root) !== startingFence ||
+        (this.options.reviewFilterFingerprint && this.options.reviewFilterFingerprint(scope.root) !== scope.filterFingerprint)) {
+      throw new Error("Repository sharing policy changed or could not be verified; the review cannot be exported.");
+    }
+    const data: ReviewExportData = {
+      kind: scope.kind,
+      base: scope.base,
+      ...(provenance.head ? { head: provenance.head } : {}),
+      ...(provenance.commit ? { commit: provenance.commit } : {}),
+      ...(provenance.parent ? { parent: provenance.parent } : {}),
+      summary: savedSummary,
+      coverage: savedSummary.coverage,
+      evidence: savedSummary.evidence,
+      files,
+      exportedAt: Date.now()
+    };
+    return { data, ...(provenance.head ? { head: provenance.head } : {}) };
+  }
+
+  /**
    * One explicit Overview-model request from frozen confirmed source diffs.
    * No overview priming, per-file generation or background consent.
    */
@@ -1514,7 +1652,8 @@ export class ExplanationService {
     validateReviewSummaryScope(scope);
     const confirmedScope = (): ReviewSummaryScope => ({
       kind: scope.kind, base: scope.base, root: scope.root,
-      items: scope.items.map(({ path, ref, confirmed }) => ({ path, ref, confirmed })),
+      filterFingerprint: scope.filterFingerprint,
+      items: scope.items.map(({ path, ref, confirmed, lowValue }) => ({ path, ref, confirmed, lowValue })),
       excluded: scope.excluded, skipped: scope.skipped, truncated: scope.truncated
     });
     const frozen = structuredClone(confirmedScope());
@@ -1539,6 +1678,7 @@ export class ExplanationService {
       const currentOverview = this.overviewDescriptor();
       if (vscode.workspace.isTrusted === false || this.fence(root) !== startingFence ||
           JSON.stringify(confirmedScope()) !== startingScope || this.maxRequestBytes() !== limit ||
+          (this.options.reviewFilterFingerprint && this.options.reviewFilterFingerprint(root) !== frozen.filterFingerprint) ||
           descriptor.kind !== currentOverview.kind || descriptor.modelId !== currentOverview.modelId) {
         throw new Error("The review scope, sharing settings, or models changed; the review summary was discarded.");
       }
@@ -1594,7 +1734,10 @@ export class ExplanationService {
     });
     // Atomic rename is the commit point. Never reject a committed result for late cancellation.
     // Background file comparisons are not evidence and cannot invalidate this result.
-    const prepared = await this.prepareReviewSummary(frozen, read);
+    const prepared = await this.prepareReviewSummary(frozen, read).catch((): PreparedReviewSummary => ({
+      scopeKey: request.scopeKey, coverage: record.coverage, evidence: record.evidence,
+      record, current: false, canGenerate: false
+    }));
     return prepared.record ? prepared : { ...prepared, record, evidence: record.evidence, current: false };
   }
 

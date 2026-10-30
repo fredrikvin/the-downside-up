@@ -1,5 +1,41 @@
 # Changelog
 
+## 0.57.3
+
+- Label the review summary's model as the Overview model, not the Functions
+  model, in exported review Markdown.
+
+## 0.57.2
+
+- Report unusable model responses as a generic generation failure instead of
+  exposing parser, schema, or response-size diagnostics in the preview.
+- Reorganize the README into short feature sections with tables of preview
+  controls, commands, settings (with defaults, ranges, and user-only scope),
+  and language support, and document what review export contains and how
+  summary-only setup works. Detailed change-view, review, and commit behavior
+  moves to `docs/configuration.md`.
+
+## 0.57.1
+
+- Allow summary-only export setup to configure only the Overview model, without
+  selecting a Functions model or requesting source-sharing consent.
+- Support preparing an immutable commit review for export when no review is
+  active or retained.
+
+## 0.57.0
+
+- Keep lockfiles, generated/minified files, vendored folders, and snapshots
+  navigable in reviews while excluding them from background comparisons and
+  summary evidence by default; configure `downsideUp.review.lowValuePatterns`.
+- Export a current saved review summary and saved file comparisons to an
+  untitled Markdown document, with a Mermaid diagram and coverage. Export is
+  cache-only and never posts to GitHub; working-review export is blocked when
+  a confirmed path differs from `HEAD`.
+- Add **Export Review Summary…** for active, retained, or newly prepared
+  working or immutable commit reviews. Summary-only prepares no background
+  Functions comparisons, configures only the Overview model when needed, and
+  can reuse its summary in a later full review.
+
 ## 0.56.2
 
 - Remove duplicate file lists beneath the review-summary chart; use its

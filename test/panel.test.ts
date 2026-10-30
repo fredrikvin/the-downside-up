@@ -214,7 +214,8 @@ it("renders a review landing page as safe text with explicit token-bound actions
     },
     reviewSummary: {
       token: "summary-token-12345678", base: "since main", coverage: "2 of 3 confirmed files available.",
-      loading: false, generating: false, current: false, canGenerate: true, model: "overview",
+      loading: false, generating: false, current: false, canGenerate: true, canExport: false,
+      exportDisabledReason: "This review summary is outdated.", model: "overview",
       summary: "<script>unsafe</script>", themes: [{
         title: "<b>Requests</b>", text: "Changes request behavior.",
         files: [{ id: "host-file-1", path: "src/<img>.ts" }]
@@ -225,6 +226,11 @@ it("renders a review landing page as safe text with explicit token-bound actions
   expect(element("title").textContent).toBe("Review summary");
   expect(element("reviewNavigationTop").elements().some((node) => node.textContent === "3 files")).toBe(true);
   const content = element("entries");
+  const exportButton = element("exportReviewSummary");
+  expect(exportButton.disabled).toBe(true);
+  expect(exportButton.getAttribute("aria-label")).toBe("Export review summary, unavailable: This review summary is outdated.");
+  expect(exportButton.title).toContain("This review summary is outdated.");
+  exportButton.listeners.get("click")?.({ preventDefault: () => undefined, stopPropagation: () => undefined });
   expect(content.elements().some((node) => ["script", "b", "img"].includes(node.tagName))).toBe(false);
   expect(content.elements().map((node) => node.textContent).join(" ")).toContain("confirmed diff and bounded surrounding source");
   expect(messages).toEqual([]);
@@ -240,21 +246,42 @@ it("renders a review landing page as safe text with explicit token-bound actions
     { type: "reviewSummary", token: state.reviewSummary!.token, operation: "open", fileId: "host-file-1" }
   ]);
   render({ ...state, reviewSummary: { ...state.reviewSummary!, loading: true, generating: true } });
-  expect(element("pageActions").children).toHaveLength(0);
+  expect(element("exportReviewSummary").disabled).toBe(true);
+  expect(element("exportReviewSummary").title).toContain("Wait for the review summary to finish");
   content.elements().find((node) => node.textContent === "Cancel summary")!.listeners.get("click")?.(event);
   expect(messages.at(-1)).toEqual({ type: "reviewSummary", token: state.reviewSummary!.token, operation: "cancel" });
   render({ ...state, reviewSummary: { ...state.reviewSummary!, loading: true, generating: false } });
+  expect(element("exportReviewSummary").disabled).toBe(true);
   expect(content.elements().some((node) => node.textContent === "Cancel summary")).toBe(false);
   expect(content.elements().some((node) => node.textContent === "Checking review sources…")).toBe(true);
-  render({ ...state, reviewSummary: { ...state.reviewSummary!, current: true } });
-  expect(element("pageActions").children).toHaveLength(0);
+  render({ ...state, reviewSummary: { ...state.reviewSummary!, current: true, canExport: true } });
+  const enabledExport = element("exportReviewSummary");
+  expect(enabledExport.disabled).toBe(false);
+  expect(enabledExport.getAttribute("aria-label")).toBe("Export review summary");
+  expect(enabledExport.title).toContain("saved data only");
+  expect(enabledExport.title).toContain("does not make provider requests");
+  enabledExport.listeners.get("click")?.(event);
+  expect(messages.at(-1)).toEqual({ type: "reviewSummary", token: state.reviewSummary!.token, operation: "export" });
   expect(content.elements().some((node) => node.className === "explain")).toBe(false);
+  render({ ...state, reviewSummary: { ...state.reviewSummary!, current: true, canExport: false,
+    exportDisabledReason: "This working review has uncommitted changes." } });
+  expect(element("exportReviewSummary").disabled).toBe(true);
+  expect(element("exportReviewSummary").getAttribute("aria-label")).toContain("uncommitted changes");
   render({ ...state, reviewSummary: { ...state.reviewSummary!, canGenerate: false } });
   expect(element("pageActions").elements().find((node) => node.id === "refreshReviewSummary")?.disabled).toBe(true);
-  render({ ...state, reviewSummary: { ...state.reviewSummary!, summary: undefined } });
-  expect(element("pageActions").children).toHaveLength(0);
+  expect(element("exportReviewSummary").disabled).toBe(true);
+  render({ ...state, reviewSummary: { ...state.reviewSummary!, summary: undefined, exportDisabledReason: undefined } });
+  expect(element("exportReviewSummary").disabled).toBe(true);
+  expect(element("exportReviewSummary").title).toContain("Generate a review summary before exporting.");
   content.elements().find((node) => node.textContent === "Generate summary")!.listeners.get("click")?.(event);
   expect(messages.at(-1)).toEqual({ type: "reviewSummary", token: state.reviewSummary!.token, operation: "generate" });
+  const before = messages.length;
+  render({ ...state, review: { text: "Review: 0/3 ready · 3 not explained (low value)", canStop: false },
+    reviewSummary: { ...state.reviewSummary!, summary: undefined, canGenerate: false,
+      coverage: "0 of 3 confirmed file diffs; 3 low value. No eligible summary evidence." } });
+  expect(content.elements().some((node) => node.textContent.includes("No eligible summary evidence."))).toBe(true);
+  expect(content.elements().find((node) => node.textContent === "Generate summary")?.disabled).toBe(true);
+  expect(messages).toHaveLength(before);
 });
 
 it("renders an optional affected-parts chart with token-bound links only while current", () => {

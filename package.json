@@ -45,6 +45,11 @@
         "category": "Downside Up"
       },
       {
+        "command": "downsideUp.exportReviewSummary",
+        "title": "Export Review Summary…",
+        "category": "Downside Up"
+      },
+      {
         "command": "downsideUp.prepareCommit",
         "title": "Prepare Commit Explanations…",
         "category": "Downside Up"
@@ -277,6 +282,52 @@
       {
         "title": "Requests",
         "properties": {
+          "downsideUp.review.lowValuePatterns": {
+            "type": "array",
+            "scope": "resource",
+            "maxItems": 128,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "pattern": "^(?![!/\\\\])(?![A-Za-z]:)(?!.*(?:^|/)\\.\\.(?:/|$))[^\\\\\\u0000-\\u001f\\u007f-\\u009f]+$"
+            },
+            "default": [
+              "**/package-lock.json",
+              "**/npm-shrinkwrap.json",
+              "**/yarn.lock",
+              "**/pnpm-lock.yaml",
+              "**/bun.lock",
+              "**/Cargo.lock",
+              "**/go.sum",
+              "**/poetry.lock",
+              "**/uv.lock",
+              "**/Pipfile.lock",
+              "**/Gemfile.lock",
+              "**/composer.lock",
+              "**/packages.lock.json",
+              "**/vendored/**",
+              "**/third_party/**",
+              "**/third-party/**",
+              "**/generated/**",
+              "**/__generated__/**",
+              "**/__snapshots__/**",
+              "**/*.generated.*",
+              "**/*.gen.go",
+              "**/*_generated.go",
+              "**/*.pb.go",
+              "**/*_pb2.py",
+              "**/*_pb2_grpc.py",
+              "**/*.d.ts",
+              "**/*.min.js",
+              "**/*.min.mjs",
+              "**/*.min.cjs",
+              "**/*.min.css",
+              "**/*.snap"
+            ],
+            "markdownDescription": "Repository-relative globs (use `/` and explicit `**/` for nested matches) for low-value review files. They remain navigable; **Explain changes** still works, but background comparisons, diff card prefetch and summary evidence skip them. A user array replaces these defaults; workspace and workspace-folder arrays only add patterns, so `[]` cannot remove user/default rules. Negation, absolute paths, `..` segments and control characters are invalid. This never overrides sharing exclusions; `node_modules` and `vendor` are already excluded."
+          },
           "downsideUp.maxRequestSize": {
             "type": "integer",
             "default": 96,
@@ -408,6 +459,7 @@
   "activationEvents": [
     "onCommand:downsideUp.showFileOverview",
     "onCommand:downsideUp.reviewChanges",
+    "onCommand:downsideUp.exportReviewSummary",
     "onCommand:downsideUp.prepareCommit",
     "onCommand:downsideUp.previewProject",
     "onCommand:downsideUp.selectOverviewModel",

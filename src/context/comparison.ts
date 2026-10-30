@@ -368,6 +368,79 @@ export async function changedFilesSince(root: string, base: string, limit = MAX_
   return { files: files.slice(0, limit), truncated: files.length > limit };
 }
 
+export interface WorkingTreeDifference {
+  readonly path: string;
+  readonly reason: string;
+}
+
+/**
+ * Checks only the confirmed paths for changes relative to the current HEAD.
+ * The returned HEAD is a provenance fence for the caller to recheck before
+ * delivering an export.
+ */
+export async function workingTreeDifferences(
+  root: string,
+  files: readonly ChangedFile[]
+): Promise<{ readonly head: string; readonly differences: readonly WorkingTreeDifference[] }> {
+  const head = await resolveRevision(root, "HEAD");
+  if (!head) throw new Error("HEAD could not be resolved for the working review.");
+  const paths = [...new Set(files.flatMap((file) => [file.oldPath, file.path]).filter((path): path is string => Boolean(path)))];
+  if (!paths.length) return { head, differences: [] };
+  for (const path of paths) {
+    if (isAbsolute(path) || path.split(/[\\/]/).some((part) => part === "..")) {
+      throw new Error("A confirmed review path is not repository-relative.");
+    }
+  }
+  const prefix = (await gitText(root, ["rev-parse", "--show-prefix"])).replace(/\r?\n$/, "");
+  const listing = await gitText(root, [
+    "status", "--porcelain=v2", "-z", "--untracked-files=all", "--ignored=matching", "--", ...paths
+  ]);
+  const differences = new Map<string, string>();
+  const tokens = listing.split("\0");
+  for (let index = 0; index < tokens.length;) {
+    const entry = tokens[index++] ?? "";
+    if (!entry) continue;
+    if (entry.startsWith("? ") || entry.startsWith("! ")) {
+      const path = entry.slice(2).slice(prefix.length);
+      differences.set(path, entry.startsWith("? ") ? "untracked file" : "ignored untracked file");
+      continue;
+    }
+    const kind = entry[0];
+    if (kind !== "1" && kind !== "2" && kind !== "u") continue;
+    const fields: string[] = [];
+    let cursor = 0;
+    const pathField = kind === "1" ? 8 : kind === "2" ? 9 : 10;
+    for (let field = 0; field < pathField; field++) {
+      const separator = entry.indexOf(" ", cursor);
+      if (separator < 0) break;
+      fields.push(entry.slice(cursor, separator));
+      cursor = separator + 1;
+    }
+    const rootPath = cursor > 0 ? entry.slice(cursor) : undefined;
+    if (!rootPath) continue;
+    const path = rootPath.slice(prefix.length);
+    const originalPath = kind === "2" ? tokens[index++] : undefined;
+    const xy = fields[1] ?? "";
+    const modesDiffer = kind === "u"
+      ? fields[3] !== fields[4] || fields[4] !== fields[5] || fields[5] !== fields[6]
+      : fields[3] !== fields[4] || fields[4] !== fields[5];
+    const reason = kind === "u" ? "unresolved merge conflict" :
+      kind === "2" ? "renamed relative to HEAD" :
+      modesDiffer ? "file mode differs from HEAD" :
+      [xy[0] !== "." ? "staged change" : "", xy[1] !== "." ? "working-tree change" : ""].filter(Boolean).join(" and ") ||
+      "differs from HEAD";
+    differences.set(path, reason);
+    if (originalPath) differences.set(originalPath.slice(prefix.length), reason);
+  }
+  return {
+    head,
+    differences: paths.flatMap((path) => {
+      const reason = differences.get(path);
+      return reason ? [{ path, reason }] : [];
+    })
+  };
+}
+
 /** The pair of documents for one changed file, compared with the base commit. */
 export async function baseComparisonRef(root: string, base: string, file: ChangedFile): Promise<ComparisonRef> {
   const hash = await resolveRevision(root, base);

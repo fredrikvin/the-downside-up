@@ -308,7 +308,7 @@ export class LanguageModelProvider implements GenerationProvider {
       );
     }
 
-    const value = parseModelResponse(output, this.model.name, parse, true);
+    const value = parseModelResponse(output, parse, true);
     const countSource = new vscode.CancellationTokenSource();
     try {
       return {

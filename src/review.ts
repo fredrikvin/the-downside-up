@@ -7,6 +7,7 @@ import {
   type DiffUri
 } from "./context/comparison";
 import { resolve } from "node:path";
+import type { LowValueClassification } from "./context/reviewFilter";
 import { nextReviewFile } from "./presentation/prefetch";
 import type { RequestPriority } from "./presentation/requestScheduler";
 
@@ -18,7 +19,8 @@ export interface ReviewItem {
   readonly ref: ComparisonRef;
   /** The versions as confirmed; reading something else later marks the item outdated. */
   readonly confirmed: string;
-  status: "pending" | "explaining" | "done" | "failed" | "skipped" | "outdated";
+  readonly lowValue?: LowValueClassification;
+  status: "pending" | "explaining" | "done" | "failed" | "skipped" | "outdated" | "low-value";
 }
 
 /**
@@ -86,6 +88,14 @@ export interface ReviewHost {
 
 export const MAX_REVIEW_FAILURES = 3;
 
+export interface ReviewProvenance {
+  readonly baseSha?: string;
+  readonly commit?: string;
+  readonly parent?: string;
+}
+
+export type ReviewIntent = "full" | "summary-only";
+
 /** Matches a graph's single historical document (add/delete/Open File) only inside the confirmed set. */
 export function reviewedDocument(items: readonly ReviewItem[], uri: DiffUri): ReviewItem | undefined {
   if (uri.scheme !== "git") return undefined;
@@ -98,16 +108,19 @@ export function reviewedDocument(items: readonly ReviewItem[], uri: DiffUri): Re
 }
 
 /** Compact preparation progress; files with failures are never counted as ready. */
-export function reviewProgress(session: Pick<Review, "items" | "stopped" | "kind">): { text: string; canStop: boolean } {
+export function reviewProgress(session: Pick<Review, "items" | "stopped" | "kind"> & { readonly intent?: ReviewIntent }): { text: string; canStop: boolean } {
   const count = (status: ReviewItem["status"]) => session.items.filter((item) => item.status === status).length;
   const preparing = count("explaining");
   const problems = count("failed") + count("skipped") + count("outdated");
-  const canStop = !session.stopped && session.items.some((item) => item.status === "pending" || item.status === "explaining");
+  const intent = session.intent ?? "full";
+  const canStop = intent === "full" && !session.stopped && session.items.some((item) => item.status === "pending" || item.status === "explaining");
   return {
     text: `${session.kind === "commit" ? "Commit" : "Review"}: ${count("done")}/${session.items.length} ready` +
+      (intent === "summary-only" ? " · summary only" : "") +
+      (count("low-value") ? ` · ${count("low-value")} not explained (low value)` : "") +
       (preparing ? ` · ${preparing} preparing` : "") +
       (problems ? ` · ${problems} not ready` : "") +
-      (session.stopped ? " · stopped" : ""),
+      (session.stopped && intent !== "summary-only" ? " · stopped" : ""),
     canStop
   };
 }
@@ -144,13 +157,19 @@ export class Review {
     readonly kind: "working" | "commit" = "working",
     readonly coverage: { readonly excluded: number; readonly skipped: number; readonly truncated: boolean } = {
       excluded: 0, skipped: 0, truncated: false
-    }
+    },
+    readonly filterFingerprint?: string,
+    readonly intent: ReviewIntent = "full",
+    readonly provenance: ReviewProvenance = {}
   ) {
+    if (intent === "summary-only") this.stopped = true;
+    for (const item of items) if (item.lowValue && item.status === "pending") item.status = "low-value";
     this.unsubscribeCapacityChange = host.scheduler.onCapacityChange(() => this.wakeUp());
   }
 
   /** Starts, or continues after a stop, explaining the pending files in the background. */
   start(): void {
+    if (this.intent === "summary-only") return;
     this.stopped = false;
     const generation = ++this.generation;
     void this.run(generation).catch(() => this.stop());
@@ -185,7 +204,8 @@ export class Review {
   explainNow(item: ReviewItem): Promise<void> {
     if (!this.items.includes(item)) return Promise.reject(new Error("This file was not confirmed for review."));
     const generation = this.generation;
-    return this.explain(item, "explicit", () => !this.stopped && this.generation === generation);
+    return this.explain(item, "explicit", () =>
+      (this.intent === "summary-only" || !this.stopped) && this.generation === generation);
   }
 
   private waitForWake(): Promise<void> {
@@ -225,7 +245,7 @@ export class Review {
     } catch (error) {
       if (controller.signal.aborted || (error instanceof DOMException && error.name === "AbortError")) {
         // Not started, cancelled, or sharing was not approved: nothing was saved.
-        item.status = "pending";
+        item.status = item.lowValue ? "low-value" : "pending";
       } else {
         const message = error instanceof Error ? error.message : String(error);
         if (/changed while/.test(message)) {
@@ -242,10 +262,10 @@ export class Review {
 
   private async run(generation: number): Promise<void> {
     const active = () => !this.stopped && this.generation === generation;
-    const pending = () => this.items.filter((item) => item.status === "pending");
+    const pending = () => this.items.filter((item) => !item.lowValue && item.status === "pending");
     while (active()) {
       if (this.host.scheduler.prefetchCapacity === 0 || pending().length === 0) {
-        const retryableFailure = this.items.some((item) => item.status === "failed" && !this.retried.has(item));
+        const retryableFailure = this.items.some((item) => !item.lowValue && item.status === "failed" && !this.retried.has(item));
         if (pending().length === 0 && !this.items.some((item) => item.status === "explaining") && !retryableFailure && this.retrying.size === 0) {
           this.unsubscribeCapacityChange();
           this.host.changed();
@@ -280,7 +300,7 @@ export class Review {
 
   /** A failed file is tried once more after a pause; several failures stop review with a notice. */
   private async afterAttempt(item: ReviewItem, active: () => boolean): Promise<void> {
-    if (item.status !== "failed" || !active()) return;
+    if (item.lowValue || item.status !== "failed" || !active()) return;
     if (!this.retried.has(item)) {
       // Back off briefly, for example after a rate limit, then try this file once more.
       this.retried.add(item);

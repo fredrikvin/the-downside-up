@@ -57,6 +57,10 @@ export interface ReviewSummaryView {
   readonly generating: boolean;
   readonly canGenerate: boolean;
   readonly current: boolean;
+  /** Whether the host has verified that the saved summary is eligible for export. */
+  readonly canExport?: boolean;
+  /** Why export is unavailable, when the host can provide a more specific reason. */
+  readonly exportDisabledReason?: string;
   readonly error?: string;
   readonly model?: string;
   readonly summary?: string;
@@ -323,7 +327,7 @@ export type PanelAction =
   | { readonly type: "cancel" }
   | { readonly type: "stopReview" }
   | { readonly type: "reviewNavigation"; readonly token: string; readonly direction: "previous" | "next" | "picker" }
-  | { readonly type: "reviewSummary"; readonly token: string; readonly operation: "generate" | "cancel" | "open" | "openPart"; readonly fileId?: string; readonly nodeId?: string }
+  | { readonly type: "reviewSummary"; readonly token: string; readonly operation: "generate" | "cancel" | "open" | "openPart" | "export"; readonly fileId?: string; readonly nodeId?: string }
   | { readonly type: "explainChanges" }
   | { readonly type: "summarizeFolder" }
   | { readonly type: "summarizeTree" }
@@ -843,6 +847,7 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
       "chevron-left": "m10 3-5 5 5 5",
       "chevron-right": "m6 3 5 5-5 5",
       refresh: "M13 6A5.5 5.5 0 1 0 13.3 10M13 2v4H9",
+      export: "M8 1v9m0 0 3-3m-3 3-3-3M2 10v4h12v-4",
       callers: "M12 3H8v10h4M8 8H2m3-3L2 8l3 3",
       clear: "M2 4h12M6 4V2h4v2M4 4l1 10h6l1-10M7 6v5M9 6v5",
       cancel: "m4 4 8 8M12 4l-8 8",
@@ -952,6 +957,28 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
       container.replaceChildren();
       const summary = next.reviewSummary;
       if (summary) {
+        const exportEnabled = Boolean(summary.canExport && summary.summary && summary.current &&
+          !summary.loading && !summary.generating);
+        const exportReason = summary.loading || summary.generating
+          ? "Wait for the review summary to finish before exporting."
+          : !summary.summary
+            ? summary.exportDisabledReason || "Generate a review summary before exporting."
+            : !summary.current
+              ? summary.exportDisabledReason || "Refresh the outdated review summary before exporting."
+              : summary.exportDisabledReason || "Export is unavailable for this review.";
+        const exportButton = el("button", "");
+        exportButton.type = "button";
+        exportButton.id = "exportReviewSummary";
+        exportButton.disabled = !exportEnabled;
+        exportButton.title = exportEnabled
+          ? "Export this saved review summary. Uses saved data only; does not make provider requests or post anywhere."
+          : "Export unavailable: " + exportReason;
+        exportButton.setAttribute("aria-label", exportEnabled ? "Export review summary" : "Export review summary, unavailable: " + exportReason);
+        exportButton.append(icon("export"), el("span", "", "Export"));
+        exportButton.addEventListener("click", () => {
+          if (exportEnabled) post({ type: "reviewSummary", token: summary.token, operation: "export" });
+        });
+        container.append(exportButton);
         if (summary.summary && !summary.current && !summary.loading && !summary.generating) {
           const button = el("button", "");
           button.type = "button";
@@ -2957,9 +2984,9 @@ export class ExplanationPanel {
           const operation = fields.operation;
           const fileId = stringField("fileId");
           const nodeId = stringField("nodeId");
-          if (token && token.length >= 16 &&
+          if (token && token.length >= 16 && token === this.state?.reviewSummary?.token &&
             (operation === "generate" || operation === "cancel" || (operation === "open" && fileId) ||
-              (operation === "openPart" && nodeId))) {
+              (operation === "openPart" && nodeId) || operation === "export")) {
             onAction({ type, token, operation, ...(operation === "open" ? { fileId } : {}),
               ...(operation === "openPart" ? { nodeId } : {}) });
           }

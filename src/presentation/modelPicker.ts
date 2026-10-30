@@ -31,6 +31,7 @@ export async function chooseLanguageModel(describeProvider: () => ProviderDescri
     if (answer === "OpenAI setup") await openAISetup();
     return false;
   }
+
   const descriptor = describeProvider();
   const current = descriptor.kind === "vscode-lm" ? resolveLanguageModel(models, descriptor.modelId) : undefined;
   const picked = await vscode.window.showQuickPick(models.map((model) => languageModelItem(model, current)), {
@@ -52,6 +53,44 @@ export async function chooseLanguageModel(describeProvider: () => ProviderDescri
   }
   await vscode.window.showInformationMessage(
     `Downside Up will use ${picked.model.name} (${picked.model.vendor}) through VS Code. Request an explanation or map the project to use it; you will be asked before any code is shared.`
+  );
+  return true;
+}
+
+/** Configures an Overview-only VS Code model without selecting a Functions model. */
+export async function chooseOverviewModelForSetup(
+  describeOverviewProvider: () => ProviderDescriptor
+): Promise<boolean> {
+  const models = await availableLanguageModels();
+  if (models.length === 0) {
+    const answer = await vscode.window.showWarningMessage(
+      "No VS Code language models are available. Install and sign in to GitHub Copilot, or install another extension that provides language models, then try again.",
+      "OpenAI setup"
+    );
+    if (answer === "OpenAI setup") await openAISetup();
+    return false;
+  }
+  const descriptor = describeOverviewProvider();
+  const current = descriptor.kind === "vscode-lm" ? resolveLanguageModel(models, descriptor.modelId) : undefined;
+  const picked = await vscode.window.showQuickPick(models.map((model) => languageModelItem(model, current)), {
+    title: "Choose the review summary model",
+    placeHolder: "Used only for review summaries. Choosing sends no code; sharing approval is requested only when you generate a summary.",
+    matchOnDescription: true,
+    matchOnDetail: true
+  });
+  if (!picked) return false;
+  const settings = vscode.workspace.getConfiguration("downsideUp");
+  await settings.update("languageModel.overviewModel", picked.model.name, vscode.ConfigurationTarget.Global);
+  await settings.update("provider", "vscode-lm", vscode.ConfigurationTarget.Global);
+  const effective = describeOverviewProvider();
+  if (effective.kind !== "vscode-lm" || resolveLanguageModel(models, effective.modelId) !== picked.model) {
+    await vscode.window.showWarningMessage(
+      "The Overview model was saved in user settings, but workspace settings override the provider or Overview model. Update or remove those workspace settings before generating a review summary."
+    );
+    return false;
+  }
+  await vscode.window.showInformationMessage(
+    `Downside Up will use ${picked.model.name} (${picked.model.vendor}) for review summaries. No Functions model was selected; code sharing requires a separate approval when you generate a summary.`
   );
   return true;
 }

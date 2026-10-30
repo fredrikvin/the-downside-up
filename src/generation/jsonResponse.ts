@@ -1,4 +1,4 @@
-/** A validation message assembled only from the host's fixed schema labels, never model content. */
+/** Identifies a provider response that failed host-side schema validation. */
 export class SchemaValidationError extends Error {}
 
 export class ModelResponseError extends Error {
@@ -6,14 +6,9 @@ export class ModelResponseError extends Error {
 
   constructor(
     readonly code: "incomplete-json" | "malformed-json" | "invalid-schema",
-    readonly outputCharacters: number,
-    model: string,
-    detail?: string
+    readonly outputCharacters: number
   ) {
-    const problem = code === "invalid-schema" ? "returned JSON that failed schema validation"
-      : code === "incomplete-json" ? "did not return valid JSON: the response appears incomplete"
-      : "did not return valid JSON: malformed JSON";
-    super(`${model} ${problem} (${outputCharacters} characters received; ${code}).${detail ? ` ${detail}` : ""} No automatic retry was made.`);
+    super("Generation failed. No automatic retry was made; try again.");
   }
 }
 
@@ -41,7 +36,6 @@ function appearsIncomplete(text: string): boolean {
 /** Parses without retaining or exposing response text in errors, causes, or logs. */
 export function parseModelResponse<T>(
   output: string,
-  model: string,
   parse: (value: unknown) => T,
   allowFences = false
 ): T {
@@ -53,15 +47,12 @@ export function parseModelResponse<T>(
     decoded = JSON.parse(text) as unknown;
   } catch (error) {
     if (!(error instanceof SyntaxError)) throw error;
-    throw new ModelResponseError(appearsIncomplete(text) ? "incomplete-json" : "malformed-json", output.length, model);
+    throw new ModelResponseError(appearsIncomplete(text) ? "incomplete-json" : "malformed-json", output.length);
   }
   try {
     return parse(decoded);
   } catch (error) {
     if (!(error instanceof Error)) throw error;
-    throw new ModelResponseError(
-      "invalid-schema", output.length, model,
-      error instanceof SchemaValidationError ? error.message : undefined
-    );
+    throw new ModelResponseError("invalid-schema", output.length);
   }
 }

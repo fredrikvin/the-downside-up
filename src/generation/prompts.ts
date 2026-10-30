@@ -22,7 +22,7 @@ export const COMPARISON_PROMPT_VERSION = "downside-up-changes-7";
 /** Version of the folder summary and flow prompts; changing it outdates saved folder summaries and flows. */
 export const FOLDER_PROMPT_VERSION = "downside-up-folders-1";
 /** Independent version for source-grounded summaries of confirmed review diffs. */
-export const REVIEW_SUMMARY_PROMPT_VERSION = "downside-up-review-summary-4";
+export const REVIEW_SUMMARY_PROMPT_VERSION = "downside-up-review-summary-5";
 
 export function reviewSummaryPrompt(input: ReviewSummaryPromptInput): [string, string] {
   return [

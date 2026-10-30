@@ -70,7 +70,7 @@ afterEach(() => {
 describe("structured generation", () => {
   it("summarizes source diffs with a dedicated bounded schema and validates file IDs without repair", async () => {
     const input = {
-      coverage: { total: 1, included: 1, unavailable: 0, omitted: 0 }, limitations: [],
+      coverage: { total: 2, included: 1, unavailable: 0, omitted: 0, lowValue: 1 }, limitations: [],
       files: [{ id: "file-a", path: "a.ts",
         original: { path: "a.ts", label: "base", present: true, lines: 1, finalNewline: false },
         modified: { path: "a.ts", label: "working", present: true, lines: 1, finalNewline: false },
@@ -100,6 +100,8 @@ describe("structured generation", () => {
     expect(body.input[0].content[0].text).toContain("NOT an independent code review");
     expect(body.input[1].content[0].text).toContain("-tryOnce()");
     expect(body.input[1].content[0].text).toContain("+retry()");
+    expect(JSON.parse(body.input[1].content[0].text).coverage).toEqual(input.coverage);
+    expect(body.input[1].content[0].text).not.toContain("package-lock.json");
     fetch.mockResolvedValueOnce(response({
       output: [{ content: [{ type: "output_text", text: JSON.stringify({
         ...value, themes: [{ ...value.themes[0], fileIds: ["not-in-evidence"] }]
@@ -198,7 +200,9 @@ describe("structured generation", () => {
     fetch.mockResolvedValueOnce(response({
       output: [{ content: [{ type: "output_text", text: JSON.stringify({ purpose: "only one field" }) }] }]
     }));
-    await expect(provider.explainFunction(promptInput)).rejects.toThrow(/invalid "title"/i);
+    await expect(provider.explainFunction(promptInput)).rejects.toThrow(
+      "Generation failed. No automatic retry was made; try again."
+    );
   });
 
   it("validates and expands the same compact comparison contract through OpenAI", async () => {

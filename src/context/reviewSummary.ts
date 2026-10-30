@@ -1,4 +1,5 @@
 import { isAbsolute } from "node:path";
+import { validReviewPattern, type LowValueClassification } from "./reviewFilter";
 import { cacheKey, fingerprint } from "../core/fingerprint";
 import type {
   ComparisonRecord, RepositoryCache, ReviewSummaryCoverage, ReviewSummaryEvidence, ReviewSummaryRecord
@@ -16,10 +17,12 @@ export interface ReviewSummaryScope {
   readonly kind: "working" | "commit";
   readonly base: string;
   readonly root: string;
+  readonly filterFingerprint?: string;
   readonly items: readonly {
     readonly path: string;
     readonly ref: ComparisonRef;
     readonly confirmed: string;
+    readonly lowValue?: LowValueClassification;
   }[];
   /** Files outside the confirmed eligible set; never counted as included evidence. */
   readonly excluded?: number;
@@ -52,8 +55,8 @@ const refParts = (ref: ComparisonRef): string[] => [
 /** Source text is deliberately absent: this key retains an outdated saved summary. */
 export function reviewSummaryScopeKey(scope: ReviewSummaryScope): string {
   validateReviewSummaryScope(scope);
-  return cacheKey([scope.kind, scope.root, scope.base,
-    ...scope.items.map((item) => JSON.stringify([item.path, ...refParts(item.ref)])).sort()]);
+  return cacheKey([scope.kind, scope.root, scope.base, scope.filterFingerprint ?? "",
+    ...scope.items.map((item) => JSON.stringify([item.path, ...refParts(item.ref), item.lowValue ?? null])).sort()]);
 }
 
 export function validateReviewSummaryScope(scope: ReviewSummaryScope): void {
@@ -64,13 +67,15 @@ export function validateReviewSummaryScope(scope: ReviewSummaryScope): void {
       typeof scope.base !== "string" || !scope.base || scope.base.length > 256 ||
       /[\x00-\x1f]/.test(scope.base) || !Array.isArray(scope.items) || scope.items.length > MAX_CHANGED_FILES ||
       [scope.excluded, scope.skipped].some((count) => count !== undefined && (!Number.isSafeInteger(count) || count < 0 || count > 1_000_000)) ||
-      (scope.truncated !== undefined && typeof scope.truncated !== "boolean")) {
+      (scope.truncated !== undefined && typeof scope.truncated !== "boolean") ||
+      (scope.filterFingerprint !== undefined && (typeof scope.filterFingerprint !== "string" || !/^[a-f0-9]{64}$/.test(scope.filterFingerprint)))) {
     throw new Error("The review summary scope is invalid or exceeds the 200-file limit.");
   }
   const seen = new Set<string>();
   for (const item of scope.items) {
     if (!item || !path(item.path) || !item.ref || item.ref.root !== scope.root ||
-        typeof item.confirmed !== "string" || !item.confirmed || item.confirmed.length > 8192) {
+        typeof item.confirmed !== "string" || !item.confirmed || item.confirmed.length > 8192 ||
+        (item.lowValue !== undefined && !validReviewPattern(item.lowValue?.pattern))) {
       throw new Error("The review summary contains an invalid confirmed file.");
     }
     for (const side of [item.ref.original, item.ref.modified]) {
@@ -252,7 +257,9 @@ export async function buildReviewSummaryRequest(
     const right = JSON.stringify([b.path, ...refParts(b.ref)]);
     return left < right ? -1 : left > right ? 1 : 0;
   });
+  const lowValue = items.filter((item) => item.lowValue).length;
   for (const item of items) {
+    if (item.lowValue) continue;
     try {
       if (!(await allowed(item.ref))) continue;
       const snapshot = await read(item.ref);
@@ -278,7 +285,8 @@ export async function buildReviewSummaryRequest(
   }
   const inputFor = (selected: typeof available): ReviewSummaryPromptInput => {
     const coverage = {
-      total: items.length, included: selected.length, unavailable: items.length - available.length, omitted: available.length - selected.length
+      total: items.length, included: selected.length, lowValue,
+      unavailable: items.length - lowValue - available.length, omitted: available.length - selected.length
     };
     const bounded = selected.filter((entry) => entry.file.omittedContext.original || entry.file.omittedContext.modified);
     const coarse = selected.filter((entry) => entry.file.limitations.some((notice) => notice.startsWith("Bounded diff alignment")));
@@ -286,6 +294,7 @@ export async function buildReviewSummaryRequest(
       coverage,
       limitations: [
         "Grounded only in confirmed source diffs with bounded surrounding context; not proof of correctness or execution.",
+        ...(lowValue ? ["Low-value files remain in the confirmed review but are excluded from summary evidence."] : []),
         ...(bounded.length ? [`Surrounding source is bounded: ${bounded.length} included file diffs omit ${bounded.reduce((sum, entry) => sum + entry.file.omittedContext.original, 0)} original and ${bounded.reduce((sum, entry) => sum + entry.file.omittedContext.modified, 0)} modified unchanged lines; at most ${CONTEXT_LINES} context lines per hunk edge were supplied.`] : []),
         ...(coarse.length ? [`Bounded diff alignment retained replacement regions that may include unchanged lines in ${coarse.length} included file diffs.`] : []),
         ...(coverage.unavailable ? [`${coverage.unavailable} confirmed file diffs are unavailable, restricted, or no longer match their confirmed source.`] : []),
@@ -308,7 +317,7 @@ export async function buildReviewSummaryRequest(
     consumed: selected.map((entry) => entry.consumed),
     fingerprint: cacheKey([
       REVIEW_SUMMARY_PROMPT_VERSION, scopeKey,
-      JSON.stringify(items.map((item) => [item.path, ...refParts(item.ref), item.confirmed])),
+      JSON.stringify(items.map((item) => [item.path, ...refParts(item.ref), item.confirmed, item.lowValue ?? null])),
       JSON.stringify([scope.excluded ?? 0, scope.skipped ?? 0, scope.truncated ?? false]),
       JSON.stringify(overview), String(maxBytes), JSON.stringify(input)
     ])

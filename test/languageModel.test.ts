@@ -101,7 +101,7 @@ function fakeModel(send: SendRequest, maxInputTokens = 100_000, countsTokens = t
 describe("VS Code language model generation", () => {
   it("summarizes source diffs and rejects unknown file IDs without a repair request", async () => {
     const input = {
-      coverage: { total: 1, included: 1, unavailable: 0, omitted: 0 }, limitations: [],
+      coverage: { total: 2, included: 1, unavailable: 0, omitted: 0, lowValue: 1 }, limitations: [],
       files: [{ id: "file-a", path: "a.ts",
         original: { path: "a.ts", label: "base", present: true, lines: 1, finalNewline: false },
         modified: { path: "a.ts", label: "working", present: true, lines: 1, finalNewline: false },
@@ -117,6 +117,8 @@ describe("VS Code language model generation", () => {
     expect(sendRequest).toHaveBeenCalledTimes(1);
     expect(JSON.stringify(sendRequest.mock.calls[0])).toContain("-tryOnce()");
     expect(JSON.stringify(sendRequest.mock.calls[0])).toContain("+retry()");
+    expect(JSON.stringify(sendRequest.mock.calls[0])).toContain('\\"lowValue\\":1');
+    expect(JSON.stringify(sendRequest.mock.calls[0])).not.toContain("package-lock.json");
     sendRequest.mockImplementationOnce(async () => streamOf([JSON.stringify({
       ...value, themes: [{ ...value.themes[0], fileIds: ["invented"] }]
     })]));
@@ -189,12 +191,16 @@ describe("VS Code language model generation", () => {
     expect(isUsableLanguageModelVendor("ollama")).toBe(true);
   });
 
-  it("surfaces empty, malformed, and schema-invalid output without retrying", async () => {
+  it("reports unusable outputs generically without retrying", async () => {
     const outputs = ["", "Sorry, I can't help with that.", JSON.stringify({ purpose: "only one field" })];
     const { provider, sendRequest } = fakeModel(async () => streamOf([outputs.shift() ?? ""]));
     await expect(provider.explainFunction(promptInput)).rejects.toThrow(/returned no output/);
-    await expect(provider.explainFunction(promptInput)).rejects.toThrow(/did not return valid JSON/);
-    await expect(provider.explainFunction(promptInput)).rejects.toThrow(/invalid "title"/);
+    await expect(provider.explainFunction(promptInput)).rejects.toThrow(
+      "Generation failed. No automatic retry was made; try again."
+    );
+    await expect(provider.explainFunction(promptInput)).rejects.toThrow(
+      "Generation failed. No automatic retry was made; try again."
+    );
     expect(sendRequest).toHaveBeenCalledTimes(3);
   });
 

@@ -227,7 +227,7 @@ export class OpenAIProvider implements GenerationProvider {
 
     const usage = body.usage;
     return {
-      value: parseModelResponse(output, "OpenAI", parse),
+      value: parseModelResponse(output, parse),
       provider: "openai",
       usage: usage?.input_tokens !== undefined && usage.output_tokens !== undefined
         ? {

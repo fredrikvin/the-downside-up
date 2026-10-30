@@ -37,8 +37,18 @@ describe("header action validation", () => {
     const actions: PanelAction[] = [];
     const panel = new ExplanationPanel("Test", (action) => actions.push(action));
     const token = "summary-token-123456";
+    panel.update({
+      provider: "mock", models: { explanation: "mock" }, busy: false, hasRepository: false,
+      explanations: [], showDetails: false, formats: { pseudocode: false, flowchart: false, initial: "steps" },
+      reviewSummary: {
+        token, base: "main", coverage: "1 file", loading: false, generating: false,
+        canGenerate: true, canExport: true, current: true, summary: "Saved summary",
+        themes: [], possibleEffects: [], limitations: []
+      }
+    });
     harness.receive({ type: "reviewSummary", operation: "generate" });
     harness.receive({ type: "reviewSummary", token: "short", operation: "generate" });
+    harness.receive({ type: "reviewSummary", token: "stale-summary-token-123", operation: "export" });
     harness.receive({ type: "reviewSummary", token, operation: "open", fileId: "../outside".repeat(30) });
     harness.receive({ type: "reviewSummary", token, operation: "open" });
     harness.receive({ type: "reviewSummary", token, operation: "openPart" });
@@ -49,12 +59,25 @@ describe("header action validation", () => {
     harness.receive({ type: "reviewSummary", token, operation: "cancel" });
     harness.receive({ type: "reviewSummary", token, operation: "open", fileId: "host-file" });
     harness.receive({ type: "reviewSummary", token, operation: "openPart", nodeId: "host-node", fileId: "untrusted-file" });
+    harness.receive({ type: "reviewSummary", token, operation: "export", content: "forged", paths: ["/untrusted"], destination: "clipboard" });
     expect(actions).toEqual([
       { type: "reviewSummary", token, operation: "generate" },
       { type: "reviewSummary", token, operation: "cancel" },
       { type: "reviewSummary", token, operation: "open", fileId: "host-file" },
-      { type: "reviewSummary", token, operation: "openPart", nodeId: "host-node" }
+      { type: "reviewSummary", token, operation: "openPart", nodeId: "host-node" },
+      { type: "reviewSummary", token, operation: "export" }
     ]);
+    panel.update({
+      provider: "mock", models: { explanation: "mock" }, busy: false, hasRepository: false,
+      explanations: [], showDetails: false, formats: { pseudocode: false, flowchart: false, initial: "steps" },
+      reviewSummary: {
+        token: "replacement-summary-token", base: "main", coverage: "1 file", loading: false, generating: false,
+        canGenerate: true, canExport: true, current: true, summary: "Replacement summary",
+        themes: [], possibleEffects: [], limitations: []
+      }
+    });
+    harness.receive({ type: "reviewSummary", token, operation: "export" });
+    expect(actions).toHaveLength(5);
     panel.dispose();
   });
 

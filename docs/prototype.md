@@ -701,6 +701,40 @@ a separately requested summary is cancelled with its own control. Returning
 focus to the unchanged underlying diff leaves the summary selected; opening
 another file follows normal review-membership rules.
 
+**Export Review Summary…** exports the active or retained confirmed review, or
+offers a new review base and a choice between **Summary only** and **Full
+review**, including an immutable commit-versus-parent scope. Summary-only keeps the confirmed comparisons navigable but does not
+queue background Functions requests; explicit **Explain changes** remains
+available. Its summary is keyed by the same confirmed scope as a full review,
+so a later full review can reuse it. If no model is configured, setup is
+limited to selecting an Overview model and configuring its provider; it does
+not select a Functions model or approve code sharing.
+
+Export assembles a Markdown document from the current saved summary and current
+saved per-file comparisons only. It never generates missing file comparisons,
+requests consent, writes to GitHub, or overwrites a file; the result opens as
+an untitled Markdown document for inspection and explicit saving. A missing or
+outdated summary can be generated only after a separate confirmation through
+the existing Overview-model consent flow. Missing, outdated, and unavailable
+file explanations are listed with reasons. The Mermaid diagram is rebuilt
+with host-assigned node IDs and conservative text labels; generated content
+is rendered as inert text.
+
+For working reviews, export checks each confirmed path against `HEAD`, including
+staged and working-tree changes and dirty editor buffers. If a reviewed path
+differs, export is blocked and identifies the path; unrelated changes do not
+block. This is a point-in-time check, with `HEAD`, sources, trust, and sharing
+policy rechecked before delivery. Commit reviews use their immutable commit
+and parent provenance. No file is staged, saved, or committed by export.
+
+`downsideUp.review.lowValuePatterns` classifies common lockfiles, vendored,
+generated, minified, and snapshot files as low value for review preparation.
+They stay in the confirmed set and remain navigable, but do not enter background
+comparison prefetch or summary evidence. An explicit **Explain changes** still
+works under the ordinary privacy and size rules. User patterns replace the
+shipped defaults; workspace and workspace-folder patterns add to them. This
+filter never overrides content-sharing exclusions.
+
 **Prepare Commit Explanations…** reuses this Review queue, scheduler, consent,
 comparison request and cache. The command palette offers the last 50 commits
 or an entered ID/ref, resolved once to an immutable commit. Metadata and parent
@@ -1337,13 +1371,10 @@ same-named model from another vendor asks again. VS Code shows its own
 one-time permission prompt for language-model access in addition to this
 extension's consent. The API has no system role or schema-constrained output,
 so the instructions and JSON Schema are sent in a single user message, and the
-reply is validated with the same parser as other providers. Malformed replies
-fail without an automatic retry. JSON failures from either real provider report
-`incomplete-json` (an unclosed structure/string suggests incompleteness, not
-proof of provider truncation), `malformed-json`, or `invalid-schema`, along with
-the received character count. Schema details use only fixed host-owned labels.
-No response excerpts, source text, or raw JSON-parser errors are logged or
-attached to those diagnostics. The request is checked against the model's
+reply is validated with the same parser as other providers. Responses that
+cannot be used are reported to the user as a generic generation failure;
+parser and schema diagnostics and response character counts are not shown.
+No automatic retry is made. The request is checked against the model's
 `maxInputTokens` before sending, the output is capped, and requests time out
 after 10 minutes, allowing slower reasoning and overview models time to finish.
 The preview animates the existing header divider and shows the current stage

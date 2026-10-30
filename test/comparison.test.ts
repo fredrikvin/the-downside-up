@@ -15,6 +15,7 @@ import {
   readComparison,
   resolveNativeDiff,
   snapshotSignature,
+  workingTreeDifferences,
   type ComparisonRef
 } from "../src/context/comparison";
 
@@ -313,5 +314,89 @@ describe("changed files since a commit", () => {
     const snapshot = await readComparison(await baseComparisonRef(join(root, "app"), "HEAD", files[0]!));
     expect(snapshot.original.text).toBe("one\n");
     expect(snapshot.modified.text).toBe("two\n");
+  });
+});
+
+describe("working review HEAD fence", () => {
+  it("reports staged, unstaged, untracked, deleted, and renamed confirmed paths", async () => {
+    await writeFile(join(root, ".gitignore"), "ignored.txt\n");
+    git("add", ".gitignore");
+    git("commit", "-q", "-m", "ignore generated file");
+    const head = git("rev-parse", "HEAD");
+    await writeFile(join(root, "a.txt"), "staged\n");
+    git("add", "a.txt");
+    await writeFile(join(root, "a.txt"), "unstaged\n");
+    await writeFile(join(root, "new.txt"), "untracked\n");
+    await writeFile(join(root, "space name.txt"), "untracked with spaces\n");
+    await writeFile(join(root, "ignored.txt"), "ignored\n");
+    git("mv", "old.txt", "renamed.txt");
+    await rm(join(root, "old.txt")).catch(() => undefined);
+    const result = await workingTreeDifferences(root, [
+      { status: "modified", path: "a.txt" },
+      { status: "added", path: "new.txt" },
+      { status: "added", path: "space name.txt" },
+      { status: "added", path: "ignored.txt" },
+      { status: "renamed", oldPath: "old.txt", path: "renamed.txt" }
+    ]);
+    expect(result.head).toBe(head);
+    expect(result.differences).toEqual([
+      { path: "a.txt", reason: "staged change and working-tree change" },
+      { path: "new.txt", reason: "untracked file" },
+      { path: "space name.txt", reason: "untracked file" },
+      { path: "ignored.txt", reason: "ignored untracked file" },
+      { path: "old.txt", reason: "renamed relative to HEAD" },
+      { path: "renamed.txt", reason: "renamed relative to HEAD" }
+    ]);
+  });
+
+  it("detects mode changes and unresolved conflicts", async () => {
+    const head = git("rev-parse", "HEAD");
+    if (process.platform !== "win32") {
+      const { chmod } = await import("node:fs/promises");
+      await chmod(join(root, "a.txt"), 0o755);
+      expect((await workingTreeDifferences(root, [{ status: "modified", path: "a.txt" }])).differences)
+        .toEqual([{ path: "a.txt", reason: "file mode differs from HEAD" }]);
+      await chmod(join(root, "a.txt"), 0o644);
+    }
+
+    const branch = git("branch", "--show-current");
+    git("checkout", "-q", "-b", "conflict");
+    await writeFile(join(root, "a.txt"), "conflict branch\n");
+    git("commit", "-qam", "conflict side");
+    git("checkout", "-q", branch);
+    await writeFile(join(root, "a.txt"), "main branch\n");
+    git("commit", "-qam", "main side");
+    expect(() => git("merge", "conflict")).toThrow();
+    expect((await workingTreeDifferences(root, [{ status: "modified", path: "a.txt" }])).differences)
+      .toEqual([{ path: "a.txt", reason: "unresolved merge conflict" }]);
+  });
+
+  it("returns a fresh HEAD for the caller to compare and rejects repositories without HEAD", async () => {
+    const before = git("rev-parse", "HEAD");
+    await writeFile(join(root, "later.txt"), "later\n");
+    git("add", "later.txt");
+    git("commit", "-qm", "move HEAD");
+    const after = await workingTreeDifferences(root, [{ status: "modified", path: "a.txt" }]);
+    expect(after.head).not.toBe(before);
+    expect(after.differences).toEqual([]);
+
+    const empty = await realpath(await mkdtemp(join(tmpdir(), "dsu-no-head-")));
+    try {
+      execFileSync("git", ["-C", empty, "init", "-q"]);
+      await expect(workingTreeDifferences(empty, [{ status: "modified", path: "a.txt" }]))
+        .rejects.toThrow("HEAD could not be resolved");
+    } finally {
+      await rm(empty, { recursive: true, force: true });
+    }
+  });
+
+  it("uses project-relative paths when the review root is a repository subdirectory", async () => {
+    await mkdir(join(root, "app"));
+    await writeFile(join(root, "app", "x.txt"), "one\n");
+    git("add", "app/x.txt");
+    git("commit", "-qm", "add app");
+    await writeFile(join(root, "app", "x.txt"), "two\n");
+    expect((await workingTreeDifferences(join(root, "app"), [{ status: "modified", path: "x.txt" }])).differences)
+      .toEqual([{ path: "x.txt", reason: "working-tree change" }]);
   });
 });

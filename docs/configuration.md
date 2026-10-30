@@ -178,7 +178,37 @@ still reject their visual scope, without discarding other valid scopes.
 **Review Changes…** confirms a count of file comparisons,
 explains them in the background like prefetching, and opens each in its native
 diff. Binary, oversized, excluded, and identical files are skipped. See
-`docs/prototype.md` for the scope and limits.
+[Review mode](#review-mode) and `docs/prototype.md` for the scope and limits.
+
+The change view groups functions into **Added**, **Changed**, and **Removed**,
+followed by **Other changes** for non-function edits. All three sections use
+consistent function headers.
+
+- **Added** and **Removed** functions get a short summary and an **Explain**
+  button; only that explicit action requests their normal Steps, Pseudocode,
+  and Flowchart detail. Current cached details expand automatically when you
+  return to a diff; cache misses never generate them. Each uncached detail is
+  a separate request. A working-side addition can first prime or review
+  project context with the separately consented Overview model, but does not
+  request an incidental file summary. Removed functions and revision- or
+  index-side additions use only their own snapshot's function and bounded
+  same-file preamble, with a limitation: historical callers and cross-file
+  dependencies are not resolved, and today's repository overview and
+  dependencies are never used.
+- **Changed** functions keep before/after/when/flow items and paired visuals,
+  using the same tabs, text highlighting, and flowchart shapes as normal
+  explanations. Click a Changed function's name to reveal its modified source;
+  its behavior descriptions and paired views sit underneath. Click a visual
+  item to focus and select its source lines in the matching Before or After
+  side of the diff editor; moving the cursor in either side highlights that
+  side's matching items.
+- Signature-only changes count; pure comment and formatting changes do not.
+  Renames, container moves, and ambiguous duplicates are removed plus added,
+  without guessed rename detection. Incomplete discovery falls back to an
+  explicitly unclassified textual comparison, without Added/Removed cards.
+- All comparison summaries and Changed visuals come from one request per
+  file. Missing formats for Added/Removed details require their own explicit
+  **Generate** request.
 
 **Preview header.** A shared sparkle icon groups two compact model buttons,
 each opening its picker directly: **Project overview** first for project priming,
@@ -575,11 +605,9 @@ or additional model calls are needed. The model defines each visual operation
 and source span once; the extension constructs the linked views locally while
 preserving explicit text order and graph connections.
 
-If a response fails, the error distinguishes `incomplete-json` (appears cut
-short), `malformed-json`, and `invalid-schema`, and shows the received character
-count. These diagnostics contain no response excerpts or source text and do
-not cause another model call. Incompleteness is a diagnostic hint, not proof
-of a model output limit; retry success alone does not establish the cause.
+If a response cannot be used, the preview reports that generation failed and
+offers an explicit retry. It does not expose parser or schema diagnostics, and
+does not cause another model call automatically.
 
 Recent function context is reused within the session while the selected document
 and its tracked files and unsaved buffers are unchanged. Clicking or refocusing the
@@ -614,19 +642,116 @@ To review a branch or a pull request, check it out and run **Downside Up:
 Review Changes…**. Choose what to compare the checked-out code with: the
 branch's merge base with `main` (or `master`, or the remote's default
 branch), that branch as it is now, only uncommitted changes, or any recent
-commit. The extension finds the functions that changed locally (including
-uncommitted edits and new files), tells you how many, and after you confirm,
-explains them in the background with the request slots your own requests
-leave free, so their explanations are ready when you get to them. In the file
-you are reading, the changed function nearest your cursor goes first, so
-jumping to a changed function that is still waiting moves it forward;
-everything else uses the preview as usual. Functions that already have a
-current explanation are skipped, as are files excluded from AI explanations.
-The status bar shows progress; click it (or run **Downside Up: Show Changed
-Functions**) to jump to a changed function, or to stop. Closing the preview
-or **Cancel** stops it too. Running the command is an explicit request, so it
-asks for code-sharing approval if needed, and every explanation counts toward
-your provider's usage limits or billing.
+commit. The extension finds the changed files (including uncommitted edits
+and new files), tells you how many file comparisons it will request, and
+after you confirm, explains them in the background with the request slots
+your own requests leave free, so they are ready when you get to them. The
+file you are reading goes first; the rest follow in path order. Files with a
+current saved comparison are skipped, as are excluded, binary, oversized, and
+identical files. Added/Removed function details are not included in the
+count; opted-in card prefetch applies only to the diff being viewed. Running
+the command is an explicit request, so it asks for code-sharing approval if
+needed, and every comparison counts toward your provider's usage limits or
+billing.
+
+- **Opening.** After you confirm, the first file's diff opens on the left
+  with the preview on the right (the active editor's file if it is in the
+  review). The preview starts on **Review summary**.
+- **Review summary.** Starting the review also requests its summary: a
+  current saved summary is reused; otherwise it loads asynchronously with a
+  skeleton while file preparation and navigation remain available. The
+  Overview model summarizes the actual confirmed diffs and bounded surrounding
+  source, with host-validated links to those diffs; individual file
+  explanations do not need to be ready first. It focuses on the main
+  behavioral or contract change, grouping related edits rather than listing
+  implementation details file by file. When useful and supported by the
+  source, a small affected-parts chart shows their relationships. Click a node
+  to open its confirmed diff; nodes covering several files offer a file
+  picker. The summary discloses incomplete coverage, omitted context, and
+  uncertainties; it is not proof of correctness. Overview-model sharing
+  approval is separate, and this request shares diff source with that model.
+  Changed evidence or summary settings require explicit regeneration: an
+  outdated summary shows a refresh icon beside its heading, with an
+  explanatory tooltip, and current summaries show no refresh control.
+  Returning to the summary or editing source never starts generation, and a
+  failed or cancelled initial request is not retried automatically.
+- **Navigation.** While a confirmed file's native diff is shown, the review
+  stays associated with that comparison in either side-by-side or inline
+  layout, including automatic collapse on narrow windows. Review bands above
+  the file header and at the bottom of the preview offer **‹ Previous** and
+  **Next ›** to step through the review in path order, plus
+  **Review: 3/8 ready** progress at the top. The filename and position open
+  the **Show Changed Files** picker, with **Review summary** first; the status
+  bar item opens the same list. Previous from the first file returns to the
+  summary; Next from the summary opens the first file. Navigation stays
+  within the confirmed review, does not wrap, and only reprioritizes its
+  pending work; it does not start requests.
+- **Leaving and returning.** Opening a file outside the review ends review
+  mode; if the review is still preparing, you are asked first. Returning to
+  an exact native diff from the most recent review restores its navigation
+  with that file selected. For working reviews, selecting a reviewed file in
+  Source Control's **Changes** list opens its confirmed review comparison,
+  keeping the review base. Graph diffs can also return to that review when
+  both complete file versions match its confirmed content, even after commit
+  IDs change. Different content stays a separate comparison; rebasing does
+  not silently update a review's scope. Staged and unrelated historical
+  comparisons are not redirected. Unfinished preparation stays stopped until
+  you choose **Continue explaining changed files**. This context is kept only
+  in the current window; explicitly closing or cancelling the review, closing
+  the preview, or starting another review discards it.
+- **Stopping.** **Stop** lets requests already sent finish and be saved;
+  **Cancel**, closing the preview, and **Clear Repository Cache** abort them.
+  A failed file is retried once.
+
+**Preparing a commit.** Run **Downside Up: Prepare Commit Explanations…**,
+choose a commit (or enter its ID or ref), and confirm the bounded file scope
+and request count; the first file's diff then opens beside the review-summary
+preview. This compares the immutable commit with its parent, **not** today's
+working tree; root commits compare with the empty tree, and merges require an
+explicit parent choice. Keep using Source Control Graph's existing file tree
+and individual Git diffs: they pick up the same saved comparisons, prioritize
+the confirmed file being read, and update when preparation finishes. While
+the preparation session remains open, the graph's single historical documents
+for additions and deletions also show their confirmed comparison. The preview
+shows **Commit: 3/8 ready · 1 preparing** with **Stop**. At most 200 changed
+files are considered; exclusions and limits still apply. Opening anything
+outside this scope never adds requests, and Added/Removed details are not
+prepared for unseen files. Use the Command Palette to start preparation;
+there is no Source Control Graph context-menu command. The graph defaults to
+the first merge parent; for another parent, use **Show Changed Files** to
+open that exact prepared diff.
+
+**Low-value files.** `downsideUp.review.lowValuePatterns` is a
+repository-scoped list of repository-relative globs for review files that
+should remain navigable without using background comparison requests or
+summary evidence. Defaults include lockfiles, generated/minified files,
+vendored folders, and snapshots; files in the already-excluded `node_modules`
+and `vendor` folders are not made eligible by this filter. A user-level list
+replaces the shipped defaults, while workspace and workspace-folder lists add
+patterns. **Explain changes** remains available for an individual low-value
+file, subject to normal privacy and size checks.
+
+**Exporting a summary.** Use **Downside Up: Export Review Summary…** or
+**Export** on the Review summary page to open an untitled Markdown document.
+It contains only the current saved summary and current saved per-file
+comparisons, plus coverage and any saved diagram; missing or outdated records
+are listed rather than generated. Export does not call a model, request
+consent, write to GitHub, or save over a file. If the summary is missing or
+outdated, the command offers a separate, explicitly confirmed Overview-model
+request. Without an active or retained review, choose **Summary only** to keep
+the confirmed file set navigable without background Functions comparisons, or
+**Full review** to prepare those comparisons as usual. Explicit per-file
+**Explain changes** remains available in either case, and a later full review
+of the same confirmed diffs can reuse a summary-only review's current summary.
+A retained review whose low-value filter has changed must be confirmed again.
+The new-review picker also offers an immutable commit review against its
+selected parent. If no Overview model is configured for a summary-only review,
+setup selects one without selecting a Functions model or granting sharing
+consent; run the export again afterwards. A
+working-review export is blocked when any confirmed file differs from `HEAD`,
+including index changes, working-tree edits, or unsaved buffers; unrelated
+dirty files do not block it. Commit-review export uses the recorded immutable
+commit and parent.
 
 ### Saved explanations on hover
 

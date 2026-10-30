@@ -342,7 +342,7 @@ export interface RepositoryCache {
   readonly projectFlows?: Record<string, ProjectFlowsRecord>;
   /** AI explanations of what a diff changes, keyed by both sides' identities and paths, provider, model, and prompt version. */
   readonly comparisons?: Record<string, ComparisonRecord>;
-  /** Explicit cross-file synthesis of saved comparison explanations; never source. */
+  /** Explicit cross-file summaries of bounded confirmed source diffs. */
   readonly reviewSummaries?: Record<string, ReviewSummaryRecord>;
   /**
    * The project map, made in the same request as the overview but saved
@@ -541,6 +541,7 @@ export interface ReviewSummaryCoverage {
   readonly included: number;
   readonly unavailable: number;
   readonly omitted: number;
+  readonly lowValue: number;
 }
 
 export interface ReviewSummaryEvidence {

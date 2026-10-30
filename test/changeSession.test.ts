@@ -119,8 +119,8 @@ describe("explicit change function cards", () => {
     expect(provider.requests).toBe(1);
   });
 
-  it.each(["disabled", "unapproved", "leave"] as const)("drops queued card prefetch when %s", async (reason) => {
-    const prefetch = cardPrefetch("removed");
+  it.each(["disabled", "unapproved", "leave", "filtered"] as const)("drops queued card prefetch when %s", async (reason) => {
+    const prefetch = { ...cardPrefetch("removed"), eligible: vi.fn(() => true) };
     let queued!: () => void;
     let release!: () => void;
     const entered = new Promise<void>((resolve) => { queued = resolve; });
@@ -137,8 +137,32 @@ describe("explicit change function cards", () => {
     if (reason === "disabled") { prefetch.enabled.mockReturnValue(false); changes.stopPrefetch(); }
     if (reason === "unapproved") prefetch.cardsAllowed.mockResolvedValue(false);
     if (reason === "leave") changes.clear();
+    if (reason === "filtered") prefetch.eligible.mockReturnValue(false);
     release(); await pending;
     expect(provider.requests).toBe(1);
+  });
+
+  it("skips filtered card prefetch even after an explicit comparison, but preserves explicit detail", async () => {
+    const prefetch = { ...cardPrefetch("removed"), eligible: vi.fn(() => false) };
+    const { changes, provider, view } = await cardSession({ prefetch });
+    prefetch.enabled.mockReturnValue(true);
+    await changes.prefetch();
+    expect(provider.requests).toBe(1);
+    expect(prefetch.cardsAllowed).not.toHaveBeenCalled();
+    await changes.explainCard(view().result!.removed![0]!.id);
+    expect(provider.requests).toBe(2);
+    expect(view().result!.removed![0]!.explanation?.status).toBe("current");
+  });
+
+  it("refreshes cache-only after a filter change, even when the new filter would allow card prefetch", async () => {
+    const prefetch = { ...cardPrefetch("removed"), eligible: vi.fn(() => false) };
+    const { changes, provider } = await cardSession({ prefetch });
+    prefetch.enabled.mockReturnValue(true);
+    changes.stopPrefetch();
+    prefetch.eligible.mockReturnValue(true);
+    await changes.refresh(false);
+    expect(provider.requests).toBe(1);
+    expect(prefetch.cardsAllowed).not.toHaveBeenCalled();
   });
 
   it("reports failed background details without retrying on refresh", async () => {
@@ -585,11 +609,11 @@ describe("the shown native diff", () => {
     expect(sent).toHaveLength(1);
   });
 
-  it.each(["disabled", "switched", "refreshed", "cancelled"] as const)(
+  it.each(["disabled", "switched", "refreshed", "cancelled", "filtered"] as const)(
     "drops a queued prefetch when %s before a request slot opens",
     async (reason) => {
       await writeFile(join(root, "a.txt"), "export const a = 2;\n");
-      const prefetch = prefetchOptions();
+      const prefetch = { ...prefetchOptions(), eligible: vi.fn(() => true) };
       let release!: () => void;
       const gate = new Promise<void>((resolve) => { release = resolve; });
       const queued = vi.fn();
@@ -602,12 +626,28 @@ describe("the shown native diff", () => {
       if (reason === "disabled") prefetch.enabled.mockReturnValue(false);
       else if (reason === "switched") changes.clear();
       else if (reason === "refreshed") await changes.refresh();
+      else if (reason === "filtered") prefetch.eligible.mockReturnValue(false);
       else changes.cancel();
       release();
       await vi.waitFor(() => expect(changes.busy).toBe(false));
       expect(provider.requests).toBe(0);
     }
   );
+
+  it("does not queue a filtered comparison or ask for approval, but permits explicit Explain changes", async () => {
+    await writeFile(join(root, "a.txt"), "export const a = 2;\n");
+    const prefetch = { ...prefetchOptions(), eligible: vi.fn(() => false) };
+    const schedule = vi.fn();
+    const { changes, provider } = session(undefined, { prefetch,
+      schedule: async (task) => { schedule(); return task(); } });
+    await changes.show(headOf("a.txt"), uri("file", "a.txt"));
+    await changes.prefetch();
+    expect(schedule).not.toHaveBeenCalled();
+    expect(prefetch.allowed).not.toHaveBeenCalled();
+    expect(provider.requests).toBe(0);
+    await changes.explain();
+    expect(provider.requests).toBe(1);
+  });
 
   it("rejects a prefetched comparison if either source changes during generation", async () => {
     await writeFile(join(root, "a.txt"), "export const a = 2;\n");

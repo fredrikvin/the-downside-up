@@ -27,6 +27,8 @@ export interface ChangeSessionHost {
   /** Runs a request in a shared slot, behind explicit requests when prefetching. */
   readonly schedule: <T>(task: () => Promise<T>, priority?: "explicit" | "prefetch") => Promise<T>;
   readonly prefetch?: {
+    /** Host request-saving policy, separate from sharing permission; checked again in queued work. */
+    readonly eligible?: (ref: ComparisonRef) => boolean;
     readonly enabled: () => boolean;
     readonly comparisons?: () => boolean;
     readonly cards?: (category: "added" | "removed") => boolean;
@@ -170,7 +172,7 @@ export class ChangeSession {
   }
 
   /** Looks up a saved comparison, then prefetches on first showing when opted in. */
-  async show(original: vscode.Uri, modified: vscode.Uri, force = false): Promise<void> {
+  async show(original: vscode.Uri, modified: vscode.Uri, force = false, allowPrefetch = true): Promise<void> {
     const key = keyOf(original, modified);
     if (this.shown?.key === key && !force) return;
     const epoch = ++this.epoch;
@@ -191,15 +193,17 @@ export class ChangeSession {
     }
     if (epoch === this.epoch && this.shown === shown) {
       this.host.changed();
-      if (!previous) void this.prefetch();
-      else void this.prefetchCards();
+      if (allowPrefetch) {
+        if (!previous) void this.prefetch();
+        else void this.prefetchCards();
+      }
     }
   }
 
   /** Reads the same pair again, such as after an edit, a save, or a setting change. */
-  async refresh(): Promise<void> {
+  async refresh(allowPrefetch = true): Promise<void> {
     const shown = this.shown;
-    if (shown) await this.show(shown.originalUri, shown.modifiedUri, true);
+    if (shown) await this.show(shown.originalUri, shown.modifiedUri, true, allowPrefetch);
   }
 
   /** A background review saved this exact pair. Reload cache-only, never starting a request. */
@@ -371,6 +375,7 @@ export class ChangeSession {
     const shown = this.shown!;
     const category = shown.saved!.catalogue!.entries.find((entry) => this.cardId(entry) === id)!.category;
     const mayPrefetch = () => this.shown === shown && vscode.workspace.isTrusted &&
+      !!shown.ref && this.host.prefetch?.eligible?.(shown.ref) !== false &&
       this.host.prefetch?.enabled() === true && category !== "changed" &&
       this.host.prefetch.cards?.(category) === true && !controller.signal.aborted;
     if (prefetching) {
@@ -432,7 +437,7 @@ export class ChangeSession {
   /** Never prompts, retries a failed attempt, or regenerates an outdated saved comparison. */
   async prefetch(): Promise<void> {
     const shown = this.shown;
-    if (!this.host.prefetch?.enabled() || !shown) return;
+    if (!this.host.prefetch?.enabled() || !shown?.ref || this.host.prefetch.eligible?.(shown.ref) === false) return;
     if (this.host.prefetch.comparisons?.() !== false && !shown.saved && !shown.error && !shown.problem && !shown.prefetchAttempted) {
       await this.generate(true);
     }
@@ -457,14 +462,14 @@ export class ChangeSession {
     const background = this.host.prefetch;
     if (!shown?.saved?.current || !shown.snapshot || shown.problem ||
       shown.initialSnapshot !== snapshotSignature(shown.snapshot) || !vscode.workspace.isTrusted ||
-      !background?.enabled() || !background.cards || !background.cardsAllowed) return;
+      !background?.enabled() || !shown.ref || background.eligible?.(shown.ref) === false || !background.cards || !background.cardsAllowed) return;
     for (const entry of shown.saved.catalogue?.entries ?? []) {
-      if (this.shown !== shown || epoch !== this.cardPrefetchEpoch || !background.enabled() || !vscode.workspace.isTrusted) return;
+      if (this.shown !== shown || epoch !== this.cardPrefetchEpoch || !background.enabled() || background.eligible?.(shown.ref) === false || !vscode.workspace.isTrusted) return;
       if (entry.category === "changed" || !background.cards(entry.category)) continue;
       const id = this.cardId(entry);
       if (shown.cardAttempts?.has(id) || this.cards.has(id) || this.cardErrors.has(id) || this.cardRequests.has(id)) continue;
       if (!(await background.cardsAllowed(shown.snapshot.root))) return;
-      if (this.shown !== shown || epoch !== this.cardPrefetchEpoch || !background.enabled() || !background.cards(entry.category) || !vscode.workspace.isTrusted) return;
+      if (this.shown !== shown || epoch !== this.cardPrefetchEpoch || !background.enabled() || background.eligible?.(shown.ref) === false || !background.cards(entry.category) || !vscode.workspace.isTrusted) return;
       // Recheck after asynchronous consent lookup: another caller may have queued this card.
       if (shown.cardAttempts?.has(id) || this.cards.has(id) || this.cardRequests.has(id)) continue;
       (shown.cardAttempts ??= new Set()).add(id);
@@ -480,6 +485,7 @@ export class ChangeSession {
     const epoch = this.epoch;
     const controller = new AbortController();
     const mayPrefetch = () => this.shown === shown && epoch === this.epoch
+      && !!shown.ref && background?.eligible?.(shown.ref) !== false
       && vscode.workspace.isTrusted && background?.enabled() === true &&
       background.comparisons?.() !== false && !controller.signal.aborted;
     shown.controller = controller;

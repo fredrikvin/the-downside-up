@@ -115,6 +115,82 @@ const until = async (check: () => boolean, what: string): Promise<void> => {
   throw new Error(`Timed out waiting for ${what}`);
 };
 
+describe("low-value review items", () => {
+  it("keeps a summary-only review stopped without background reads, while allowing explicit explanations", async () => {
+    const fixture = new Fixture(1);
+    const items = fixture.items("a.ts", "b.ts");
+    const review = new Review(fixture.host, root, "since HEAD", items, "working", undefined, undefined, "summary-only");
+    review.start();
+    await settle();
+    expect(review.stopped).toBe(true);
+    expect(reviewProgress(review)).toEqual({
+      text: "Review: 0/2 ready · summary only", canStop: false
+    });
+    expect(fixture.reads).toEqual([]);
+    expect(fixture.explained).toEqual([]);
+
+    await review.explainNow(items[0]!);
+    expect(fixture.explained).toEqual(["a.ts"]);
+    expect(items[0]?.status).toBe("done");
+    expect(fixture.reads).toEqual(["a.ts", "a.ts"]);
+    review.cancel();
+  });
+
+  it("keeps terminal navigable membership without scheduling, reading or consent checks", () => {
+    const fixture = new Fixture(1);
+    const items = fixture.items("package-lock.json", "z.snap").map((item): ReviewItem => ({
+      ...item, lowValue: { pattern: "**/*.snap" }, status: "low-value"
+    }));
+    let schedules = 0;
+    let permissions = 0;
+    let changes = 0;
+    const review = new Review({ ...fixture.host,
+      scheduler: { ...fixture.host.scheduler, prefetchCapacity: 1,
+        schedule: async (_priority, task) => { schedules++; return task(); } },
+      sharingAllowed: async () => { permissions++; return true; },
+      changed: () => { changes++; }
+    }, root, "since HEAD", items);
+    review.start();
+    expect(changes).toBe(1);
+    expect(schedules).toBe(0);
+    expect(permissions).toBe(0);
+    expect(fixture.reads).toEqual([]);
+    expect(fixture.explained).toEqual([]);
+    expect(reviewProgress(review)).toEqual({ text: "Review: 0/2 ready · 2 not explained (low value)", canStop: false });
+    expect(reviewNavigation(items, items[1]!.ref)?.index).toBe(1);
+    review.cancel();
+  });
+
+  it("allows explicit success and preserves classification through navigation/restoration", async () => {
+    const fixture = new Fixture(1);
+    const items = fixture.items("a.snap").map((item): ReviewItem => ({
+      ...item, lowValue: { pattern: "**/*.snap" }, status: "low-value"
+    }));
+    const review = new Review(fixture.host, root, "since HEAD", items);
+    await review.explainNow(items[0]!);
+    expect(items[0]).toMatchObject({ status: "done", lowValue: { pattern: "**/*.snap" } });
+    expect(fixture.explained).toEqual(["a.snap"]);
+    expect(reviewProgress(review)).toEqual({ text: "Review: 1/1 ready", canStop: false });
+    const restored = new Review(fixture.host, root, "since HEAD", items.map((item) => ({ ...item })));
+    restored.start();
+    expect(fixture.explained).toEqual(["a.snap"]);
+    review.cancel(); restored.cancel();
+  });
+
+  it("never retries classified failures, and normalizes pending restored low-value items", () => {
+    const fixture = new Fixture(1);
+    const items = fixture.items("a.snap", "b.snap").map((item, index): ReviewItem => ({
+      ...item, lowValue: { pattern: "**/*.snap" }, status: index ? "failed" : "pending"
+    }));
+    const review = new Review(fixture.host, root, "since HEAD", items);
+    review.start();
+    expect(items.map((item) => item.status)).toEqual(["low-value", "failed"]);
+    expect(fixture.reads).toEqual([]);
+    expect(reviewProgress(review).canStop).toBe(false);
+    review.cancel();
+  });
+});
+
 describe("review navigation matching", () => {
   const revision = (path: string, hash: string, root = "/repo"): ComparisonRef => ({
     root,

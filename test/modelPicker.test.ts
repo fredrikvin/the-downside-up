@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { chooseLanguageModel, openAISetup } from "../src/presentation/modelPicker";
+import { chooseLanguageModel, chooseOverviewModelForSetup, openAISetup } from "../src/presentation/modelPicker";
 import { selectedProvider } from "../src/generation/selection";
 
 const host = vi.hoisted(() => ({
@@ -18,6 +18,9 @@ const sendRequest = vi.fn();
 const model = { vendor: "copilot", name: "Real model", id: "real", maxInputTokens: 1000, sendRequest };
 const describeProvider = () => selectedProvider({
   provider: host.settings.provider, languageModel: host.settings["languageModel.model"]
+}, false);
+const describeOverviewProvider = () => selectedProvider({
+  provider: host.settings.provider, languageModel: host.settings["languageModel.overviewModel"]
 }, false);
 
 beforeEach(() => {
@@ -73,5 +76,19 @@ describe("configuration-only model picker", () => {
     expect(await chooseLanguageModel(() => ({ kind: "vscode-lm", modelId: "" }))).toBe(false);
     expect(host.warning).toHaveBeenCalledWith(expect.stringContaining("workspace settings"));
     expect(sendRequest).not.toHaveBeenCalled();
+  });
+
+  it("configures only the Overview model when review-summary setup is needed", async () => {
+    host.pick.mockImplementation(async (items) => items[0]);
+    expect(await chooseOverviewModelForSetup(describeOverviewProvider)).toBe(true);
+    expect(host.settings).toEqual({ provider: "vscode-lm", "languageModel.overviewModel": "Real model" });
+    expect(describeProvider()).toEqual({ kind: "vscode-lm", modelId: "" });
+    expect(describeOverviewProvider()).toEqual({ kind: "vscode-lm", modelId: "Real model" });
+    expect(host.update.mock.calls).toEqual([
+      ["languageModel.overviewModel", "Real model", 1],
+      ["provider", "vscode-lm", 1]
+    ]);
+    expect(sendRequest).not.toHaveBeenCalled();
+    expect(host.info).toHaveBeenCalledWith(expect.stringContaining("No Functions model was selected"));
   });
 });

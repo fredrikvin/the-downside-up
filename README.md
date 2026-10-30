@@ -15,264 +15,339 @@ Requires VS Code 1.90 or newer.
 1. Install Downside Up and open a source file in your project.
 2. Run **Downside Up: Open Preview to the Side**, or use the preview button in
    the editor title bar.
-3. Click **Choose model** on the welcome screen, or use the **Functions**
-   button at the top of the preview.
-   For GitHub Copilot, sign in to Copilot in VS Code first. Other extensions
-   that provide VS Code language models also work.
+3. Click **Choose model** on the welcome screen, or the **Functions** button at
+   the top of the preview. For GitHub Copilot, sign in to Copilot in VS Code
+   first; other extensions that provide VS Code language models also work.
 4. Click **Explain** beside a function. Review the repository/model sharing
    prompt before any code is sent.
 
-Before a model is configured, the preview offers **Choose model** and
-**OpenAI setup** instead of placeholder AI responses; local outlines remain
-available. Choosing a model does not send code or generate explanations.
-Requests use your provider's subscription and usage limits; they are not free
-or unlimited. OpenAI API access is also supported with a separate key and
-billing; see `docs/configuration.md` in the extension package.
+Good to know:
 
-## Read and explore
+- Local outlines work without a model. Until one is chosen, the preview offers
+  **Choose model** and **OpenAI setup** instead of placeholder AI responses.
+- Choosing a model sends no code and generates nothing.
+- Requests use your provider's subscription and usage limits; they are not
+  free or unlimited.
+- To use your own OpenAI API key with separate billing, see
+  [OpenAI API key](docs/configuration.md#openai-api-key).
 
-- **Explain functions.** Read purpose, inputs, results, and steps in plain
-  language. Switch between **Steps**, **Pseudocode**, and **Flowchart**;
-  the selected view applies across functions and files, including review
-  comparisons, while the preview is open. Switching views never generates content.
-  **More detail** adds edge cases, language notes, and related code.
-  Pseudocode highlights control words and code names. Flowcharts show decisions,
-  loops, exits, and nested UI output. React explanations distinguish rendering,
-  effects, and event handlers rather than implying everything runs at once.
-  Invalid flowcharts, including paths continuing after an end node, are omitted
-  with a limitation; structural checks cannot guarantee semantic accuracy.
-- **Stay beside the source.** Editor and preview scroll together. Clicking
-  steps, pseudocode, or flowchart nodes highlights their source lines without
-  moving the preview; ordinary-file clicks keep keyboard focus in the preview.
-  Saved explanations reappear when you return to a file.
-  Click a function's name to navigate to its source;
-  use **Explain** to request an explanation.
-  Opening a file preview from Explorer also opens its source to the left.
-  With no source editor or Explorer file target, the command asks you to open
-  a local source file instead of reusing a closed editor.
-- **Explore the project.** Run **Downside Up: Preview Project**, preview a
-  folder from the Explorer, or navigate the breadcrumbs. Project maps show
-  parts and connections; folder pages offer summaries and main flows.
-- **Understand a change.** With the preview open, show a Git diff in VS Code
-  and click **Explain changes**. The result groups functions into **Added**,
-  **Changed**, and **Removed**, followed by **Other changes** for non-function
-  edits. Current cached function details expand automatically when you return
-  to a diff; cache misses never generate them. Added and Removed functions get
-  a short summary and an **Explain** button; only that explicit action
-  requests their normal Steps, Pseudocode, and Flowchart detail.
-  Changed functions retain before/after/when/flow items
-  and paired visuals. Signature-only changes count; pure comments and
-  formatting do not. Renames, container moves, and ambiguous duplicates are
-  removed+added, without guessed rename detection. Incomplete discovery falls
-  back to an explicitly unclassified textual comparison, without Added/Removed
-  cards. All three sections use consistent function headers. Click a Changed
-  function's name to reveal its modified source; its behavior descriptions and
-  paired views sit underneath with room to read. The views use the same tabs,
-  text highlighting, and flowchart shapes as normal explanations.
-  Click a visual item to focus and select its source lines in the matching
-  Before or After side of the existing diff editor; moving the cursor in
-  either side highlights that side's matching items.
-  With **Prefetch** enabled and sharing already approved, the comparison
-  preloads automatically when the preview shows the diff. Otherwise,
-  **Explain changes** sends both versions of that one file.
-  All comparison summaries and Changed visuals come from **one request per
-  file**. Added/Removed card details remain explicit by default. With prefetch
-  enabled, `downsideUp.prefetch.diff.added` and `.removed` separately opt into
-  full function details for the shown diff, including during review.
-  `downsideUp.prefetch.diff.changed` controls ordinary paired-comparison prefetch
-  (default on); it does not limit an explicitly confirmed review.
-  Card prefetch needs a current comparison and existing sharing approval,
-  never prompts, and does not prepare unseen files. Each uncached
-  detail is a separate request; a working-side addition can first prime/review
-  project context with the separately consented Overview model, but does not
-  request an incidental file summary. Removed functions and revision/index-side
-  additions use only their own snapshot's function and bounded same-file
-  preamble, with a limitation: historical callers and cross-file dependencies
-  are not resolved. They never use today's repository overview or dependencies.
-  Missing formats require their own explicit **Generate** request.
-  Failed responses report incomplete JSON, malformed JSON, or schema validation
-  errors without exposing source text or silently retrying.
-- **Prepare a review.** Run **Downside Up: Review Changes…**, select a
-  comparison, and confirm the number of changed files to explain; each opens in
-  VS Code's native diff. The confirmed count remains one comparison per file;
-  Added/Removed details are not included in that count; optional card prefetch
-  applies only to the diff being viewed. After
-  you confirm, the first file's diff opens on the left with the preview on the
-  right (the active editor's file if it is in the review). The preview starts
-  on **Review summary**. Starting the review also requests its summary: a current
-  saved summary is reused, otherwise it loads asynchronously with a skeleton
-  while file preparation and navigation remain available.
-  The Overview model summarizes the actual
-  confirmed diffs and bounded surrounding source, with host-validated links to
-  those diffs. Individual file explanations do not need to be ready first.
-  The overview focuses on the main behavioral or contract change, grouping
-  related edits rather than listing implementation details file by file.
-  When useful and supported by the source, a small affected-parts chart shows
-  their relationships. Click a node to open its confirmed diff; nodes covering
-  several files offer a file picker.
-  It discloses incomplete coverage, omitted context, and uncertainties; it is
-  not proof of correctness. Overview-model sharing approval is separate, and
-  this request shares diff source with that model. Saved summaries are reused;
-  changed evidence or summary settings require explicit regeneration.
-  An outdated summary shows a refresh icon beside its heading, with an
-  explanatory tooltip; current summaries show no refresh control.
-  Returning to the summary or editing source never starts generation. A failed
-  or cancelled initial request is not retried automatically.
-  While a confirmed file's native diff is shown, the review stays associated
-  with that comparison in either side-by-side or inline layout, including
-  automatic collapse on narrow windows. Review bands above the file header and
-  at the bottom of the preview offer **‹ Previous** and **Next ›** to step through
-  the review in path order, plus **Review: 3/8 ready** progress at the top.
-  The filename and position open the existing **Show Changed Files** picker,
-  with **Review summary** first. Previous from the first file returns to the
-  summary; Next from the summary opens the first file.
-  Navigation stays within the confirmed review, does not wrap, and only
-  reprioritizes its pending work; it does not start requests. Opening a file
-  outside the review ends review mode. If the review is still preparing, you
-  are asked first. Returning to an exact native diff from the most recent review
-  restores its navigation with that file selected. For working reviews,
-  selecting a reviewed file in Source Control's
-  **Changes** list opens its confirmed review comparison, keeping the review base.
-  Graph diffs can also return to that review when both complete file versions
-  match its confirmed content, even after commit IDs change. Different content
-  stays a separate comparison; rebasing does not silently update a review's scope.
-  Staged and unrelated historical comparisons are not redirected. Unfinished preparation stays
-  stopped until you choose **Continue explaining changed files**. This context
-  is kept only in the current window; explicitly closing/cancelling the review,
-  closing the preview, or starting another review discards it.
-- **Prepare a commit.** Run **Downside Up: Prepare Commit Explanations…**,
-  choose a commit (or enter its ID/ref), and confirm the bounded file scope and
-  request count; the first file's diff then opens beside the review-summary
-  preview. This
-  compares the immutable commit with its parent, **not**
-  today's working tree; root commits compare with the empty tree, and merges
-  require an explicit parent choice. Keep using Source Control Graph's existing
-  file tree and individual Git diffs: they pick up the same saved comparisons,
-  prioritize the confirmed file being read, and update when preparation finishes.
-  While the preparation session remains open, the graph's single historical
-  documents for additions/deletions also show their confirmed comparison.
-  The preview shows **Commit: 3/8 ready · 1 preparing** with **Stop** (sent
-  requests may finish; **Cancel** aborts uncommitted results). At most 200
-  changed files are considered; exclusions and limits still apply, and failures
-  may retry once. Opening anything outside this scope never adds requests.
-  Added/Removed details are not prepared for unseen files; opted-in card
-  prefetch applies only when their diff is shown. Use the command palette to start
-  preparation; there is no added Source Control Graph context-menu command.
-  The graph defaults to the first merge parent; for another parent, use the
-  existing **Show Changed Files** list to open that exact prepared diff.
-- **Choose models by role.** **Functions** handles function and change
-  explanations, added formats, and file summaries. **Project overview**
-  handles repository context, architecture maps, folder summaries, and flows.
-  It can use the same model or a different one.
-- **Follow callers.** The **Show callers** icon beside a function lists direct callers
-  using your language extension's incoming Call Hierarchy. Choose one to open
-  its source and preview; use VS Code's **Go Back** to return. This works
-  regardless of the selected steps, pseudocode, or flowchart tab.
+## Features
 
-Caller lookup prefers a language extension's incoming Call Hierarchy. Without
-it, Go, Rust, and Python use a bounded local scan of direct free-function calls, labelled
-**Statically found callers**. That fallback omits uncertain receiver methods,
-interface/trait dispatch, macros, and closures; results are not exhaustive.
-SQL also provides a local fallback for routine calls, matched by name rather
-than argument types; overloaded routines can have extra candidate callers.
-Results are limited to eligible files in the current repository. Lookup itself
-makes no AI requests. Navigation
-shows cached explanations; with prefetch enabled and sharing already approved,
-the existing reader-focused queue loads missing explanations.
+### Explain functions
 
-Rust, Go, Python, JavaScript, and TypeScript (including JSX and React) have bundled
-function discovery. Python supports functions, async functions, class methods,
-properties, and nested functions without Pylance. It statically follows local
-helpers, repository imports, and same-class `self`/`cls` methods; dynamic
-dispatch, inheritance, star imports, and re-exports are not resolved.
-JavaScript/TypeScript dependency lookup uses VS Code's
-built-in TypeScript tooling. Other languages depend on installed extensions
-providing document symbols and go-to-definition; support varies.
+- Read a function's purpose, inputs, results, and steps in plain language.
+- Switch between **Steps**, **Pseudocode**, and **Flowchart**. The chosen view
+  applies to every function and file, including change comparisons, while the
+  preview is open. Switching never generates content; a view that is missing
+  for a saved explanation has its own **Generate** button.
+- **More detail** adds where the function fits, edge cases, language notes, and
+  related code.
+- Pseudocode highlights control words and code names. Flowcharts show
+  decisions, loops, exits, and nested UI output; an invalid flowchart is
+  omitted with a noted limitation.
+- React explanations separate rendering, effects, and event handlers instead of
+  implying everything runs at once.
+- Saved explanations reappear whenever you return to a file. Hovering a call
+  shows the saved purpose of the function it calls.
 
-SQL previews show **tables and queries by default**, not just routines. Table
-cards list columns, types, required values, defaults, generated expressions,
-keys, and relationships with source links. PostgreSQL dump constraints and
-indexes declared later in the same file are folded into their table cards;
-enums list their values and sequences show their definition.
+### Read beside the source
 
-Queries use sqlc `-- name: ... :one/:many/:exec` names when available, or
-numbered statement headings, with local input and result-mode details.
-Choose **Explain** on a table, query, view, or routine for a plain-language AI
-explanation grounded in eligible schema definitions. Opening the preview never
-executes SQL or requests AI explanations (unless prefetch was enabled).
-Common PostgreSQL, MySQL, T-SQL, and SQLite forms need no database or language
-server. This is not a full dialect parser: dynamic and embedded SQL are not
-resolved. Repeated definitions use lexical file order, not actual migration
-execution order; ALTER folding is limited to statements in the same file.
+- Editor and preview scroll together.
+- Clicking a step, pseudocode line, or flowchart node highlights its source
+  lines; the preview keeps its position and keyboard focus.
+- Click a function's name to go to its source.
+- Previewing a file from Explorer also opens its source to the left.
 
-## Initialize, refresh, and clear
+### Explore the project
 
-**Initialize project**, above the divider, appears when repository context is
-missing, including after Clear. It builds the shared overview and project map.
-Opening the project preview also requests a map if none is current.
+- Run **Downside Up: Preview Project**, preview a folder from Explorer, or
+  click a breadcrumb.
+- The project page maps the project's parts and how they connect. Folder pages
+  offer summaries, main flows, and a locally built import diagram.
+- Opening the project page without a current map requests one, asking for
+  sharing approval if needed. After a decline, cancel, or failure it is not
+  retried on its own; choose **Map project** instead.
 
-The **Refresh** icon beside a page title updates only the checked outdated
-items on that page, not the whole repository. An amber divider indicates
-known outdated content; an animated blue divider, stage, and elapsed time
-show active work. Slow models can take several minutes; **Cancel** remains
-available.
+### Understand a change
 
-**Clear** removes this repository's cached results and saved sharing consent.
-It does not start generation or require a restart. **Tokens in current cache**
-expands into input/output totals by role and model. These are retained-record
-totals, not lifetime usage or billing.
+With the preview open, show a Git diff in VS Code and click **Explain changes**.
+Both versions of the file go to the Functions model in **one request per file**.
 
-**Max Project Context Request Size** (`downsideUp.maxProjectContextRequestSize`)
-caps repository context requests at 256 KiB by default (128–1024 KiB, user
-settings only), including the previous overview and map. Raising it does not
-scan more files or start generation. If a review would exceed that budget,
-the same action rebuilds context from current bounded evidence instead,
-without an extra request. Any further inventory truncation is disclosed in
-the overview's limitations.
+| Section | What it shows |
+|---|---|
+| **Added**, **Removed** | A short summary per function. **Explain** requests its full Steps, Pseudocode, and Flowchart. |
+| **Changed** | Before, after, when, and flow items with paired visuals. Click an item to select its lines in the matching side of the diff; move the cursor in either side to highlight its items. |
+| **Other changes** | Edits outside functions. |
 
-**Max Request Size** (`downsideUp.maxRequestSize`, default 96 KiB, 32–512 KiB)
-separately limits function and change explanations, added formats, summaries,
-and flows. Raise it if a large file's two diff versions or a function's related
-context will not fit. The model's own input-token limit still applies.
+- Signature-only changes count; comment-only and formatting changes do not.
+- Renames, moves between containers, and ambiguous duplicates show as Removed
+  plus Added; renames are not guessed.
+- If function discovery is incomplete, the result is an unclassified textual
+  comparison without Added/Removed cards.
+- Removed functions, and additions on a revision or index side, use only their
+  own snapshot: historical callers and cross-file dependencies are not
+  resolved.
+- Saved function details expand automatically when you return to a diff; a
+  cache miss never generates them.
+
+### Review changes
+
+Run **Downside Up: Review Changes…**, choose a base (merge base, branch tip,
+uncommitted changes only, or a recent commit), and confirm how many files to
+explain. Each confirmed file is one comparison request, prepared in the
+background.
+
+- The first file's diff opens on the left and the preview on the right,
+  starting on **Review summary**.
+- The **review summary** uses the Overview model to describe the main
+  behavioral or contract change across the confirmed diffs, with an optional
+  affected-parts chart whose nodes open their diffs. It discloses incomplete
+  coverage and uncertainty; it is not proof of correctness. A saved summary is
+  reused; an outdated one shows a refresh icon and is regenerated only on
+  request.
+- **‹ Previous** and **Next ›** step through the files in path order, and the
+  filename opens the **Show Changed Files** picker. Progress shows as
+  **Review: 3/8 ready**.
+- Reading only reorders pending work; it never adds files or starts requests.
+  Opening a file outside the review ends review mode.
+- Source Control's **Changes** list, and Graph diffs with matching content,
+  return to the review.
+- Low-value files such as lockfiles, generated files, and snapshots stay
+  navigable but skip background comparisons and summary evidence; see
+  `downsideUp.review.lowValuePatterns` under [Settings](#reviews).
+
+Details: [Review mode](docs/configuration.md#review-mode).
+
+### Prepare a commit
+
+Run **Downside Up: Prepare Commit Explanations…**, choose a commit (or enter
+its ID or ref), and confirm the file scope and request count.
+
+- Compares the commit with its parent, **not** today's working tree. Root
+  commits compare with the empty tree; merges ask which parent to use.
+- Source Control Graph's file tree and diffs pick up the prepared comparisons.
+- At most 200 changed files are considered. Progress shows as
+  **Commit: 3/8 ready · 1 preparing**, with **Stop**.
+
+### Export a review summary
+
+Run **Downside Up: Export Review Summary…**, or click **Export** on the summary
+page, to open an untitled Markdown document containing:
+
+- the summary, themes, possible effects, limitations, and coverage, with the
+  base and `HEAD` (or commit and parent) it describes;
+- the affected-parts chart as a Mermaid diagram;
+- each saved file comparison, including its saved steps and pseudocode, plus a
+  list of files without a current comparison.
+
+How it behaves:
+
+- Export is cache-only: it never generates missing comparisons, asks for
+  sharing consent, or posts to GitHub. A missing or outdated summary needs a
+  separate confirmation before an Overview-model request.
+- It exports the active review, or the most recent one you left. Otherwise it
+  offers a new review of working changes, or of a commit against its parent,
+  as **Summary only** (no background Functions comparisons) or **Full review**.
+  A later full review can reuse a summary-only review's summary.
+- **Summary only** needs just an Overview model. If none is configured, it
+  asks you to choose one, without choosing a Functions model or granting
+  sharing consent; then run the export again.
+- A working-review export is blocked if any confirmed file differs from
+  `HEAD`, including staged or unsaved changes. Commit reviews use the exact
+  commit and parent.
+
+### Follow callers
+
+The **Show callers** icon beside a function lists its direct callers. Choose
+one to open it, and use VS Code's **Go Back** to return.
+
+- Uses your language extension's Call Hierarchy when available.
+- Otherwise, Go, Rust, Python, and SQL use a bounded local scan labelled
+  **Statically found callers**. It is not exhaustive: it skips uncertain
+  receiver methods, interface/trait dispatch, macros, and closures, and SQL
+  matches routines by name only.
+- Only eligible files in the current repository are listed. Lookup makes no AI
+  requests.
+
+### SQL
+
+- Previews show tables and queries by default, not just routines. Table cards
+  list columns, types, required values, defaults, generated expressions, keys,
+  and relationships with source links. Enums and sequences are shown too.
+- Constraints and indexes declared later in the same file are folded into
+  their table cards.
+- Queries use sqlc `-- name: ... :one/:many/:exec` names when available, or
+  numbered headings.
+- **Explain** works on tables, queries, views, and routines, grounded in
+  eligible schema definitions.
+- Common PostgreSQL, MySQL, T-SQL, and SQLite need no database or language
+  server. Opening a preview never executes SQL.
+- This is not a full dialect parser: dynamic and embedded SQL are not
+  resolved, and repeated definitions follow file order, not migration order.
+
+## Preview controls
+
+| Control | What it does |
+|---|---|
+| **Project overview**, **Functions** | Choose the model for each [role](#models). |
+| **Initialize project** | Builds the repository overview and project map when missing, including after **Clear**. |
+| **Refresh** icon beside a page title | Updates only the checked outdated items on that page. |
+| **Clear** | Removes this repository's cached results and saved sharing consent. Starts nothing. |
+| **Tokens in current cache** | Input/output token totals by role and model for saved results; not lifetime usage or billing. |
+| **Cancel** | Stops active requests. |
+
+The divider below the header turns **amber** for known outdated content and
+**animated blue** while work is in progress. Slow models can take several
+minutes.
+
+## Commands
+
+All commands are in the Command Palette under **Downside Up**.
+
+| Command | What it does |
+|---|---|
+| **Open Preview to the Side** | Opens the preview for the active file or diff, or an Explorer file or folder. With text selected inside a function, also explains it. Without a source editor or Explorer target, asks you to open a local file. |
+| **Preview Project** | Opens the repository's project page; maps the project if there is no current map. |
+| **Choose Language Model** | Chooses the Functions model from VS Code language models. |
+| **Choose Overview Model** | Chooses the Project overview model. With no model configured, sets up only the Overview model, for review summaries. |
+| **Review Changes…** | Prepares comparisons for changed files against a chosen base. |
+| **Prepare Commit Explanations…** | Prepares comparisons for one commit against its parent. |
+| **Export Review Summary…** | Exports the active or most recent review's saved summary to an untitled Markdown document, or prepares a new review to export. |
+| **Show Changed Files** | While a review is active, opens one of its files or stops it. |
+| **Refresh Repository Context** | Updates the repository overview and project map. |
+| **Clear Repository Cache** | Removes this repository's cached results and saved sharing consent. |
+| **Cancel Explanation** | Cancels active requests. |
+| **Set OpenAI API Key**, **Remove OpenAI API Key** | Stores or removes your key in VS Code SecretStorage. |
+| **Check Content Exclusions…** | Shows the loaded exclusion policies and tests whether a file is excluded. Runs locally. |
+| **Choose Content Exclusion Policy Folder**, **Choose Blocked File Patterns File**, **Choose Restricted Remotes File**, **Choose Allowed Repositories File** | Point the [exclusion settings](#organization-exclusion-files) at your organization's policy files. |
+
+## Settings
+
+Open Settings and search for `downsideUp`. Settings marked **user only** are
+read from user settings only, so a repository cannot change them.
+
+### Models
+
+| Setting | Default | Description |
+|---|---|---|
+| `downsideUp.provider` | `none` | `vscode-lm` for GitHub Copilot or another VS Code language model; `openai` for your own API key. **Choose model** sets it for you. |
+| `downsideUp.languageModel.model` | empty | **Functions** model: function and change explanations, added views, and file summaries. |
+| `downsideUp.languageModel.overviewModel` | empty: uses the Functions model | **Project overview** model: repository overview, project map, folder summaries, main flows, and review summaries. |
+| `downsideUp.openai.model` | `gpt-4.1-mini` | Functions model when the provider is `openai`. |
+| `downsideUp.openai.overviewModel` | empty: uses `openai.model` | Project overview model when the provider is `openai`. |
+
+Each new model asks once for sharing approval before code is sent.
+
+### Preview and explanations
+
+| Setting | Default | Description |
+|---|---|---|
+| `downsideUp.preview.include` | all `false` | Extra items to list besides functions: `imports`, `types`, `values`, `locals`, `comments`, `functionComments`, `modules`, and `functionDetails`. Built locally; never uses AI. |
+| `downsideUp.explanations.formats` | `pseudocode` and `flowchart` both `true` | Views generated with each new explanation besides Steps. Each enabled view makes requests somewhat larger. |
+| `downsideUp.explanations.initialFormat` | `steps` | The view an explanation opens with: `steps`, `pseudocode`, or `flowchart`. |
+| `downsideUp.explanations.showDetails` | `false` | Opens **More detail** by default. Never regenerates anything. |
+| `downsideUp.hover.savedExplanations` | `true` | Shows a saved explanation's purpose when hovering a call. Reads the local cache only. |
+| `downsideUp.projectMap.detail` | `brief` | `detailed` adds a few sentences per component, making the mapping request larger. Applies at the next mapping. User only. |
+
+### Prefetch
+
+Prefetch is off by default. When enabled, it generates explanations in the
+background using sharing approval you have already given; it never asks for
+approval on its own, and every request counts toward your provider's usage
+limits or billing. A one-time prompt offers to enable it when you first open
+the preview. All prefetch settings are user only.
+
+| Setting | Default | Description |
+|---|---|---|
+| `downsideUp.prefetch.enabled` | `false` | Turns prefetch on. Explains functions in the file shown in the preview, starting where you are reading. Required by all settings below. |
+| `downsideUp.prefetch.window` | `10` | How many functions nearest your position to prefetch. `0` means every function in the file. |
+| `downsideUp.prefetch.dependencies` | `3` | How many functions in other files, called by the function you are reading, to prefetch. `0` means none. |
+| `downsideUp.prefetch.diff.changed` | `true` | Prefetches the change comparison for the diff shown in the preview. Does not limit a confirmed review. |
+| `downsideUp.prefetch.diff.added` | `false` | Also prefetches full explanations of Added functions in the shown diff. |
+| `downsideUp.prefetch.diff.removed` | `false` | Also prefetches full explanations of Removed functions in the shown diff. |
+
+Added and Removed prefetch need a current saved comparison, make one request
+per function, and never prepare files you have not opened.
+
+### Reviews
+
+| Setting | Default | Description |
+|---|---|---|
+| `downsideUp.review.lowValuePatterns` | lockfiles, generated and minified files, vendored folders, and snapshots | Repository-relative globs for review files that stay navigable but skip background comparisons and summary evidence. A user list replaces the defaults; workspace lists add to them. |
+
+### Request limits
+
+All request limits are user only. The model's own input limit still applies.
+
+| Setting | Default | Range | Description |
+|---|---|---|---|
+| `downsideUp.maxRequestSize` | 96 KiB | 32–512 | Largest function or change explanation, added view, summary, or main flows request. A larger request is not sent, and you are told its size. |
+| `downsideUp.maxProjectContextRequestSize` | 256 KiB | 128–1024 | Largest repository overview and project map request, including previous context. Raising it does not scan more files or start generation. |
+| `downsideUp.maxConcurrentRequests` | 6 | 1–8 | How many requests may run at once. Your own requests always start before prefetches. |
+
+### Organization exclusion files
+
+Each setting is a user-only path to a plain-text policy file. See
+[formats and examples](docs/configuration.md#content-exclusion-and-enterprise-policies).
+
+| Setting | The file lists |
+|---|---|
+| `downsideUp.exclusion.blockedFilePatternsFile` | Gitignore-style patterns for files that are never read or sent, in any repository. |
+| `downsideUp.exclusion.restrictedRemotesFile` | Git remote URL prefixes whose repositories are not read or sent until they opt in. |
+| `downsideUp.exclusion.allowedRepositoriesFile` | Repository paths that may be sent even though their remote is restricted. |
+
+## Language support
+
+| Language | Functions are found with | Related code is found with |
+|---|---|---|
+| Rust, Go, Python | Bundled parser | Bundled static analysis |
+| JavaScript, TypeScript (including JSX and React) | Bundled parser | VS Code's built-in TypeScript go-to-definition |
+| SQL | Bundled lexer: tables, queries, views, and routines | Static lookup in eligible `.sql` files |
+| Other languages | Your language extension's document symbols | Your language extension's go-to-definition |
+
+- No language server is needed for Rust, Go, Python, JavaScript, TypeScript,
+  or SQL. Support for other languages varies with installed extensions.
+- Python handles functions, async functions, class methods, properties, and
+  nested functions, and follows local helpers, repository imports, and
+  same-class `self`/`cls` methods. Dynamic dispatch, inheritance, star
+  imports, and re-exports are not resolved.
 
 ## Privacy and control
 
-Generation normally requires an explicit action. Opening files, moving the
-cursor, editing source, hovering, and cache misses do not send provider
-requests. Opening an unmapped project preview is an explicit mapping request.
-Optional **prefetch** is off by default; enabling it allows background
-explanations and consumes provider quota or billing, but only with existing
-repository/model sharing approval. It never prompts for consent on its own.
+- **Explicit requests only.** Opening files, moving the cursor, editing source,
+  hovering, and cache misses never send requests. Requests come from actions
+  such as **Explain**, **Explain changes**, a confirmed review, opening an
+  unmapped project page, or prefetch if you enable it.
+- **Consent per repository and model.** External requests need a trusted
+  workspace and your approval for each repository and model.
+- **What is sent.** Depending on the action: selected source, related code,
+  file text, diffs, or bounded repository context.
+- **What is never sent.** Files excluded by Git ignore rules, `.copilotignore`,
+  VS Code exclusions, secret-like or generated file names, or the
+  [organization exclusion files](#organization-exclusion-files).
+- **GitHub Copilot's server-side content exclusions do not apply to this
+  extension's Language Model API requests.** Configure the extension's
+  exclusions to match your organization's policy before sharing source.
+  Provider data-handling terms still apply.
+- **API keys** are stored in VS Code SecretStorage.
 
-External requests require a trusted workspace and approval per repository and
-model. Depending on the action, requests include selected source, related
-code, file text, or bounded repository context. The extension respects Git
-ignore rules, `.copilotignore`, VS Code exclusions, and secret/generated-file
-exclusions. API keys are stored in VS Code SecretStorage.
-
-**GitHub Copilot's server-side content exclusions do not apply to this
-extension's Language Model API requests.** Configure the extension's exclusions
-to match your organization's policy before sharing source. Provider
-data-handling terms still apply.
-
-Explanations and maps are AI-generated and may be wrong or incomplete.
-Outdated indicators check recorded inputs; they are not a correctness guarantee
-or a whole-repository audit.
+Explanations, maps, and summaries are AI-generated and may be wrong or
+incomplete. Outdated indicators check recorded inputs; they are not a
+correctness guarantee or a whole-repository audit.
 
 ## More information
 
-In the repository and extension package:
-
-- `docs/configuration.md`: detailed usage, OpenAI setup, settings, prefetch,
-  review mode, request limits, and enterprise exclusions.
-- `docs/development.md`: contributor setup, Copilot development agents, tests,
-  packaging, and releases.
-- `docs/prototype.md`: architecture, privacy contract, and known limitations.
-- `CHANGELOG.md`: release notes.
+- [Detailed usage and configuration](docs/configuration.md): provider setup,
+  prefetch, review mode, request limits, and enterprise exclusions.
+- [Architecture and privacy contract](docs/prototype.md), including known
+  limitations.
+- [Development](docs/development.md): contributor setup, development agents,
+  tests, packaging, and releases.
+- [Changelog](CHANGELOG.md): release notes.
 
 For a locally built package, install the current version with
 `code --install-extension the-downside-up-0.56.2.vsix`.
 
 ## License
 
-MIT. See the repository's `LICENSE` file.
+MIT. See [LICENSE](LICENSE).

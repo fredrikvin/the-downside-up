@@ -1,6 +1,7 @@
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
+import { DEFAULT_LOW_VALUE_PATTERNS, validReviewPattern } from "../src/context/reviewFilter";
 
 /** Every declared setting, from all settings sections. */
 function declaredSettings(): Record<string, { scope?: string; default?: unknown }> {
@@ -17,6 +18,27 @@ function sources(directory: string): string[] {
 }
 
 describe("extension settings", () => {
+  it("declares bounded resource-scoped low-value defaults and validates globs", () => {
+    const setting = declaredSettings()["downsideUp.review.lowValuePatterns"] as {
+      default: string[]; items: { pattern: string };
+    };
+    expect(setting).toMatchObject({ type: "array", scope: "resource", maxItems: 128,
+      uniqueItems: true, items: { type: "string", minLength: 1, maxLength: 256 } });
+    expect(setting.default).toEqual(DEFAULT_LOW_VALUE_PATTERNS);
+    const pattern = new RegExp(setting.items.pattern);
+    for (const value of [...setting.default, "!a", "/a", "a/../b", "C:/a", "a\\b", "a\nb", "../a"]) {
+      expect(pattern.test(value), value).toBe(validReviewPattern(value));
+    }
+  });
+  it("registers the explicit cache-only review export command", () => {
+    const manifest = JSON.parse(readFileSync(resolve("package.json"), "utf8"));
+    const command = manifest.contributes.commands.find((entry: { command: string }) =>
+      entry.command === "downsideUp.exportReviewSummary");
+    const extension = readFileSync(resolve("src/extension.ts"), "utf8");
+    expect(command).toMatchObject({ title: "Export Review Summary…" });
+    expect(manifest.activationEvents).toContain("onCommand:downsideUp.exportReviewSummary");
+    expect(extension).toContain('registerCommand("downsideUp.exportReviewSummary"');
+  });
   it("defaults to setup and never offers mock as a production provider choice", () => {
     expect(declaredSettings()["downsideUp.provider"]).toMatchObject({
       default: "none", enum: ["none", "vscode-lm", "openai"]

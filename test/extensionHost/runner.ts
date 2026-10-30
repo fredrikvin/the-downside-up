@@ -426,6 +426,16 @@ async function testCommitPreparation(api: DownsideUpTestApi, root: string): Prom
     await assertReviewLayout(api, summaryLink.path);
     await api.showReviewSummary();
     assert.equal(api.shownReviewSummary()?.summary, synthesized.summary, "Returning restores the saved summary cache-only.");
+    const documentsBeforeExport = new Set(vscode.workspace.textDocuments.map((document) => document.uri.toString()));
+    await vscode.commands.executeCommand("downsideUp.exportReviewSummary");
+    const exported = await waitFor(async () => vscode.workspace.textDocuments.find((document) =>
+      !documentsBeforeExport.has(document.uri.toString()) &&
+      document.uri.scheme === "untitled" &&
+      document.languageId === "markdown" &&
+      document.getText().startsWith("# Review summary export")) ?? undefined,
+    "the active review summary to open as an untitled Markdown document");
+    assert.ok(exported.getText().includes(commit), "The Markdown export includes immutable commit provenance.");
+    assert.ok(exported.getText().includes("## Saved file explanations"), "The Markdown export includes saved comparison details.");
     await testInlineReview(api, root);
     const currentSummaryNavigation = api.reviewNavigation()!;
     await api.invokeReviewNavigation("next", firstNavigation.token);
@@ -506,6 +516,78 @@ async function testCommitPreparation(api: DownsideUpTestApi, root: string): Prom
   console.log("Downside Up integration tests: immutable commit preparation, graph diff cache alignment, historical add/delete documents, compact progress, and background refresh.");
 }
 
+async function testLowValueReviews(api: DownsideUpTestApi, root: string): Promise<void> {
+  const settings = vscode.workspace.getConfiguration("downsideUp", vscode.Uri.file(root));
+  const previous = settings.inspect<string[]>("review.lowValuePatterns")?.globalValue;
+  const lock = resolve(root, "package-lock.json");
+  const generated = resolve(root, "a.generated.ts");
+  const source = resolve(root, "review-source.ts");
+  try {
+    api.stopReview();
+    await settings.update("review.lowValuePatterns", undefined, vscode.ConfigurationTarget.Global);
+    await writeFile(lock, '{"lockfileVersion":3}\n');
+    await writeFile(generated, "export function generated() { return 1; }\n");
+    const main = await vscode.workspace.openTextDocument(resolve(root, "main.ts"));
+    await vscode.window.showTextDocument(main, vscode.ViewColumn.One);
+    await vscode.commands.executeCommand("downsideUp.showFileOverview");
+    assert.equal(await api.reviewChanges("HEAD"), 2);
+    assert.deepEqual(api.reviewItems().map((item) => item.status), ["low-value", "low-value"]);
+    assert.deepEqual(api.reviewProgress(), { text: "Review: 0/2 ready · 2 not explained (low value)", canStop: false });
+    const empty = api.shownReviewSummary();
+    assert.ok(empty && !empty.loading && !empty.generating && !empty.canGenerate && !empty.summary);
+    assert.match(empty.coverage, /2 low value/);
+    assert.match(empty.coverage, /No eligible summary evidence/);
+    await api.openReviewedFile("a.generated.ts");
+    await assertReviewLayout(api, "a.generated.ts");
+    assert.equal(api.reviewNavigation()?.total, 2, "Filtered files remain in native navigation.");
+    assert.equal(api.shownChange()?.explained, false);
+    await api.explainChange();
+    assert.equal(api.reviewItems().find((item) => item.path === "a.generated.ts")?.status, "done",
+      "Explicit Explain changes updates readiness without removing classification.");
+    await api.showReviewSummary();
+    assert.match(api.shownReviewSummary()?.coverage ?? "", /2 low value/);
+    assert.equal(api.shownReviewSummary()?.canGenerate, false, "Explicit saves do not turn filtered files into evidence.");
+
+    await api.openReviewedFile("package-lock.json");
+    const pair = api.reviewDiffUris("package-lock.json")!;
+    await vscode.window.showTextDocument(main, vscode.ViewColumn.One);
+    await waitFor(async () => api.reviewItems().length === 0 ? true : undefined, "a finished low-value review to be retained");
+    await vscode.commands.executeCommand("vscode.diff", pair.original, pair.modified, "Restore low-value review (test)");
+    await vscode.commands.executeCommand("downsideUp.showFileOverview");
+    await waitFor(async () => api.reviewItems().length === 2 ? true : undefined, "filtered review membership to restore");
+    assert.equal(api.reviewItems().find((item) => item.path === "package-lock.json")?.status, "low-value");
+    await settings.update("review.lowValuePatterns", [], vscode.ConfigurationTarget.Global);
+    await waitFor(async () => api.reviewItems().length === 0 ? true : undefined, "filter change to discard confirmation cache-only");
+    await vscode.window.showTextDocument(main, vscode.ViewColumn.One);
+    await vscode.commands.executeCommand("vscode.diff", pair.original, pair.modified, "Discarded low-value review (test)");
+    await vscode.commands.executeCommand("downsideUp.showFileOverview");
+    assert.equal(api.reviewItems().length, 0, "A setting change also discards retained confirmation.");
+
+    await settings.update("review.lowValuePatterns", undefined, vscode.ConfigurationTarget.Global);
+    await writeFile(source, "export function source() { return 7; }\n");
+    assert.equal(await api.reviewChanges("HEAD"), 3);
+    await waitFor(async () => api.shownReviewSummary()?.current ? true : undefined, "mixed-review summary to finish");
+    assert.match(api.shownReviewSummary()?.coverage ?? "", /1 of 3.*2 low value/);
+    assert.ok(api.shownReviewSummary()?.themes.every((theme) =>
+      theme.files.every((file) => file.path === "review-source.ts")), "Only source evidence can be cited.");
+    await waitFor(async () => api.reviewItems().find((item) => item.path === "review-source.ts")?.status === "done" ? true : undefined,
+      "eligible source comparison to finish");
+    const documentsBeforeBlockedExport = new Set(vscode.workspace.textDocuments.map((document) => document.uri.toString()));
+    await vscode.commands.executeCommand("downsideUp.exportReviewSummary");
+    assert.equal(vscode.workspace.textDocuments.some((document) =>
+      !documentsBeforeBlockedExport.has(document.uri.toString()) &&
+      document.uri.scheme === "untitled" &&
+      document.getText().startsWith("# Review summary export")), false,
+    "A working review with changed files cannot be exported while those paths differ from HEAD.");
+    assert.equal(api.reviewItems().find((item) => item.path === "package-lock.json")?.status, "low-value");
+  } finally {
+    api.stopReview();
+    await settings.update("review.lowValuePatterns", previous, vscode.ConfigurationTarget.Global);
+    await rm(lock, { force: true }); await rm(generated, { force: true }); await rm(source, { force: true });
+  }
+  console.log("Downside Up integration tests: filtered reviews retain navigation and explicit explanations, skip summary evidence, and discard stale confirmation.");
+}
+
 async function runWithCommitRepository(commitRoot: string): Promise<void> {
   console.log("Downside Up integration tests: activating extension.");
   const extension = vscode.extensions.getExtension("FredrikVinkvist.the-downside-up");
@@ -566,7 +648,10 @@ async function runWithCommitRepository(commitRoot: string): Promise<void> {
   await vscode.commands.executeCommand("downsideUp.previewProject");
   assert.equal(setupApi.shownFolder()?.mapping, false);
   assert.equal(setupApi.shownFolder()?.mapState, "missing");
-  for (const command of ["downsideUp.refreshRepositoryContext", "downsideUp.reviewChanges", "downsideUp.prepareCommit"]) {
+  for (const command of [
+    "downsideUp.refreshRepositoryContext", "downsideUp.reviewChanges", "downsideUp.prepareCommit",
+    "downsideUp.exportReviewSummary"
+  ]) {
     await vscode.commands.executeCommand(command);
   }
   assert.deepEqual(setupApi.setupState(), { welcome: true, skippedAutoMaps: 0 }, "Unconfigured requests do not consume an automatic mapping attempt.");
@@ -1089,6 +1174,7 @@ async function runWithCommitRepository(commitRoot: string): Promise<void> {
   }
   console.log("Downside Up integration tests: review mode explained the changed files.");
   await testCommitPreparation(api, commitRoot);
+  await testLowValueReviews(api, commitRoot);
 
   const pythonDocument = await vscode.workspace.openTextDocument(vscode.Uri.file(resolve(pythonRoot, "main.py")));
   const pythonCursor = pythonDocument.positionAt(pythonDocument.getText().indexOf("def checkout") + 6);

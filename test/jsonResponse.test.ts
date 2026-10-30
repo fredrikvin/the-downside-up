@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { ModelResponseError, parseModelResponse, SchemaValidationError } from "../src/generation/jsonResponse";
 
-describe("content-free model response diagnostics", () => {
+describe("generic model response failures", () => {
   it.each([
     ['{"text":"private-source', "incomplete-json"],
     ['{"text":"private-source","items":[', "incomplete-json"],
@@ -12,7 +12,7 @@ describe("content-free model response diagnostics", () => {
   ] as const)("classifies %s without leaking it", (output, code) => {
     let failure: unknown;
     try {
-      parseModelResponse(output, "Test model", (value) => value);
+      parseModelResponse(output, (value) => value);
     } catch (error) {
       failure = error;
     }
@@ -20,34 +20,36 @@ describe("content-free model response diagnostics", () => {
     expect(failure).toMatchObject({ code, outputCharacters: output.length });
     const diagnostic = `${String(failure)}\n${JSON.stringify(failure)}\n${failure instanceof Error ? failure.stack : ""}`;
     expect(diagnostic).not.toContain("private-source");
-    expect(diagnostic).toContain("No automatic retry");
-    expect(diagnostic).toContain(`${output.length} characters received`);
+    expect(failure).toMatchObject({
+      message: "Generation failed. No automatic retry was made; try again."
+    });
+    expect(failure instanceof Error ? failure.message : "").not.toMatch(/incomplete|malformed|schema|characters received|Test model/);
     expect(failure).not.toHaveProperty("cause");
   });
 
   it("handles escaped quotes, backslashes and braces inside JSON strings", () => {
     const value = { text: 'a "quote" and \\ backslash, braces } ] {' };
     const output = JSON.stringify(value);
-    expect(parseModelResponse(output, "Test", (decoded) => decoded)).toEqual(value);
-    expect(() => parseModelResponse(output.slice(0, -1), "Test", (decoded) => decoded))
-      .toThrow(/appears incomplete/);
+    expect(parseModelResponse(output, (decoded) => decoded)).toEqual(value);
+    expect(() => parseModelResponse(output.slice(0, -1), (decoded) => decoded))
+      .toThrow("Generation failed. No automatic retry was made; try again.");
   });
 
   it("preserves complete fenced JSON support without accepting arbitrary prose or repairing data", () => {
-    expect(parseModelResponse('```json\n{"text":"ok"}\n```', "Test", (value) => value, true)).toEqual({ text: "ok" });
-    expect(() => parseModelResponse('Here is the result: {"text":"ok"}', "Test", (value) => value, true))
-      .toThrow(/malformed JSON/);
-    expect(() => parseModelResponse('{"text":"ok",}', "Test", (value) => value))
-      .toThrow(/malformed JSON/);
+    expect(parseModelResponse('```json\n{"text":"ok"}\n```', (value) => value, true)).toEqual({ text: "ok" });
+    expect(() => parseModelResponse('Here is the result: {"text":"ok"}', (value) => value, true))
+      .toThrow("Generation failed. No automatic retry was made; try again.");
+    expect(() => parseModelResponse('{"text":"ok",}', (value) => value))
+      .toThrow("Generation failed. No automatic retry was made; try again.");
   });
 
   it("distinguishes valid JSON with invalid schema and includes only host-owned details", () => {
     const output = '{"text":"private-source"}';
-    expect(() => parseModelResponse(output, "Test", () => { throw new SchemaValidationError('Invalid "summary".'); }))
-      .toThrow(/failed schema validation.*invalid-schema.*Invalid "summary"/);
+    expect(() => parseModelResponse(output, () => { throw new SchemaValidationError('Invalid "summary".'); }))
+      .toThrow("Generation failed. No automatic retry was made; try again.");
     let failure: unknown;
     try {
-      parseModelResponse(output, "Test", () => { throw new Error("private-source"); });
+      parseModelResponse(output, () => { throw new Error("private-source"); });
     } catch (error) {
       failure = error;
     }

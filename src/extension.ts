@@ -4,9 +4,10 @@ import { basename, isAbsolute, relative, resolve, sep } from "node:path";
 import * as vscode from "vscode";
 import { hasConsent, unapprovedModels, withConsent } from "./cache/consent";
 import { ChangeSession, snapshotOptions } from "./changeSession";
-import { Review, firstReviewItem, reviewProgress, reviewedDocument, reviewNavigation, type ReviewHost, type ReviewItem } from "./review";
+import { Review, firstReviewItem, reviewProgress, reviewedDocument, reviewNavigation, type ReviewHost, type ReviewIntent, type ReviewItem, type ReviewProvenance } from "./review";
 import { graphCommitTarget } from "./context/commitCommand";
 import type { PreparedReviewSummary, ReviewSummaryScope } from "./context/reviewSummary";
+import { reviewFilter } from "./context/reviewFilter";
 import {
   baseComparisonRef,
   changedFilesSince,
@@ -18,6 +19,8 @@ import {
   snapshotSignature,
   readComparison,
   resolveNativeDiff,
+  workingTreeDifferences,
+  type ChangedFile,
   type CommitScope,
   type ComparisonRef
 } from "./context/comparison";
@@ -29,6 +32,7 @@ import {
   type FlowsRequest,
   type ProviderDescriptor
 } from "./controller";
+import { renderReviewExport } from "./presentation/reviewExport";
 import {
   findRepositoryRoot,
   gatherInventory,
@@ -104,7 +108,7 @@ import {
 } from "./presentation/panel";
 import { innermostRangeAt } from "./presentation/scrollSync";
 import { ModelSetupRequired, modelBoundTask, providerConfigured, selectedProvider } from "./generation/selection";
-import { availableLanguageModels, chooseLanguageModel as pickLanguageModel, languageModelItem, openAISetup } from "./presentation/modelPicker";
+import { availableLanguageModels, chooseLanguageModel as pickLanguageModel, chooseOverviewModelForSetup, languageModelItem, openAISetup } from "./presentation/modelPicker";
 
 const API_KEY_SECRET = "theDownsideUp.openai.apiKey";
 const MOCK_LIMITATION = "Mock mode is deterministic placeholder output, not a real code explanation.";
@@ -268,7 +272,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
   const savedLookupDone = new Set<string>();
   let prefetchSession: PrefetchSession | undefined;
   let reviewSession: Review | undefined;
-  let retainedReview: Pick<Review, "root" | "base" | "items" | "kind" | "coverage"> | undefined;
+  let retainedReview: Pick<Review, "root" | "base" | "items" | "kind" | "coverage" | "filterFingerprint" | "intent" | "provenance"> | undefined;
   /** Opaque authority for the currently rendered exact review comparison. */
   let activeReviewNavigation: { readonly session: Review; readonly item?: ReviewItem; readonly token: string } | undefined;
   let summaryPage: {
@@ -280,6 +284,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     controller?: AbortController;
   } | undefined;
   let summarySelected = false;
+  const reviewExportDocuments = new Set<string>();
   let summaryEditor: vscode.TextEditor | undefined;
   let summaryEditorPair: string | undefined;
   let summaryLookupEpoch = 0;
@@ -350,12 +355,12 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
    */
   const describeOverviewProvider = (): ProviderDescriptor => {
     const base = describeProvider();
-    if (!providerConfigured(base, allowMock)) return base;
     const settings = vscode.workspace.getConfiguration("downsideUp");
     if (base.kind === "vscode-lm") {
       const model = settings.get<string>("languageModel.overviewModel", "").trim();
       return model ? { kind: "vscode-lm", modelId: model } : base;
     }
+    if (!providerConfigured(base, allowMock)) return base;
     if (base.kind === "openai") {
       const model = settings.get<string>("openai.overviewModel", "").trim();
       return model ? { kind: "openai", modelId: model } : base;
@@ -433,12 +438,16 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     return selectLines(editor);
   };
 
+  const filterForReview = (root: string) => reviewFilter(
+    vscode.workspace.getConfiguration("downsideUp", vscode.Uri.file(root)).inspect("review.lowValuePatterns")
+  );
   const change = new ChangeSession({
     get service() { return service; },
     reveal: async (...args) => { await revealChangeLines(...args); },
     explanationView: (state, id) => explanationView(state, id),
     schedule: (task, priority = "explicit") => scheduler.schedule(priority, task),
     prefetch: {
+      eligible: (ref) => !filterForReview(ref.root).classify(ref.original.path, ref.modified.path),
       enabled: () => prefetchSettings().enabled,
       comparisons: () => !reviewSession && vscode.workspace.getConfiguration("downsideUp").get<boolean>("prefetch.diff.changed", true) === true,
       cards: (category) => vscode.workspace.getConfiguration("downsideUp").get<boolean>(`prefetch.diff.${category}`, false) === true,
@@ -450,6 +459,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
   });
 
   const service = new ExplanationService({
+    reviewFilterFingerprint: (root) => filterForReview(root).fingerprint,
     allowMock,
     store: cacheStore,
     describeProvider,
@@ -554,7 +564,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
   /** Picks the language model for the repository overview and folder summaries, or the explanation model. */
   const chooseOverviewModel = async (): Promise<void> => {
     if (!modelConfigured()) {
-      ensurePanel();
+      await chooseOverviewModelForSetup(describeOverviewProvider);
       render();
       return;
     }
@@ -2889,9 +2899,10 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       return;
     }
     const count = (status: ReviewItem["status"]) => session.items.filter((item) => item.status === status).length;
-    const finished = count("done") + count("failed") + count("skipped") + count("outdated");
+    const finished = count("done") + count("failed") + count("skipped") + count("outdated") + count("low-value");
     const total = session.items.length;
     const problems = [count("failed") ? `${count("failed")} failed` : "", count("outdated") ? `${count("outdated")} changed since` : ""].filter(Boolean);
+    if (count("low-value")) problems.push(`${count("low-value")} not explained (low value)`);
     const extra = problems.length ? `, ${problems.join(", ")}` : "";
     reviewStatus.text = session.stopped
       ? `$(circle-slash) Downside Up: ${count("done")} of ${total} changed files explained${extra}`
@@ -2937,7 +2948,9 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       return sameUri(pair.original, diff.original) && sameUri(pair.modified, diff.modified);
     })) return false;
     retainedReview = undefined;
-    const session = new Review(reviewHost, retained.root, retained.base, retained.items, retained.kind, retained.coverage);
+    if (retained.filterFingerprint !== filterForReview(retained.root).fingerprint) { retainedReview = undefined; return false; }
+    const session = new Review(reviewHost, retained.root, retained.base, retained.items, retained.kind, retained.coverage,
+      retained.filterFingerprint, retained.intent, retained.provenance);
     reviewSession = session;
     if (session.items.some((item) => item.status === "pending")) session.stop();
     return true;
@@ -2977,9 +2990,10 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     if (!shownHere || showsReviewItem(session) || previewInReview(session)) return;
     const end = (): void => {
       const retained = {
-        root: session.root, base: session.base, kind: session.kind, coverage: session.coverage,
+        root: session.root, base: session.base, kind: session.kind, coverage: session.coverage, filterFingerprint: session.filterFingerprint,
+        intent: session.intent, provenance: session.provenance,
         items: session.items.map((item): ReviewItem => ({
-          ...item, status: item.status === "explaining" ? "pending" : item.status
+          ...item, status: item.status === "explaining" ? item.lowValue ? "low-value" : "pending" : item.status
         }))
       };
       dismissReview();
@@ -3043,8 +3057,12 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
   const plural = (count: number, noun: string): string => `${count} ${noun}${count === 1 ? "" : "s"}`;
 
   const summaryScope = (session: Review): ReviewSummaryScope => ({
-    root: session.root, kind: session.kind, base: session.base,
-    items: session.items.map(({ path, ref, confirmed }) => ({ path, ref, confirmed })),
+    root: session.root, kind: session.kind,
+    base: session.kind === "commit" && session.provenance.commit
+      ? `${session.provenance.commit}:${session.provenance.parent ?? "root"}`
+      : session.provenance.baseSha ?? session.base,
+    filterFingerprint: session.filterFingerprint,
+    items: session.items.map(({ path, ref, confirmed, lowValue }) => ({ path, ref, confirmed, lowValue })),
     ...session.coverage
   });
 
@@ -3056,11 +3074,18 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     const files = new Map((prepared?.evidence ?? []).map((file) => [file.id, file]));
     const scope = page.session.coverage;
     const coverageText = coverage
-      ? `${coverage.included} of ${coverage.total} confirmed file diffs ${record ? "used in this summary" : "available for summarizing"}; ${coverage.unavailable} unavailable, ${coverage.omitted} omitted by request limits.`
+      ? `${coverage.included} of ${coverage.total} confirmed file diffs ${record ? "used in this summary" : "available for summarizing"}; ${coverage.lowValue} low value, ${coverage.unavailable} unavailable, ${coverage.omitted} omitted by request limits.${coverage.lowValue === coverage.total ? " No eligible summary evidence." : ""}`
       : `Checking review sources for ${page.session.items.length} confirmed files…`;
     return {
       token, base: page.session.base, loading: page.loading, generating: Boolean(page.controller),
       canGenerate: prepared?.canGenerate === true && !page.loading, current: prepared?.current === true,
+      canExport: prepared?.current === true && Boolean(record) && !page.loading && !page.controller,
+      ...(!prepared?.current
+        ? { exportDisabledReason: page.loading || page.controller
+          ? "Wait for summary preparation to finish."
+          : record ? "The saved summary is outdated; regenerate it before exporting."
+            : "Generate a current review summary before exporting." }
+        : {}),
       coverage: [coverageText, scope.excluded ? `${scope.excluded} excluded files.` : "",
         scope.skipped ? `${scope.skipped} skipped files.` : "", scope.truncated ? "The review file listing was truncated." : ""].filter(Boolean).join(" "),
       ...(page.error ? { error: page.error } : {}),
@@ -3142,7 +3167,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     panel!.panel.title = "Downside Up: Review summary";
     render();
     updateReviewStatus();
-    if (initialRequest) void generateReviewSummary();
+    if (initialRequest && session.items.some((item) => !item.lowValue)) void generateReviewSummary();
     else await refreshReviewSummary();
     if (reviewSession === session && headerData?.root !== session.root) void loadHeaderData(session.root);
   };
@@ -3181,15 +3206,119 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     }
   };
 
+  const workingReviewExportGate = async (session: Review): Promise<string> => {
+    const result = await workingTreeDifferences(session.root, session.items.map((item) => item.file));
+    const options = snapshotOptions();
+    const workingPaths = new Set(session.items.flatMap((item) =>
+      [item.ref.original, item.ref.modified]
+        .filter((side) => side.source.kind === "working")
+        .map((side) => side.path)));
+    const differences = new Map(result.differences.map((entry) => [entry.path, entry.reason]));
+    for (const [absolute, buffer] of options.buffers ?? []) {
+      if (!isAbsolute(absolute)) continue;
+      const path = relative(session.root, absolute).split(sep).join("/");
+      if (!workingPaths.has(path)) continue;
+      try {
+        const disk = await readFile(absolute, "utf8");
+        if (disk !== buffer) differences.set(path, "unsaved editor buffer differs from disk");
+      } catch {
+        differences.set(path, "unsaved editor buffer could not be compared with disk");
+      }
+    }
+    if (differences.size) {
+      const detail = [...differences].sort(([left], [right]) => left.localeCompare(right))
+        .map(([path, reason]) => `- ${path}: ${reason}`).join("\n");
+      throw new Error(`Export is blocked because reviewed files differ from HEAD:\n${detail}`);
+    }
+    return result.head;
+  };
+
+  const exportReviewDocument = async (
+    session: Review,
+    token?: string,
+    allowGeneration = true
+  ): Promise<void> => {
+    const ownsSession = (): boolean => reviewSession === session &&
+      (!token || (activeReviewNavigation?.session === session && activeReviewNavigation.token === token &&
+        !activeReviewNavigation.item && summarySelected && summaryPage?.session === session));
+    if (!ownsSession()) return;
+    if (session.intent !== "summary-only" && session.items.some((item) => item.status === "explaining")) {
+      await vscode.window.showInformationMessage("Wait for the current review request to finish before exporting.");
+      return;
+    }
+    if (summaryPage?.session === session && summaryPage.controller) {
+      await vscode.window.showInformationMessage("The review summary is still being generated. Export it after the request finishes.");
+      return;
+    }
+    let head: string | undefined;
+    try {
+      if (session.kind === "working") head = await workingReviewExportGate(session);
+      if (!ownsSession()) return;
+      const prepared = await service.prepareReviewExport(summaryScope(session),
+        (ref) => readComparison(ref, snapshotOptions()), {
+          ...(head ? { head } : {}),
+          ...(session.provenance.commit ? { commit: session.provenance.commit } : {}),
+          ...(session.provenance.parent ? { parent: session.provenance.parent } : {})
+        });
+      if (!ownsSession()) return;
+      if (session.kind === "working") {
+        const latestHead = await workingReviewExportGate(session);
+        if (latestHead !== head) throw new Error("HEAD moved while the export was being prepared. Try again.");
+      }
+      if (!ownsSession()) return;
+      const markdown = renderReviewExport(prepared.data);
+      const document = await vscode.workspace.openTextDocument({ language: "markdown", content: markdown });
+      reviewExportDocuments.add(document.uri.toString());
+      await vscode.window.showTextDocument(document, {
+        viewColumn: vscode.ViewColumn.Beside,
+        preserveFocus: true,
+        preview: false
+      });
+    } catch (error) {
+      if (!ownsSession()) return;
+      const message = errorMessage(error);
+      if (allowGeneration && /summary is missing or outdated/i.test(message)) {
+        const answer = await vscode.window.showInformationMessage(
+          "The current review summary is missing or outdated. Generate it now and export? This explicitly shares the confirmed eligible diffs with the Overview model and may use provider quota or billing.",
+          { modal: true },
+          "Generate summary and export"
+        );
+        if (answer !== "Generate summary and export" || !ownsSession()) return;
+        if (!summaryPage || summaryPage.session !== session) {
+          await showReviewSummary(session);
+          if (!ownsSession()) return;
+        }
+        await generateReviewSummary();
+        if (!ownsSession()) return;
+        await exportReviewDocument(session, token, false);
+        return;
+      }
+      await vscode.window.showWarningMessage(`Review export could not be prepared: ${message}`);
+    }
+  };
+
   /**
    * Starts review mode for the files changed since `base`. Running the
    * command is the explicit request; when code sharing is not approved yet,
    * the first file is explained as an ordinary request, which asks.
    */
-  const startReview = async (root: string, base: string, baseLabel: string, confirm: boolean, committed?: CommitScope): Promise<number> => {
-    if (!(await ensureLanguageModelSelected())) return 0;
+  const startReview = async (
+    root: string,
+    base: string,
+    baseLabel: string,
+    confirm: boolean,
+    committed?: CommitScope,
+    intent: ReviewIntent = "full"
+  ): Promise<number> => {
+    if (intent === "full") {
+      if (!(await ensureLanguageModelSelected())) return 0;
+    } else if (!providerConfigured(describeOverviewProvider(), allowMock)) {
+      await chooseOverviewModel();
+      return 0;
+    }
     if (!vscode.workspace.isTrusted) throw new Error("Preparing explanations requires a trusted workspace. Nothing was sent.");
     const model = JSON.stringify(describeProvider());
+    const filter = filterForReview(root);
     const { files, truncated } = committed ?? await changedFilesSince(root, base, MAX_REVIEW_FILES);
     const options = snapshotOptions();
     const items: ReviewItem[] = [];
@@ -3212,11 +3341,15 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
         } else if (comparisonProblem(snapshot)) {
           skipped++;
         } else {
-          items.push({ path: file.path, file, ref, confirmed: snapshotSignature(snapshot), status: saved?.current ? "done" : "pending" });
+          const lowValue = filter.classify(ref.original.path, ref.modified.path);
+          items.push({ path: file.path, file, ref, confirmed: snapshotSignature(snapshot),
+            ...(lowValue ? { lowValue } : {}), status: lowValue ? "low-value" : saved?.current ? "done" : "pending" });
         }
       }
     }
-    const pending = items.filter((item) => item.status === "pending").length;
+    const pending = intent === "full" ? items.filter((item) => item.status === "pending").length : 0;
+    const lowValue = items.filter((item) => item.lowValue).length;
+    const saved = items.filter((item) => item.status === "done").length;
     const kinds = (["added", "deleted", "renamed"] as const)
       .map((kind) => [kind, items.filter((item) => item.file.status === kind).length] as const)
       .filter(([, count]) => count > 0)
@@ -3236,20 +3369,35 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       const requests = committed
         ? `${plural(pending, "initial request")}, up to ${pending * 2} requests including at most one retry per failed file`
         : plural(pending, "request");
-      const answer = await vscode.window.showInformationMessage(
-        `Prepare this review ${baseLabel}? Explain ${plural(pending, "changed file")} in the background: ${requests} to your Functions model, each sending the two versions of one file. The other ${items.length - pending} of ${items.length} already have a current explanation. Also prepare one summary of the confirmed diffs with the Overview model, reusing a current saved summary when available. Model sharing approval is separate; provider quota or billing applies.`,
-        { modal: true, detail: notes || undefined },
-        accept
-      );
-      if (answer !== accept) return 0;
+      if (intent === "summary-only") {
+        const answer = await vscode.window.showInformationMessage(
+          `Prepare a summary-only review ${baseLabel}? ${items.length} confirmed files remain navigable; no Functions comparisons will be requested. A missing or outdated summary may be generated only after a separate confirmation with the Overview model. Low-value files are not summary evidence.`,
+          { modal: true, detail: notes || undefined },
+          "Summary only", "Full review"
+        );
+        if (answer !== "Summary only" && answer !== "Full review") return 0;
+        if (answer === "Full review") return startReview(root, base, baseLabel, true, committed, "full");
+      } else {
+        const answer = await vscode.window.showInformationMessage(
+          `Prepare this review ${baseLabel}? ${items.length} confirmed files: ${saved} saved, ${lowValue} low value (navigable; Explain changes explicitly), ${pending} pending. Background preparation: ${requests} to your Functions model, each sending the two versions of one file. Also prepare one summary of eligible confirmed diffs with the Overview model when evidence is available, reusing a current saved summary. Low-value files are not summary evidence. Model sharing approval is separate; provider quota or billing applies.`,
+          { modal: true, detail: notes || undefined },
+          accept
+        );
+        if (answer !== accept) return 0;
+      }
     }
-    if (!vscode.workspace.isTrusted || model !== JSON.stringify(describeProvider())) {
-      throw new Error("Workspace trust or the Functions model changed. Run preparation again to confirm its scope.");
+    if (!vscode.workspace.isTrusted || model !== JSON.stringify(describeProvider()) || filter.fingerprint !== filterForReview(root).fingerprint) {
+      throw new Error("Workspace trust, the Functions model, or the review filter changed. Run preparation again to confirm its scope.");
     }
     cancelReview();
     stopPrefetch();
     change.stopPrefetch();
-    const session = new Review(reviewHost, root, baseLabel, items, committed ? "commit" : "working", { excluded, skipped, truncated });
+    const firstRevision = items.find((item) => item.ref.original.source.kind === "revision")?.ref.original.source;
+    const provenance: ReviewProvenance = committed
+      ? { commit: committed.commit, parent: committed.parent }
+      : firstRevision?.kind === "revision" ? { baseSha: firstRevision.hash } : {};
+    const session = new Review(reviewHost, root, baseLabel, items, committed ? "commit" : "working",
+      { excluded, skipped, truncated }, filter.fingerprint, intent, provenance);
     reviewSession = session;
     const editor = vscode.window.activeTextEditor ?? lastTextEditor;
     const diff = diffForEditor(editor);
@@ -3273,10 +3421,10 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     // confirmed pair explicitly, cache-only, before any sharing-consent await.
     await showChange({ ...reviewDiffUris(first), nativeDiff: true }, false);
     if (reviewSession !== session) return items.length;
-    await showReviewSummary(session, true);
+    await showReviewSummary(session, intent === "full");
     updateReviewStatus();
     render();
-    const sharingAllowed = pending === 0 || await reviewSharingAllowed(root);
+    const sharingAllowed = intent === "summary-only" || pending === 0 || await reviewSharingAllowed(root);
     if (reviewSession !== session) return items.length;
     if (!sharingAllowed && !session.stopped) {
       // The first file is an ordinary request, so code sharing is approved the usual way.
@@ -3291,8 +3439,8 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
   };
 
   /** Stable palette fallback; graph arguments, when supplied, must name one exact local commit. */
-  const prepareCommitCommand = async (sourceControl?: unknown, historyItem?: unknown): Promise<void> => {
-    if (!(await ensureLanguageModelSelected())) return;
+  const prepareCommitCommand = async (sourceControl?: unknown, historyItem?: unknown, forExport = false): Promise<void> => {
+    if (!forExport && !(await ensureLanguageModelSelected())) return;
     try {
       if (!vscode.workspace.isTrusted) throw new Error("Preparing explanations requires a trusted workspace. Nothing was sent.");
       let root: string | undefined;
@@ -3330,22 +3478,37 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       if (details.parents.length > 1 && !parent) return;
       const scope = await commitScope(root, details.hash, parent);
       const label = `in commit ${scope.commit.slice(0, 7)} against ${parent ? `parent ${parent.slice(0, 7)}` : "the empty tree (root commit)"}`;
-      await startReview(root, scope.commit, label, true, scope);
+      if (forExport) {
+        const choice = await vscode.window.showInformationMessage(
+          `Export a review summary ${label}? ${scope.files.length} changed files will remain in the confirmed scope. Summary only makes no Functions requests; Full review prepares file comparisons. A missing summary requires a separate Overview-model confirmation.`,
+          { modal: true },
+          "Summary only", "Full review"
+        );
+        if (!choice) return;
+        const intent: ReviewIntent = choice === "Summary only" ? "summary-only" : "full";
+        const started = await startReview(root, scope.commit, label, intent === "full", scope, intent);
+        if (started && reviewSession) await exportReviewDocument(reviewSession);
+      } else {
+        await startReview(root, scope.commit, label, true, scope);
+      }
     } catch (error) {
       await vscode.window.showWarningMessage(`Commit preparation could not start: ${errorMessage(error)}`);
     }
   };
 
   /** Asks which changes to review and starts review mode. */
-  const reviewChangesCommand = async (): Promise<void> => {
-    if (!modelConfigured()) {
+  const reviewChangesCommand = async (forExport = false): Promise<void> => {
+    if (!forExport && !modelConfigured()) {
       await ensureLanguageModelSelected();
       return;
     }
     // Model lookup and Git queries can take seconds; show the picker at once and fill it in.
-    const modelReady = ensureLanguageModelSelected().catch(() => false);
+    const modelReady = forExport
+      ? Promise.resolve(true)
+      : ensureLanguageModelSelected().catch(() => false);
     type BaseItem = vscode.QuickPickItem & { phrase: string; commit: string };
     const pickCommit: BaseItem = { label: "$(git-commit) Changes since a commit…", description: "choose from recent commits", phrase: "", commit: "" };
+    const pickImmutableCommit: BaseItem = { label: "$(export) Export a commit review…", description: "compare an immutable commit with its parent", phrase: "", commit: "" };
     const quickPick = vscode.window.createQuickPick<BaseItem>();
     quickPick.title = "Explain changed files";
     quickPick.placeholder = "Finding comparison bases…";
@@ -3382,13 +3545,17 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
         await vscode.window.showInformationMessage("Review mode needs a Git repository with at least one commit.");
         return;
       }
-      quickPick.items = [...choices, pickCommit];
+      quickPick.items = [...choices, pickCommit, ...(forExport ? [pickImmutableCommit] : [])];
       quickPick.placeholder = "Compare the checked-out code with…";
       quickPick.busy = false;
       quickPick.enabled = true;
       picked = await pickedPromise;
     } finally {
       quickPick.dispose();
+    }
+    if (forExport && picked === pickImmutableCommit) {
+      await prepareCommitCommand(undefined, undefined, true);
+      return;
     }
     if (!(await modelReady) || !picked) return;
     let base = picked.commit;
@@ -3403,7 +3570,42 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       base = commit.commit.hash;
       label = `since ${commit.commit.shortHash}`;
     }
-    await startReview(root, base, label, true);
+    let intent: ReviewIntent = "full";
+    if (forExport) {
+      const choice = await vscode.window.showInformationMessage(
+        `Export a review summary ${label}? The confirmed file set stays fixed; export uses saved explanations only. If its summary is missing or outdated, generation requires a separate confirmation and uses the Overview model.`,
+        { modal: true },
+        "Summary only", "Full review"
+      );
+      if (!choice) return;
+      intent = choice === "Summary only" ? "summary-only" : "full";
+    }
+    const started = await startReview(root, base, label, forExport && intent === "full", undefined, intent);
+    if (started && forExport && reviewSession) await exportReviewDocument(reviewSession);
+  };
+
+  const exportReviewSummaryCommand = async (): Promise<void> => {
+    if (reviewSession) {
+      await exportReviewDocument(reviewSession);
+      return;
+    }
+    if (retainedReview) {
+      const retained = retainedReview;
+      if (retained.filterFingerprint !== filterForReview(retained.root).fingerprint) {
+        retainedReview = undefined;
+        await vscode.window.showWarningMessage("The retained review filter changed. Confirm a new review before exporting.");
+        return;
+      }
+      const session = new Review(reviewHost, retained.root, retained.base, retained.items, retained.kind,
+        retained.coverage, retained.filterFingerprint, retained.intent, retained.provenance);
+      session.stop();
+      retainedReview = undefined;
+      reviewSession = session;
+      await showReviewSummary(session);
+      await exportReviewDocument(session);
+      return;
+    }
+    await reviewChangesCommand(true);
   };
 
   /** Native URIs for a confirmed pair; absent sides retain their revision identity. */
@@ -3442,13 +3644,13 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       return;
     }
     const icons: Record<ReviewItem["status"], string> = {
-      pending: "$(circle-outline)", explaining: "$(sync~spin)", done: "$(check)", failed: "$(error)", skipped: "$(circle-slash)", outdated: "$(history)"
+      pending: "$(circle-outline)", explaining: "$(sync~spin)", done: "$(check)", failed: "$(error)", skipped: "$(circle-slash)", outdated: "$(history)", "low-value": "$(circle-slash)"
     };
     const running = !session.stopped && session.items.some((item) => item.status === "pending" || item.status === "explaining");
     const control = running
       ? { label: "$(debug-stop) Stop explaining changed files", action: "stop" as const }
       : { label: "$(close) Close review mode", action: "dismiss" as const };
-    const resume = !running && session.items.some((item) => item.status === "pending")
+    const resume = session.intent === "full" && !running && session.items.some((item) => item.status === "pending")
       ? [{ label: "$(debug-start) Continue explaining changed files", action: "resume" as const }]
       : [];
     const picked = await vscode.window.showQuickPick<vscode.QuickPickItem & { item?: ReviewItem; action?: "summary" | "stop" | "dismiss" | "resume" }>(
@@ -3457,7 +3659,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
         ...session.items.map((item) => ({
           label: `${icons[item.status]} ${item.path}`,
           description: item.file.status === "modified" ? undefined : item.file.status,
-          detail: item.status === "outdated" ? "Changed since it was confirmed; open the diff and choose Explain changes." : undefined,
+          detail: item.lowValue ? `Low value (${item.lowValue.pattern}); excluded from background work and summary evidence. Open the diff and choose Explain changes.` : item.status === "outdated" ? "Changed since it was confirmed; open the diff and choose Explain changes." : undefined,
           item
         })),
         { label: "", kind: vscode.QuickPickItemKind.Separator },
@@ -3529,6 +3731,9 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
           owner.item || !summarySelected || page?.session !== owner.session) return;
         if (action.operation === "cancel") page.controller?.abort();
         else if (action.operation === "generate") await generateReviewSummary();
+        else if (action.operation === "export" && page.prepared?.current && !page.loading && !page.controller) {
+          await exportReviewDocument(owner.session, action.token);
+        }
         else if (page.prepared?.current && (action.fileId || action.nodeId)) {
           let fileId = action.fileId;
           if (action.operation === "openPart") {
@@ -3678,6 +3883,19 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
         return;
       case "explainChanges":
         await change.explain();
+        if (reviewSession && change.comparisonRef) {
+          const session = reviewSession;
+          const item = reviewNavigation(session.items, change.comparisonRef);
+          const selected = item?.items[item.index];
+          if (selected) {
+            const snapshot = await readComparison(selected.ref, snapshotOptions());
+            const saved = await service.findComparison(snapshot);
+            if (reviewSession === session && saved?.current && snapshotSignature(snapshot) === selected.confirmed) {
+              selected.status = "done";
+              updateReviewStatus();
+            }
+          }
+        }
         return;
       case "summarizeFolder":
         await summarizeShownFolder();
@@ -4149,6 +4367,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
   const followActiveEditor = (editor: vscode.TextEditor | undefined): void => {
     // Focus moving to the preview or another panel leaves no active text editor.
     if (!editor) return;
+    if (reviewExportDocuments.has(editor.document.uri.toString())) return;
     lastTextEditor = editor;
     selectionLookupEpoch++;
     if (selectionTimer) clearTimeout(selectionTimer);
@@ -4226,6 +4445,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
   };
   const followOrdinaryTab = (tab: vscode.Tab | undefined): boolean => {
     const input = tab?.input;
+    if (input instanceof vscode.TabInputText && reviewExportDocuments.has(input.uri.toString())) return false;
     if ((!reviewSession && !change.active && !summarySelected) ||
         !tab || !(input instanceof vscode.TabInputText) || !panel?.panel.visible ||
         (vscode.window.activeTextEditor && sameUri(input.uri, vscode.window.activeTextEditor.document.uri))) return false;
@@ -4350,12 +4570,12 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       .some((key) => event.affectsConfiguration(key))) cancelExplanations();
     // A confirmed preparation belongs to the selected model and sharing policy.
     // Never continue it under another configuration without a new confirmation.
-    if ((reviewSession || retainedReview) && ["downsideUp.provider", "downsideUp.languageModel", "downsideUp.openai", "downsideUp.exclusion", "files.exclude", "search.exclude"]
+    if ((reviewSession || retainedReview) && ["downsideUp.review.lowValuePatterns", "downsideUp.provider", "downsideUp.languageModel", "downsideUp.openai", "downsideUp.exclusion", "files.exclude", "search.exclude"]
       .some((key) => event.affectsConfiguration(key))) dismissReview();
-    if (change.active && ["downsideUp.provider", "downsideUp.languageModel", "downsideUp.openai", "downsideUp.exclusion"].some((key) => event.affectsConfiguration(key))) {
+    if (change.active && ["downsideUp.review.lowValuePatterns", "downsideUp.provider", "downsideUp.languageModel", "downsideUp.openai", "downsideUp.exclusion"].some((key) => event.affectsConfiguration(key))) {
       change.stopPrefetch();
       change.invalidateCards();
-      void change.refresh().catch(() => undefined);
+      void change.refresh(false).catch(() => undefined);
     }
     if (["downsideUp.provider", "downsideUp.languageModel", "downsideUp.openai", "downsideUp.projectMap"].some((key) => event.affectsConfiguration(key))) {
       regeneration?.abort();
@@ -4421,6 +4641,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       render();
     }),
     vscode.commands.registerCommand("downsideUp.reviewChanges", reviewChangesCommand),
+    vscode.commands.registerCommand("downsideUp.exportReviewSummary", exportReviewSummaryCommand),
     vscode.commands.registerCommand("downsideUp.prepareCommit", prepareCommitCommand),
     vscode.commands.registerCommand("downsideUp.showChangedFunctions", showChangedFunctionsCommand),
     reviewStatus,
@@ -4513,7 +4734,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
         added: view.result?.added ?? [], removed: view.result?.removed ?? [],
         links: view.result?.changes.reduce((sum, item) => sum + item.links.length, 0) ?? 0 } : undefined;
     },
-    explainChange: () => change.explain(),
+    explainChange: () => handlePanelAction({ type: "explainChanges" }),
     explainChangeFunction: (entryId: string) => handlePanelAction({ type: "expand", entryId }),
     changeFunctionSource: (entryId: string) => change.cardState(entryId)?.value.target.source,
     revealChange: async (side: "original" | "modified") => {
