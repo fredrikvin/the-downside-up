@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.58.0
+
+- Show each change in exported review Markdown as collapsible Steps,
+  Pseudocode, and Flowchart sections, with Before and After side by side in
+  two columns instead of four stacked blocks.
+- Export saved paired flowcharts as one Mermaid diagram with Before and After
+  groups, using host-assigned IDs and sanitized labels. Summary diagram labels
+  now keep common punctuation such as parentheses and question marks.
+
 ## 0.57.4
 
 - Label the review summary's model as the Overview model, not the Functions

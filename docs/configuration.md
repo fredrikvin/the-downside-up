@@ -735,7 +735,10 @@ file, subject to normal privacy and size checks.
 **Export** on the Review summary page to open an untitled Markdown document.
 It contains only the current saved summary and current saved per-file
 comparisons, plus coverage and any saved diagram; missing or outdated records
-are listed rather than generated. Export does not call a model, request
+are listed rather than generated. Each change shows Before and After side by
+side in collapsible **Steps**, **Pseudocode**, and **Flowchart** sections;
+flowcharts are Mermaid diagrams, which GitHub renders but VS Code's built-in
+Markdown preview shows as code. Export does not call a model, request
 consent, write to GitHub, or save over a file. If the summary is missing or
 outdated, the command offers a separate, explicitly confirmed Overview-model
 request. Without an active or retained review, choose **Summary only** to keep

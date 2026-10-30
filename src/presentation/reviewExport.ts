@@ -1,5 +1,8 @@
 import type {
   ComparisonRecord,
+  ComparisonVisualScope,
+  ComparisonVisualSide,
+  FlowNodeKind,
   ReviewSummaryCoverage,
   ReviewSummaryEvidence,
   ReviewSummaryRecord
@@ -56,6 +59,37 @@ const htmlText = (value: string, singleLine = false): string => {
 const codeBlock = (lines: readonly string[]): string =>
   `<pre><code>${htmlText(lines.join("\n"))}</code></pre>`;
 
+const SIDES = [["Before", "original"], ["After", "modified"]] as const;
+
+const emptySide = (side: ComparisonVisualSide, format: string): string =>
+  `<em>${side.presence === "absent" ? "Not present" : `No saved ${format}`}</em>`;
+
+function pairedTable(
+  scope: ComparisonVisualScope,
+  cell: (side: ComparisonVisualSide) => string
+): string {
+  const cells = SIDES.map(([, key]) => `<td valign="top">\n\n${cell(scope[key])}\n\n</td>`);
+  return [
+    "<table>",
+    "<thead><tr><th>Before</th><th>After</th></tr></thead>",
+    "<tbody><tr>",
+    ...cells,
+    "</tr></tbody>",
+    "</table>"
+  ].join("\n");
+}
+
+const stepsCell = (side: ComparisonVisualSide): string => side.steps.length
+  ? `<ol>\n${side.steps.map((item) => `<li>${htmlText(item.text, true)}</li>`).join("\n")}\n</ol>`
+  : emptySide(side, "steps");
+
+const pseudocodeCell = (side: ComparisonVisualSide): string => side.pseudocode.length
+  ? codeBlock(side.pseudocode.map((item) => `${"  ".repeat(item.depth ?? 0)}${item.text}`))
+  : emptySide(side, "pseudocode");
+
+const accordion = (title: string, body: string, open = false): string =>
+  [`<details${open ? " open" : ""}>`, `<summary>${title}</summary>`, "", body, "", "</details>"].join("\n");
+
 const pathFor = (file: Pick<ReviewExportFile, "path" | "oldPath">): string =>
   file.oldPath ? `${file.oldPath} -> ${file.path}` : file.path;
 
@@ -72,6 +106,66 @@ function mermaidLabel(value: string, fallback: string): string {
   return label || fallback;
 }
 
+/** Quoted node text: keeps common prose punctuation but no quotes, markup, entities, links, or directives. */
+function mermaidNodeText(value: string, fallback: string): string {
+  const label = value
+    .replace(/[^\p{L}\p{N} _.,?!'()=+*-]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 120)
+    .trim();
+  return label || fallback;
+}
+
+const NODE_SHAPES: Record<FlowNodeKind, readonly [string, string]> = {
+  start: ["([", "])"],
+  end: ["([", "])"],
+  action: ["[", "]"],
+  decision: ["{", "}"],
+  show: ["[[", "]]"]
+};
+
+function renderComparisonFlowchart(scope: ComparisonVisualScope): string {
+  const lines = ["```mermaid", "flowchart TB"];
+  for (const [sideIndex, [label, key]] of SIDES.entries()) {
+    const side = scope[key];
+    const prefix = key === "original" ? "b" : "a";
+    lines.push(`  subgraph s${sideIndex}["${label}"]`, "    direction TB");
+    const nodes = side.flowchartStatus === "available" ? side.flowchart.nodes : [];
+    if (!nodes.length) {
+      const reason = side.presence === "absent" ? "Not present" : side.flowchartReason || "No saved flowchart";
+      lines.push(`    ${prefix}x["${mermaidNodeText(reason, "No saved flowchart")}"]`);
+    }
+    const ids = new Map(nodes.map((node, index) => [node.id, `${prefix}${index}`]));
+    for (const [index, node] of nodes.entries()) {
+      const [open, close] = NODE_SHAPES[node.kind] ?? NODE_SHAPES.action;
+      lines.push(`    ${prefix}${index}${open}"${mermaidNodeText(node.label, `Step ${index + 1}`)}"${close}`);
+    }
+    for (const edge of nodes.length ? side.flowchart.edges : []) {
+      const from = ids.get(edge.from);
+      const to = ids.get(edge.to);
+      if (!from || !to) continue;
+      const text = mermaidLabel(edge.label, "");
+      lines.push(text ? `    ${from} -->|${text}| ${to}` : `    ${from} --> ${to}`);
+    }
+    lines.push("  end");
+  }
+  lines.push("```");
+  return lines.join("\n");
+}
+
+function renderVisualScope(scope: ComparisonVisualScope): string {
+  return [
+    `##### ${markdownText(scope.title)}`,
+    "",
+    accordion("Steps", pairedTable(scope, stepsCell), true),
+    "",
+    accordion("Pseudocode", pairedTable(scope, pseudocodeCell)),
+    "",
+    accordion("Flowchart", renderComparisonFlowchart(scope))
+  ].join("\n");
+}
+
 function renderDiagram(record: ReviewSummaryRecord, evidence: readonly ReviewSummaryEvidence[]): string {
   const diagram = record.value.diagram;
   if (!diagram) return "";
@@ -81,7 +175,7 @@ function renderDiagram(record: ReviewSummaryRecord, evidence: readonly ReviewSum
   for (const [index, node] of diagram.nodes.entries()) {
     const referenced = node.fileIds.map((id) => paths.get(id)).filter((path): path is string => Boolean(path));
     const suffix = referenced.length ? ` (${referenced.join(", ")})` : "";
-    const label = mermaidLabel(`${node.label}${suffix}`, `Part ${index + 1}`);
+    const label = mermaidNodeText(`${node.label}${suffix}`, `Part ${index + 1}`);
     lines.push(`  n${index}["${label}"]`);
   }
   for (const edge of diagram.edges) {
@@ -132,26 +226,11 @@ function renderFile(file: ReviewExportFile): string {
     list(comparison.possibleEffects),
     "#### Limitations",
     list(comparison.limitations),
-    "#### Saved steps and pseudocode"
+    "#### Saved steps, pseudocode, and flowcharts"
   ].filter(Boolean);
-  for (const scope of comparison.visualScopes ?? []) {
-    headings.push(`##### ${markdownText(scope.title)}`);
-    for (const [sideName, side] of [["Before", scope.original], ["After", scope.modified]] as const) {
-      if (side.steps.length) {
-        headings.push(`###### ${sideName} steps`);
-        headings.push(codeBlock(side.steps.map((item) => item.text)));
-      }
-      if (side.pseudocode.length) {
-        headings.push(`###### ${sideName} pseudocode`);
-        headings.push(codeBlock(side.pseudocode.map((item) => `${"  ".repeat(item.depth ?? 0)}${item.text}`)));
-      }
-    }
-  }
-  if (!(comparison.visualScopes ?? []).some((scope) =>
-    scope.original.steps.length || scope.original.pseudocode.length ||
-    scope.modified.steps.length || scope.modified.pseudocode.length)) {
-    headings.push("No saved steps or pseudocode.");
-  }
+  const scopes = comparison.visualScopes ?? [];
+  for (const scope of scopes) headings.push("", renderVisualScope(scope));
+  if (!scopes.length) headings.push("No saved steps, pseudocode, or flowcharts.");
   return [
     "<details>",
     `<summary>${htmlText(pathFor(file), true)}</summary>`,

@@ -716,9 +716,14 @@ requests consent, writes to GitHub, or overwrites a file; the result opens as
 an untitled Markdown document for inspection and explicit saving. A missing or
 outdated summary can be generated only after a separate confirmation through
 the existing Overview-model consent flow. Missing, outdated, and unavailable
-file explanations are listed with reasons. The Mermaid diagram is rebuilt
-with host-assigned node IDs and conservative text labels; generated content
-is rendered as inert text.
+file explanations are listed with reasons. Each saved change scope shows
+Before and After steps and pseudocode in two-column HTML tables inside
+collapsible `<details>` sections, and its saved flowcharts as one Mermaid
+diagram with Before and After subgraphs. Mermaid diagrams are rebuilt with
+host-assigned node IDs, host-chosen shapes, and conservative quoted labels
+that drop quotes, brackets, markup, entities, `%`, `:`, `/`, and `@`, so
+model text cannot add directives, styles, click handlers, or links; other
+generated content is entity-escaped and rendered as inert text.
 
 For working reviews, export checks each confirmed path against `HEAD`, including
 staged and working-tree changes and dirty editor buffers. If a reviewed path

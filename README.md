@@ -137,8 +137,10 @@ page, to open an untitled Markdown document containing:
 - the summary, themes, possible effects, limitations, and coverage, with the
   base and `HEAD` (or commit and parent) it describes;
 - the affected-parts chart as a Mermaid diagram;
-- each saved file comparison, including its saved steps and pseudocode, plus a
-  list of files without a current comparison.
+- each saved file comparison. For each change, collapsible **Steps** (open),
+  **Pseudocode**, and **Flowchart** sections show Before and After side by
+  side; the flowchart is one Mermaid diagram with Before and After groups;
+- a list of files without a current comparison.
 
 How it behaves:
 

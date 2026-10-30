@@ -14,10 +14,24 @@ function comparisonWith(text: string): ComparisonRecord {
     presence: "present" as const,
     region: "",
     coverage: "whole function",
-    flowchartStatus: "unavailable" as const,
-    flowchartReason: "No diagram",
+    flowchartStatus: "available" as const,
+    flowchartReason: "",
     steps: [{ id: "step-1", text, startLine: 1, endLine: 1, occurrenceId: "occurrence-1" }],
     pseudocode: [{ id: "pseudo-1", text, depth: 0, startLine: 1, endLine: 1, occurrenceId: "occurrence-1" }],
+    flowchart: {
+      nodes: [
+        { id: "model-start", kind: "start" as const, label: text, occurrenceId: "occurrence-1" },
+        { id: "model-check", kind: "decision" as const, label: "Is it ready?", occurrenceId: "occurrence-1" }
+      ],
+      edges: [{ id: "edge-1", from: "model-start", to: "model-check", label: text }]
+    }
+  };
+  const absentSide = {
+    ...visualSide,
+    presence: "absent" as const,
+    flowchartStatus: "not-applicable" as const,
+    steps: [],
+    pseudocode: [],
     flowchart: { nodes: [], edges: [] }
   };
   return {
@@ -32,7 +46,10 @@ function comparisonWith(text: string): ComparisonRecord {
       added: [{ functionId: "function-1", summary: text }],
       removed: [],
       changes: [{ title: text, before: text, after: text, when: text, flow: text, original: { start: 1, end: 1 }, modified: { start: 1, end: 1 } }],
-      visualScopes: [{ id: "scope-1", title: text, original: visualSide, modified: visualSide, units: [], unitCorrespondences: [], edgeCorrespondences: [] }],
+      visualScopes: [
+        { id: "scope-1", title: text, original: visualSide, modified: visualSide, units: [], unitCorrespondences: [], edgeCorrespondences: [] },
+        { id: "scope-2", title: "Added helper", original: absentSide, modified: visualSide, units: [], unitCorrespondences: [], edgeCorrespondences: [] }
+      ],
       outside: text,
       possibleEffects: [text],
       limitations: [text]
@@ -84,11 +101,38 @@ describe("review export Markdown", () => {
     const output = renderReviewExport(data);
     expect(output).toBe(renderReviewExport(data));
     expect(output).toContain("## Summary\nA contract change");
-    expect(output).toContain('n0["A contract change src main.ts"]');
+    expect(output).toContain('n0["A contract change (src main.ts)"]');
     expect(output).toContain("n0 -->|A contract change| n1");
     expect(output).toContain("<summary>src&#47;main&#46;ts</summary>");
     expect(output).toContain("addedFunction&#58; Saved comparison");
     expect(output).toContain("<pre><code>Saved comparison</code></pre>");
+    expect(output).toContain([
+      "<details open>",
+      "<summary>Steps</summary>",
+      "",
+      "<table>",
+      "<thead><tr><th>Before</th><th>After</th></tr></thead>",
+      "<tbody><tr>",
+      '<td valign="top">',
+      "",
+      "<ol>\n<li>Saved comparison</li>\n</ol>"
+    ].join("\n"));
+    expect(output).toContain("<summary>Pseudocode</summary>");
+    expect(output).toContain("<summary>Flowchart</summary>");
+    expect(output).toContain('<td valign="top">\n\n<em>Not present</em>\n\n</td>');
+    expect(output).toContain([
+      "```mermaid",
+      "flowchart TB",
+      '  subgraph s0["Before"]',
+      "    direction TB",
+      '    b0(["Saved comparison"])',
+      '    b1{"Is it ready?"}',
+      "    b0 -->|Saved comparison| b1",
+      "  end",
+      '  subgraph s1["After"]'
+    ].join("\n"));
+    expect(output).toContain('    bx["Not present"]');
+    expect(output).not.toContain("model-start");
     expect(output).toContain("- Low-value: 0");
     expect(output).toContain("- Overview model: overview&#45;model (vscode&#45;lm)");
     expect(output).toContain("- Functions model: test&#45;model (vscode&#45;lm)");
@@ -127,6 +171,12 @@ describe("review export Markdown", () => {
     expect(output).toContain("&#60;&#47;code&#62;&#60;&#47;pre&#62;");
     expect(output).toContain("n0[\"");
     expect(output).not.toContain('\"model-id-a\"');
+    expect(output).not.toContain("model-start");
+    expect(output).not.toContain("%%");
+    const diagrams = [...output.matchAll(/```mermaid\n([\s\S]*?)```/g)].map((match) => match[1]!);
+    expect(diagrams).toHaveLength(3);
+    for (const diagram of diagrams) expect(diagram).not.toMatch(/^\s*(click|style|classDef|linkStyle)\b/m);
+    expect(output).toMatch(/b0\(\["[^"\]\[<>{}%#&:\/@`]*"\]\)/);
   });
 
   it("explains low-value, missing, and outdated per-file entries", () => {
