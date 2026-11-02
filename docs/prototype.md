@@ -701,9 +701,13 @@ a separately requested summary is cancelled with its own control. Returning
 focus to the unchanged underlying diff leaves the summary selected; opening
 another file follows normal review-membership rules.
 
-**Export Review Summary…** exports the active or retained confirmed review, or
-offers a new review base and a choice between **Summary only** and **Full
-review**, including an immutable commit-versus-parent scope. Summary-only keeps the confirmed comparisons navigable but does not
+**Export Review Summary…** always offers the same base picker as **Review
+Changes…**, including **Uncommitted changes only**, an immutable
+commit-versus-parent scope, and an option to export the active or retained
+confirmed review when one exists. Cancelling leaves the existing review intact.
+The summary page's **Export** button exports that confirmed review directly.
+A new scope offers a choice between **Summary only** and **Full
+review**. Summary-only keeps the confirmed comparisons navigable but does not
 queue background Functions requests; explicit **Explain changes** remains
 available. Its summary is keyed by the same confirmed scope as a full review,
 so a later full review can reuse it. If no model is configured, setup is
@@ -719,7 +723,8 @@ then opens it; cancelling writes nothing. The dialog suggests
 else `Downloads` or the home folder, and a location inside the reviewed
 repository needs a separate confirmation, since the file would otherwise join
 later working reviews. The last folder is kept in extension global state, not
-settings or the repository cache. The working-review `HEAD` check is repeated
+settings or the repository cache. Sources, trust, sharing policy, model identity,
+saved evidence, and working-review `HEAD` are rechecked
 after the dialog, before writing. A missing or
 outdated summary can be generated only after a separate confirmation through
 the existing Overview-model consent flow. Missing, outdated, and unavailable
@@ -737,11 +742,11 @@ that drop quotes, brackets, markup, entities, `%`, `:`, `/`, and `@`, so
 model text cannot add directives, styles, click handlers, or links; other
 generated content is entity-escaped and rendered as inert text.
 
-For working reviews, export checks each confirmed path against `HEAD`, including
-staged and working-tree changes and dirty editor buffers. If a reviewed path
-differs, export is blocked and identifies the path; unrelated changes do not
-block. This is a point-in-time check, with `HEAD`, sources, trust, and sharing
-policy rechecked before delivery. A confirmed file that changed or disappeared
+Working reviews may export staged, unstaged, untracked, and unsaved changes;
+files do not need to match `HEAD`. The Markdown explicitly labels the working-tree
+side, including unsaved edits. Export rejects changes to reviewed sources or
+`HEAD` while it is being prepared, including while the save dialog is open;
+unrelated changes do not block. A confirmed file that changed or disappeared
 before export (for example, a deleted untracked file, which no longer differs
 from `HEAD`) is listed as unavailable; the source recheck compares with what
 this export read, so only a change made while it is prepared stops it.

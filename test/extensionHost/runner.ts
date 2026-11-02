@@ -430,7 +430,13 @@ async function testCommitPreparation(api: DownsideUpTestApi, root: string): Prom
     const exportTarget = vscode.Uri.file(resolve(exportFolder, "review-export.md"));
     api.setReviewExportTarget(exportTarget);
     try {
-      await vscode.commands.executeCommand("downsideUp.exportReviewSummary");
+      const exporting = vscode.commands.executeCommand("downsideUp.exportReviewSummary");
+      const choices = await waitFor(async () => api.reviewBaseChoices(), "export scope choices");
+      assert.equal(choices[0], "$(export) Export current review");
+      assert.ok(choices.includes("Uncommitted changes only"));
+      assert.ok(choices.includes("$(export) Export a commit review…"));
+      await vscode.commands.executeCommand("workbench.action.acceptSelectedQuickOpenItem");
+      await exporting;
       const exported = await waitFor(async () => vscode.workspace.textDocuments.find((document) =>
         document.uri.toString() === exportTarget.toString() &&
         document.getText().startsWith("# Review summary export")) ?? undefined,
@@ -528,6 +534,8 @@ async function testLowValueReviews(api: DownsideUpTestApi, root: string): Promis
   const lock = resolve(root, "package-lock.json");
   const generated = resolve(root, "a.generated.ts");
   const source = resolve(root, "review-source.ts");
+  let sourceDocument: vscode.TextDocument | undefined;
+  let sourceStaged = false;
   try {
     api.stopReview();
     await settings.update("review.lowValuePatterns", undefined, vscode.ConfigurationTarget.Global);
@@ -571,6 +579,13 @@ async function testLowValueReviews(api: DownsideUpTestApi, root: string): Promis
 
     await settings.update("review.lowValuePatterns", undefined, vscode.ConfigurationTarget.Global);
     await writeFile(source, "export function source() { return 7; }\n");
+    execFileSync("git", ["-C", root, "add", "--", source]);
+    sourceStaged = true;
+    sourceDocument = await vscode.workspace.openTextDocument(source);
+    const unsaved = new vscode.WorkspaceEdit();
+    unsaved.insert(sourceDocument.uri, new vscode.Position(0, 0), "// Unsaved review input\n");
+    assert.equal(await vscode.workspace.applyEdit(unsaved), true);
+    assert.equal(sourceDocument.isDirty, true);
     assert.equal(await api.reviewChanges("HEAD"), 3);
     await waitFor(async () => api.shownReviewSummary()?.current ? true : undefined, "mixed-review summary to finish");
     assert.match(api.shownReviewSummary()?.coverage ?? "", /1 of 3.*2 low value/);
@@ -578,20 +593,52 @@ async function testLowValueReviews(api: DownsideUpTestApi, root: string): Promis
       theme.files.every((file) => file.path === "review-source.ts")), "Only source evidence can be cited.");
     await waitFor(async () => api.reviewItems().find((item) => item.path === "review-source.ts")?.status === "done" ? true : undefined,
       "eligible source comparison to finish");
-    const blockedFolder = await realpath(await mkdtemp(resolve(tmpdir(), "dsu-export-")));
-    const blockedTarget = resolve(blockedFolder, "blocked-export.md");
-    api.setReviewExportTarget(vscode.Uri.file(blockedTarget));
+    const exportFolder = await realpath(await mkdtemp(resolve(tmpdir(), "dsu-export-")));
+    const exportTarget = resolve(exportFolder, "local-export.md");
+    api.setReviewExportTarget(vscode.Uri.file(exportTarget));
     try {
-      await vscode.commands.executeCommand("downsideUp.exportReviewSummary");
+      const cancelled = vscode.commands.executeCommand("downsideUp.exportReviewSummary");
+      await waitFor(async () => api.reviewBaseChoices(), "local export scope choices");
+      await vscode.commands.executeCommand("workbench.action.closeQuickOpen");
+      await cancelled;
+      assert.equal(await readFile(exportTarget, "utf8").then(() => true, () => false), false,
+        "Cancelling scope selection writes nothing.");
+      assert.equal(api.reviewItems().length, 3, "Cancelling leaves the confirmed review intact.");
+      const exporting = vscode.commands.executeCommand("downsideUp.exportReviewSummary");
+      await waitFor(async () => api.reviewBaseChoices(), "local export scope choices again");
+      await vscode.commands.executeCommand("workbench.action.acceptSelectedQuickOpenItem");
+      await exporting;
+      const markdown = await readFile(exportTarget, "utf8");
+      assert.match(markdown, /^# Review summary export/);
+      assert.ok(markdown.includes("review&#45;source&#46;ts"), "The staged source is included.");
+      assert.ok(markdown.includes("a&#46;generated&#46;ts"), "Untracked low-value files remain in coverage.");
+      assert.equal(sourceDocument.isDirty, true, "Export does not save reviewed editor buffers.");
+      const blockedTarget = resolve(exportFolder, "changed-export.md");
+      api.setReviewExportTarget(vscode.Uri.file(blockedTarget), async () => {
+        const edit = new vscode.WorkspaceEdit();
+        edit.insert(sourceDocument!.uri, new vscode.Position(0, 0), "// Changed during export\n");
+        assert.equal(await vscode.workspace.applyEdit(edit), true);
+      });
+      await api.showReviewSummary();
+      const blocked = api.invokeReviewSummary("export", api.reviewNavigation()!.token);
+      const error = await waitFor(async () => api.reviewExportError(), "source mutation to block export");
+      assert.match(error, /review-source\.ts changed while the export was prepared/);
+      await vscode.commands.executeCommand("notifications.clearAll");
+      await blocked;
       assert.equal(await readFile(blockedTarget, "utf8").then(() => true, () => false), false,
-        "A working review with changed files cannot be exported while those paths differ from HEAD.");
+        "Changing reviewed source during Save As still blocks export.");
     } finally {
       api.setReviewExportTarget(undefined);
-      await rm(blockedFolder, { recursive: true, force: true });
+      await rm(exportFolder, { recursive: true, force: true });
     }
     assert.equal(api.reviewItems().find((item) => item.path === "package-lock.json")?.status, "low-value");
   } finally {
     api.stopReview();
+    if (sourceDocument?.isDirty) {
+      await vscode.window.showTextDocument(sourceDocument, vscode.ViewColumn.One);
+      await vscode.commands.executeCommand("workbench.action.files.revert");
+    }
+    if (sourceStaged) execFileSync("git", ["-C", root, "restore", "--staged", "--", source]);
     await settings.update("review.lowValuePatterns", previous, vscode.ConfigurationTarget.Global);
     await rm(lock, { force: true }); await rm(generated, { force: true }); await rm(source, { force: true });
   }
@@ -659,11 +706,14 @@ async function runWithCommitRepository(commitRoot: string): Promise<void> {
   assert.equal(setupApi.shownFolder()?.mapping, false);
   assert.equal(setupApi.shownFolder()?.mapState, "missing");
   for (const command of [
-    "downsideUp.refreshRepositoryContext", "downsideUp.reviewChanges", "downsideUp.prepareCommit",
-    "downsideUp.exportReviewSummary"
+    "downsideUp.refreshRepositoryContext", "downsideUp.reviewChanges", "downsideUp.prepareCommit"
   ]) {
     await vscode.commands.executeCommand(command);
   }
+  const unconfiguredExport = vscode.commands.executeCommand("downsideUp.exportReviewSummary");
+  await waitFor(async () => setupApi.reviewBaseChoices(), "unconfigured export scope choices");
+  await vscode.commands.executeCommand("workbench.action.closeQuickOpen");
+  await unconfiguredExport;
   assert.deepEqual(setupApi.setupState(), { welcome: true, skippedAutoMaps: 0 }, "Unconfigured requests do not consume an automatic mapping attempt.");
   assert.equal(setupApi.allExplanations().length, 0);
   // Mock is deliberately available only to this test/development host, never production.

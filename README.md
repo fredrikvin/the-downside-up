@@ -131,8 +131,11 @@ its ID or ref), and confirm the file scope and request count.
 
 ### Export a review summary
 
-Run **Downside Up: Export Review Summary…**, or click **Export** on the summary
-page, and choose where to save the Markdown file in the save dialog. The file
+Run **Downside Up: Export Review Summary…** and choose what to include, using
+the same bases as **Review Changes…** (including **Uncommitted changes only**),
+an immutable commit review, or your current/most recent review.
+The **Export** button on the summary page exports that review directly.
+Choose where to save the Markdown file in the save dialog. The file
 then opens beside the review. It contains:
 
 - the summary, themes, possible effects, limitations, and coverage, with the
@@ -153,16 +156,18 @@ How it behaves:
 - Export is cache-only: it never generates missing comparisons, asks for
   sharing consent, or posts to GitHub. A missing or outdated summary needs a
   separate confirmation before an Overview-model request.
-- It exports the active review, or the most recent one you left. Otherwise it
-  offers a new review of working changes, or of a commit against its parent,
-  as **Summary only** (no background Functions comparisons) or **Full review**.
+- The command always offers scope selection, including the active review or
+  the most recent one you left. Prepare a new review of working changes, or
+  of a commit against its parent, as **Summary only** (no background Functions
+  comparisons) or **Full review**.
   A later full review can reuse a summary-only review's summary.
 - **Summary only** needs just an Overview model. If none is configured, it
   asks you to choose one, without choosing a Functions model or granting
   sharing consent; then run the export again.
-- A working-review export is blocked if any confirmed file differs from
-  `HEAD`, including staged or unsaved changes. Commit reviews use the exact
-  commit and parent.
+- Working reviews can include staged, unstaged, untracked, and unsaved changes.
+  Export checks that reviewed sources and `HEAD` have not changed while it
+  is prepared, including time spent in the save dialog. Commit reviews use
+  the exact commit and parent.
 
 ### Follow callers
 
@@ -220,7 +225,7 @@ All commands are in the Command Palette under **Downside Up**.
 | **Choose Overview Model** | Chooses the Project overview model. With no model configured, sets up only the Overview model, for review summaries. |
 | **Review Changes…** | Prepares comparisons for changed files against a chosen base. |
 | **Prepare Commit Explanations…** | Prepares comparisons for one commit against its parent. |
-| **Export Review Summary…** | Saves the active or most recent review's saved summary as a Markdown file you choose, or prepares a new review to export. |
+| **Export Review Summary…** | Chooses a review scope (local changes, a base, a commit, or the current/most recent review) and saves its summary as Markdown. |
 | **Show Changed Files** | While a review is active, opens one of its files or stops it. |
 | **Refresh Repository Context** | Updates the repository overview and project map. |
 | **Clear Repository Cache** | Removes this repository's cached results and saved sharing consent. |

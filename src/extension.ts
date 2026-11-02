@@ -20,7 +20,6 @@ import {
   snapshotSignature,
   readComparison,
   resolveNativeDiff,
-  workingTreeDifferences,
   type ChangedFile,
   type CommitScope,
   type ComparisonRef
@@ -289,6 +288,9 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
   const reviewExportDocuments = new Set<string>();
   /** Test/development hosts only: replaces the native save dialog, which tests cannot answer. */
   let reviewExportTargetForTest: vscode.Uri | undefined;
+  let reviewExportDialogForTest: (() => Promise<void>) | undefined;
+  let reviewBasePickerForTest: vscode.QuickPick<vscode.QuickPickItem> | undefined;
+  let reviewExportErrorForTest: string | undefined;
   let summaryEditor: vscode.TextEditor | undefined;
   let summaryEditorPair: string | undefined;
   let summaryLookupEpoch = 0;
@@ -3210,33 +3212,6 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     }
   };
 
-  const workingReviewExportGate = async (session: Review): Promise<string> => {
-    const result = await workingTreeDifferences(session.root, session.items.map((item) => item.file));
-    const options = snapshotOptions();
-    const workingPaths = new Set(session.items.flatMap((item) =>
-      [item.ref.original, item.ref.modified]
-        .filter((side) => side.source.kind === "working")
-        .map((side) => side.path)));
-    const differences = new Map(result.differences.map((entry) => [entry.path, entry.reason]));
-    for (const [absolute, buffer] of options.buffers ?? []) {
-      if (!isAbsolute(absolute)) continue;
-      const path = relative(session.root, absolute).split(sep).join("/");
-      if (!workingPaths.has(path)) continue;
-      try {
-        const disk = await readFile(absolute, "utf8");
-        if (disk !== buffer) differences.set(path, "unsaved editor buffer differs from disk");
-      } catch {
-        differences.set(path, "unsaved editor buffer could not be compared with disk");
-      }
-    }
-    if (differences.size) {
-      const detail = [...differences].sort(([left], [right]) => left.localeCompare(right))
-        .map(([path, reason]) => `- ${path}: ${reason}`).join("\n");
-      throw new Error(`Export is blocked because reviewed files differ from HEAD:\n${detail}`);
-    }
-    return result.head;
-  };
-
   const REVIEW_EXPORT_FOLDER = "downsideUp.reviewExportFolder";
   const isFolder = (path: string): Promise<boolean> => stat(path).then((info) => info.isDirectory(), () => false);
   /** Resolves symlinks in the chosen folder; the file itself may not exist yet. */
@@ -3245,7 +3220,10 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
 
   /** Native Save As, warning before a location inside the reviewed repository. Undefined when cancelled. */
   const chooseReviewExportTarget = async (root: string, data: ReviewExportData): Promise<vscode.Uri | undefined> => {
-    if (allowMock && reviewExportTargetForTest) return reviewExportTargetForTest;
+    if (allowMock && reviewExportTargetForTest) {
+      await reviewExportDialogForTest?.();
+      return reviewExportTargetForTest;
+    }
     const name = reviewExportFileName({ root, kind: data.kind, base: data.base, ...(data.commit ? { commit: data.commit } : {}), date: new Date() });
     const repository = await realpath(root).catch(() => resolve(root));
     let folder = await defaultReviewExportFolder(context.globalState.get<string>(REVIEW_EXPORT_FOLDER), homedir(), isFolder);
@@ -3290,23 +3268,43 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       return;
     }
     let head: string | undefined;
+    if (allowMock) reviewExportErrorForTest = undefined;
     try {
-      if (session.kind === "working") head = await workingReviewExportGate(session);
+      if (session.kind === "working") head = (await commitDetails(session.root, "HEAD")).hash;
       if (!ownsSession()) return;
+      const observed: string[] = [];
+      for (const item of session.items) {
+        observed.push(snapshotSignature(await readComparison(item.ref, snapshotOptions())));
+      }
+      const provenance = {
+        ...(head ? { head } : {}),
+        ...(session.provenance.commit ? { commit: session.provenance.commit } : {}),
+        ...(session.provenance.parent ? { parent: session.provenance.parent } : {})
+      };
       const prepared = await service.prepareReviewExport(summaryScope(session),
-        (ref) => readComparison(ref, snapshotOptions()), {
-          ...(head ? { head } : {}),
-          ...(session.provenance.commit ? { commit: session.provenance.commit } : {}),
-          ...(session.provenance.parent ? { parent: session.provenance.parent } : {})
-        });
+        (ref) => readComparison(ref, snapshotOptions()), provenance);
       if (!ownsSession()) return;
       const markdown = renderReviewExport(prepared.data);
       const target = await chooseReviewExportTarget(session.root, prepared.data);
       if (!target || !ownsSession()) return;
       // Recheck after the dialog, so time spent choosing a file is covered too.
       if (session.kind === "working") {
-        const latestHead = await workingReviewExportGate(session);
+        const latestHead = (await commitDetails(session.root, "HEAD")).hash;
         if (latestHead !== head) throw new Error("HEAD moved while the export was being prepared. Try again.");
+      }
+      for (const [index, item] of session.items.entries()) {
+        if (snapshotSignature(await readComparison(item.ref, snapshotOptions())) !== observed[index]) {
+          throw new Error(`The confirmed source for ${item.path} changed while the export was prepared.`);
+        }
+      }
+      // Revalidate trust, models, sharing policy, and saved evidence after Save As.
+      const latest = await service.prepareReviewExport(summaryScope(session),
+        (ref) => readComparison(ref, snapshotOptions()), provenance);
+      if (JSON.stringify({ ...latest.data, exportedAt: prepared.data.exportedAt }) !== JSON.stringify(prepared.data)) {
+        throw new Error("The review evidence, sharing settings, or models changed while the export was prepared. Try again.");
+      }
+      if (session.kind === "working" && (await commitDetails(session.root, "HEAD")).hash !== head) {
+        throw new Error("HEAD moved while the export was being prepared. Try again.");
       }
       if (!ownsSession()) return;
       await vscode.workspace.fs.writeFile(target, new TextEncoder().encode(markdown));
@@ -3337,6 +3335,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
         await exportReviewDocument(session, token, false);
         return;
       }
+      if (allowMock) reviewExportErrorForTest = message;
       await vscode.window.showWarningMessage(`Review export could not be prepared: ${message}`);
     }
   };
@@ -3551,10 +3550,17 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       ? Promise.resolve(true)
       : ensureLanguageModelSelected().catch(() => false);
     type BaseItem = vscode.QuickPickItem & { phrase: string; commit: string };
+    const existing = forExport ? reviewSession ?? retainedReview : undefined;
+    const pickExisting: BaseItem = {
+      label: reviewSession ? "$(export) Export current review" : "$(export) Export most recent review",
+      description: existing ? `${existing.base} · ${plural(existing.items.length, "file")}` : "",
+      phrase: "", commit: ""
+    };
     const pickCommit: BaseItem = { label: "$(git-commit) Changes since a commit…", description: "choose from recent commits", phrase: "", commit: "" };
     const pickImmutableCommit: BaseItem = { label: "$(export) Export a commit review…", description: "compare an immutable commit with its parent", phrase: "", commit: "" };
     const quickPick = vscode.window.createQuickPick<BaseItem>();
-    quickPick.title = "Explain changed files";
+    if (allowMock) reviewBasePickerForTest = quickPick;
+    quickPick.title = forExport ? "Export Review Summary" : "Explain changed files";
     quickPick.placeholder = "Finding comparison bases…";
     quickPick.busy = true;
     quickPick.enabled = false;
@@ -3573,7 +3579,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     let picked: BaseItem | undefined;
     let root: string | undefined;
     try {
-      root = await rootForCommand() ?? (vscode.workspace.workspaceFolders?.length === 1
+      root = existing?.root ?? await rootForCommand() ?? (vscode.workspace.workspaceFolders?.length === 1
         ? await findRepositoryRoot(vscode.workspace.workspaceFolders[0]!.uri.fsPath).catch(() => undefined)
         : undefined);
       if (hidden) return;
@@ -3589,13 +3595,20 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
         await vscode.window.showInformationMessage("Review mode needs a Git repository with at least one commit.");
         return;
       }
-      quickPick.items = [...choices, pickCommit, ...(forExport ? [pickImmutableCommit] : [])];
-      quickPick.placeholder = "Compare the checked-out code with…";
+      quickPick.items = [...(existing ? [pickExisting] : []), ...choices, pickCommit, ...(forExport ? [pickImmutableCommit] : [])];
+      quickPick.placeholder = forExport
+        ? "Choose which changes to include in the exported review"
+        : "Compare the checked-out code with…";
       quickPick.busy = false;
       quickPick.enabled = true;
       picked = await pickedPromise;
     } finally {
+      if (reviewBasePickerForTest === quickPick) reviewBasePickerForTest = undefined;
       quickPick.dispose();
+    }
+    if (forExport && picked === pickExisting) {
+      await exportConfirmedReview();
+      return;
     }
     if (forExport && picked === pickImmutableCommit) {
       await prepareCommitCommand(undefined, undefined, true);
@@ -3628,7 +3641,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     if (started && forExport && reviewSession) await exportReviewDocument(reviewSession);
   };
 
-  const exportReviewSummaryCommand = async (): Promise<void> => {
+  const exportConfirmedReview = async (): Promise<void> => {
     if (reviewSession) {
       await exportReviewDocument(reviewSession);
       return;
@@ -3649,8 +3662,9 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       await exportReviewDocument(session);
       return;
     }
-    await reviewChangesCommand(true);
   };
+
+  const exportReviewSummaryCommand = async (): Promise<void> => reviewChangesCommand(true);
 
   /** Native URIs for a confirmed pair; absent sides retain their revision identity. */
   const reviewDiffUris = (item: ReviewItem): { original: vscode.Uri; modified: vscode.Uri } => {
@@ -4808,7 +4822,13 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       return item ? reviewDiffUris(item) : undefined;
     },
     reviewItems: () => (reviewSession?.items ?? []).map((item) => ({ path: item.path, change: item.file.status, status: item.status })),
-    setReviewExportTarget: (target) => { reviewExportTargetForTest = target; },
+    setReviewExportTarget: (target, dialog) => {
+      reviewExportTargetForTest = target;
+      reviewExportDialogForTest = dialog;
+    },
+    reviewBaseChoices: () => reviewBasePickerForTest?.enabled
+      ? reviewBasePickerForTest.items.map((item) => item.label) : undefined,
+    reviewExportError: () => reviewExportErrorForTest,
     reviewNavigation: () => {
       const owner = activeReviewNavigation;
       if (owner && owner.session === reviewSession && !owner.item && summarySelected) {
@@ -4848,7 +4868,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       if (session && item) await openReviewDiff(session, item);
     },
     showReviewSummary: async () => { if (reviewSession) await showReviewSummary(reviewSession); },
-    invokeReviewSummary: (operation: "generate" | "cancel" | "open", token: string, fileId?: string) =>
+    invokeReviewSummary: (operation: "generate" | "cancel" | "open" | "export", token: string, fileId?: string) =>
       handlePanelAction({ type: "reviewSummary", operation, token, ...(fileId ? { fileId } : {}) }),
     stopReview: () => dismissReview(),
     pauseReview: () => { stopReview(); updateReviewStatus(); },
@@ -4926,13 +4946,15 @@ export interface DownsideUpTestApi {
   reviewDiffUris(path: string): { original: vscode.Uri; modified: vscode.Uri } | undefined;
   reviewItems(): Array<{ path: string; change: string; status: string }>;
   /** Where Export Review Summary writes instead of asking with a native save dialog. */
-  setReviewExportTarget(target: vscode.Uri | undefined): void;
+  setReviewExportTarget(target: vscode.Uri | undefined, dialog?: () => Promise<void>): void;
+  reviewBaseChoices(): readonly string[] | undefined;
+  reviewExportError(): string | undefined;
   reviewNavigation(): { token: string; fileName: string; position: number; total: number; canPrevious: boolean; canNext: boolean; summary?: boolean } | undefined;
   invokeReviewNavigation(direction: "previous" | "next" | "picker", token: string): Promise<void>;
   shownReviewSummary(): ReviewSummaryView | undefined;
   openReviewedFile(path: string): Promise<void>;
   showReviewSummary(): Promise<void>;
-  invokeReviewSummary(operation: "generate" | "cancel" | "open", token: string, fileId?: string): Promise<void>;
+  invokeReviewSummary(operation: "generate" | "cancel" | "open" | "export", token: string, fileId?: string): Promise<void>;
   answerLeaveReview(answer: "End Review" | undefined): () => number;
   renderedReviewNavigation(reset?: boolean): Array<{ fileName: string; loading: boolean; stats: boolean } | undefined>;
   /** The native diff shown in the preview, or undefined. */

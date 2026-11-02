@@ -733,7 +733,11 @@ file, subject to normal privacy and size checks.
 
 **Exporting a summary.** Use **Downside Up: Export Review Summary…** or
 **Export** on the Review summary page, then choose a file in the native save
-dialog; the saved file opens beside the review. The suggested name is
+dialog; the saved file opens beside the review. The command first offers the
+same bases as **Review Changes…**, including **Uncommitted changes only**, an
+immutable commit review, and the active or most recently retained review.
+Cancelling scope selection leaves the existing review intact. The summary
+page's **Export** button uses that review directly. The suggested name is
 `review-<repository>-<base or commit>-<YYYY-MM-DD>.md` in the folder you last
 exported to, or else `Downloads` (or your home folder). Choosing a location
 inside the reviewed repository asks first, because the file would then be
@@ -749,7 +753,7 @@ Markdown preview shows as code. Export does not call a model, request
 consent, or write to GitHub; it writes only the file you choose, and the save
 dialog asks before replacing an existing one. If the summary is missing or
 outdated, the command offers a separate, explicitly confirmed Overview-model
-request. Without an active or retained review, choose **Summary only** to keep
+request. For a new scope, choose **Summary only** to keep
 the confirmed file set navigable without background Functions comparisons, or
 **Full review** to prepare those comparisons as usual. Explicit per-file
 **Explain changes** remains available in either case, and a later full review
@@ -758,10 +762,11 @@ A retained review whose low-value filter has changed must be confirmed again.
 The new-review picker also offers an immutable commit review against its
 selected parent. If no Overview model is configured for a summary-only review,
 setup selects one without selecting a Functions model or granting sharing
-consent; run the export again afterwards. A
-working-review export is blocked when any confirmed file differs from `HEAD`,
-including index changes, working-tree edits, or unsaved buffers; unrelated
-dirty files do not block it. Commit-review export uses the recorded immutable
+consent; run the export again afterwards.
+Working reviews can export staged, unstaged, untracked, and unsaved changes.
+Reviewed sources, `HEAD`, trust, sharing policy, models, and saved evidence
+are rechecked after the save dialog; changes during preparation block export,
+but unrelated dirty files do not. Commit-review export uses the recorded immutable
 commit and parent.
 
 ### Saved explanations on hover

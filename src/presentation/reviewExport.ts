@@ -272,7 +272,7 @@ export function renderReviewExport(data: ReviewExportData): string {
   const { summary, coverage } = data;
   const provenance = data.kind === "commit"
     ? [`Commit: ${data.commit ?? data.base}`, `Parent: ${data.parent ?? "none (root commit)"}`]
-    : [`Base: ${data.base}`, `HEAD: ${data.head ?? "unknown"}`];
+    : [`Base: ${data.base}`, `HEAD: ${data.head ?? "unknown"}`, "Compared with: the working tree, including unsaved edits"];
   const themes = summary.value.themes.map((theme) => [
     `### ${markdownText(theme.title)}`,
     markdownText(theme.text),

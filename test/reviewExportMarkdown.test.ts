@@ -101,6 +101,7 @@ describe("review export Markdown", () => {
     const output = renderReviewExport(data);
     expect(output).toBe(renderReviewExport(data));
     expect(output).toContain("## Summary\nA contract change");
+    expect(output).toContain("Compared with&#58; the working tree&#44; including unsaved edits");
     expect(output).toContain('n0["A contract change (src main.ts)"]');
     expect(output).toContain("n0 -->|A contract change| n1");
     expect(output).toContain("<summary>src&#47;main&#46;ts</summary>");
