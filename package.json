@@ -50,6 +50,11 @@
         "category": "Downside Up"
       },
       {
+        "command": "downsideUp.publishReviewSummary",
+        "title": "Publish Review to Pull Request…",
+        "category": "Downside Up"
+      },
+      {
         "command": "downsideUp.prepareCommit",
         "title": "Prepare Commit Explanations…",
         "category": "Downside Up"
@@ -193,7 +198,7 @@
           },
           "downsideUp.explanations.formats": {
             "type": "object",
-            "markdownDescription": "Extra ways to show **What happens** in function explanations, as tabs next to the numbered steps. Enabled views are generated together with new explanations, which makes each request somewhat larger; for saved explanations, open the tab and choose **Generate**. Paired change comparisons include their Steps, Pseudocode, and Flowchart together in one request, either **Explain changes** or opted-in prefetch.",
+            "markdownDescription": "Extra ways to show **What happens** in function explanations, as tabs next to the numbered steps. Enabled views are generated together with new explanations, which makes each request somewhat larger; for saved explanations, open the tab and choose **Generate**. Paired change comparisons include their Steps, Pseudocode, and Flowchart together, either **Explain changes** or opted-in prefetch. Large comparisons can use up to two same-file context follow-ups.",
             "properties": {
               "pseudocode": {
                 "type": "boolean",
@@ -334,7 +339,7 @@
             "minimum": 32,
             "maximum": 512,
             "scope": "application",
-            "markdownDescription": "The largest request, in KiB, for an explanation, an added pseudocode or flowchart view, a file or folder summary, or main flows. A request that would be larger is not sent, and you are told its size. Large functions with much related code need more; a smaller limit caps what each request costs. The model's own input limit also applies. Repository context uses #downsideUp.maxProjectContextRequestSize# instead.",
+            "markdownDescription": "The largest request, in KiB, for an explanation, an added pseudocode or flowchart view, a file or folder summary, or main flows. Large change comparisons first use diff-first excerpts, keeping every changed line and bounded surrounding context, with up to two same-file context follow-ups. Other oversized requests, or comparisons whose changed lines cannot fit, are not sent. A smaller limit caps each request, not the combined cost of follow-ups. The model's own input limit also applies. Repository context uses #downsideUp.maxProjectContextRequestSize# instead.",
             "order": 0
           },
           "downsideUp.maxProjectContextRequestSize": {
@@ -460,6 +465,7 @@
     "onCommand:downsideUp.showFileOverview",
     "onCommand:downsideUp.reviewChanges",
     "onCommand:downsideUp.exportReviewSummary",
+    "onCommand:downsideUp.publishReviewSummary",
     "onCommand:downsideUp.prepareCommit",
     "onCommand:downsideUp.previewProject",
     "onCommand:downsideUp.selectOverviewModel",
@@ -478,6 +484,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:extension": "npm run build && node ./scripts/test-extension.mjs",
+    "test:extension:publication": "npm run build && node ./scripts/test-extension.mjs publication",
     "package": "npm run build && vsce package --allow-missing-repository",
     "lint": "tsc --noEmit",
     "pretest": "npm run typecheck"

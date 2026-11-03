@@ -298,6 +298,29 @@ export async function commitDetails(root: string, revision: string): Promise<Com
   return { hash, parents };
 }
 
+/** An exact PR three-dot base, using only existing local objects and complete history. */
+export async function pullRequestMergeBase(root: string, base: string, head: string): Promise<string> {
+  if (![base, head].every((hash) => /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(hash))) {
+    throw new Error("The PR revisions are invalid.");
+  }
+  if ((await gitText(root, ["rev-parse", "--show-prefix"])).trim()) {
+    throw new Error("Publishing requires a review rooted at the Git repository root, not a subdirectory.");
+  }
+  if ((await gitText(root, ["rev-parse", "--is-shallow-repository"])).trim() !== "false") {
+    throw new Error("PR publishing requires complete local Git history; shallow repositories cannot be verified.");
+  }
+  try {
+    await Promise.all([commitDetails(root, base), commitDetails(root, head)]);
+    const hashes = (await gitText(root, ["merge-base", "--all", base, head])).trim().split(/\s+/);
+    if (hashes.length !== 1 || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(hashes[0]!)) {
+      throw new Error("ambiguous merge base");
+    }
+    return hashes[0]!;
+  } catch {
+    throw new Error("The PR merge base could not be verified locally. Its base and head commits and their complete history must be available; publishing never fetches or changes Git refs.");
+  }
+}
+
 export interface CommitScope {
   readonly commit: string;
   /** An actual parent commit, or Git's empty tree for a root commit. */

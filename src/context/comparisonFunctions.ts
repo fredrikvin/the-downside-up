@@ -52,7 +52,9 @@ export function classifyComparisonFunctions(
 }
 
 /** Both inventories use the exact authorized snapshot texts, with no working-tree fallback. */
-export async function comparisonCatalogue(snapshot: ComparisonSnapshot): Promise<ComparisonCatalogue> {
+export async function comparisonInventories(snapshot: ComparisonSnapshot): Promise<{
+  catalogue: ComparisonCatalogue; original: FunctionDiscovery; modified: FunctionDiscovery;
+}> {
   const discover = async (side: ComparisonSnapshot["original"]): Promise<FunctionDiscovery> => {
     if (side.state === "absent") return { status: "complete", entries: [], limitations: [] };
     const language = languageFor({ path: side.path });
@@ -63,6 +65,15 @@ export async function comparisonCatalogue(snapshot: ComparisonSnapshot): Promise
       return { status: "unavailable", entries: [], limitations: [] };
     }
   };
-  return classifyComparisonFunctions(await discover(snapshot.original), await discover(snapshot.modified),
-    fingerprint(JSON.stringify([snapshot.root, snapshot.original, snapshot.modified])));
+  const [original, modified] = await Promise.all([discover(snapshot.original), discover(snapshot.modified)]);
+  return {
+    original, modified,
+    catalogue: classifyComparisonFunctions(original, modified,
+      fingerprint(JSON.stringify([snapshot.root, snapshot.original, snapshot.modified])))
+  };
+}
+
+/** Compatibility wrapper for callers that need only changed-function classification. */
+export async function comparisonCatalogue(snapshot: ComparisonSnapshot): Promise<ComparisonCatalogue> {
+  return (await comparisonInventories(snapshot)).catalogue;
 }

@@ -1,6 +1,6 @@
 import { resolve } from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
-import { classifyComparisonFunctions, comparisonCatalogue } from "../src/context/comparisonFunctions";
+import { classifyComparisonFunctions, comparisonCatalogue, comparisonInventories } from "../src/context/comparisonFunctions";
 import { languageFor } from "../src/languages/registry";
 import { initializeLanguage } from "../src/languages/registry";
 import type { FunctionDiscovery } from "../src/languages/support";
@@ -92,5 +92,17 @@ describe("exact snapshot function classification", () => {
     const added = await discover("function a(){}");
     expect(classifyComparisonFunctions(empty, added, "one").entries[0]?.id)
       .not.toBe(classifyComparisonFunctions(empty, added, "two").entries[0]?.id);
+  });
+
+  it("returns complete snapshot inventories including functions omitted from the changed catalogue", async () => {
+    const side = { path: "a.ts", identity: "working", state: "present", detail: "",
+      text: "function same() { return 1; }", fingerprint: "exact", lines: 1 } as const;
+    const snapshot: ComparisonSnapshot = { root: "/repo", original: side, modified: side };
+    const result = await comparisonInventories(snapshot);
+    expect(result.catalogue.entries).toEqual([]);
+    expect(result.original.status).toBe("complete");
+    expect(result.original.entries.map((entry) => entry.name)).toEqual(["same"]);
+    expect(result.modified.entries).toEqual(result.original.entries);
+    expect(await comparisonCatalogue(snapshot)).toEqual(result.catalogue);
   });
 });

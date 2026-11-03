@@ -58,6 +58,34 @@ describe("host catalogue response validation", () => {
 });
 
 describe("parseComparison", () => {
+  it("accepts intermediate context requests without requiring final catalogue summaries", () => {
+    const request = { side: "original", startLine: 10, endLine: 15, reason: "Need the helper body." };
+    const parsed = parseComparison({ contextRequests: [request] }, { ...bounds, catalogue, contextRoundsLeft: 2 });
+    expect(parsed.contextRequests).toEqual([request]);
+    expect(parsed.changes).toEqual([]);
+    expect(() => parseComparison({ contextRequests: [request] }, bounds)).toThrow("no rounds remain");
+    expect(() => parseComparison({ contextRequests: Array.from({ length: 7 }, () => request) },
+      { ...bounds, contextRoundsLeft: 2 })).toThrow();
+  });
+
+  it("rejects evidence that crosses omitted lines even when it fits the snapshot bounds", () => {
+    const response = comparisonResponse();
+    expect(() => parseComparison(response, {
+      ...bounds, originalRanges: [{ start: 2, end: 2 }, { start: 4, end: 8 }]
+    })).toThrow("outside the supplied comparison context");
+  });
+
+  it("omits a visual using unseen lines while preserving independent valid textual evidence", () => {
+    const response = comparisonResponse();
+    response.changes[0]!.original = { startLine: 2, endLine: 2 };
+    const parsed = parseComparison(response, {
+      ...bounds, originalRanges: [{ start: 2, end: 2 }, { start: 4, end: 8 }]
+    });
+    expect(parsed.changes).toHaveLength(1);
+    expect(parsed.visualScopes).toBeUndefined();
+    expect(parsed.limitations.join(" ")).toContain("outside its comparison side");
+  });
+
   it("omits visuals that continue after a return while retaining behavioral text", () => {
     const wire = comparisonResponse();
     wire.visualScopes[0]!.original.operations[0]!.kind = "end";

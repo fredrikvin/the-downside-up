@@ -9,6 +9,7 @@ import type {
   ComparisonRecord,
   ComparisonSideRecord,
   ComparisonSpan,
+  ComparisonSourceRange,
   ExplanationRecord,
   FileComparison,
   FileSummaryRecord,
@@ -33,11 +34,12 @@ import type {
 } from "./core/types";
 import { comparisonProblem, describeIdentity, snapshotSignature, type ChangedFile, type ComparisonSnapshot, type SideSnapshot } from "./context/comparison";
 import {
-  buildReviewSummaryRequest, reviewComparisonCurrent, reviewSnapshotMatches, validateReviewSummaryScope,
+  buildReviewSummaryRequest, reviewComparisonCurrent, reviewSnapshotMatches, reviewSummaryScopeKey, validateReviewSummaryScope,
   type PreparedReviewSummary, type ReviewSummaryRead, type ReviewSummaryScope
 } from "./context/reviewSummary";
 import { parseReviewSummary } from "./generation/schema";
-import { comparisonCatalogue } from "./context/comparisonFunctions";
+import { comparisonInventories } from "./context/comparisonFunctions";
+import { buildComparisonExcerpt, expandComparisonExcerpt, excerptOmitted, type ComparisonExcerpt } from "./context/comparisonExcerpt";
 import { gatherInventory, sharingExclusion, type RepositoryInventory } from "./context/inventory";
 import { checkedProjectMap, outlineText } from "./context/projectMap";
 import {
@@ -47,7 +49,7 @@ import {
 import { addLocalSymbolOutline } from "./context/symbolIndex";
 import { currentPolicy } from "./context/policy";
 import { bundledLanguageIdForPath, languageFor, sourceFingerprint } from "./languages/registry";
-import { normalizeStepLines } from "./presentation/stepLines";
+import { comparisonRangeIncluded, normalizeStepLines, numberLineRanges } from "./presentation/stepLines";
 import type { ReviewExportData, ReviewExportFile } from "./presentation/reviewExport";
 import { ModelSetupRequired, providerConfigured } from "./generation/selection";
 import {
@@ -212,8 +214,9 @@ export interface SavedComparison {
 }
 
 /** Keeps a span only when it lies inside a present side's lines, so links never point at lines that are not there. */
-function checkedSpan(span: ComparisonSpan, side: SideSnapshot): ComparisonSpan {
-  return side.state === "present" && span.start >= 1 && span.end >= span.start && span.end <= side.lines ? span : { start: 0, end: 0 };
+function checkedSpan(span: ComparisonSpan, side: SideSnapshot, ranges?: readonly ComparisonSourceRange[]): ComparisonSpan {
+  return side.state === "present" && span.start >= 1 && span.end >= span.start && span.end <= side.lines &&
+    comparisonRangeIncluded(ranges, span.start, span.end) ? span : { start: 0, end: 0 };
 }
 
 function folderSummaryKey(path: string, descriptor: ProviderDescriptor): string {
@@ -1649,6 +1652,45 @@ export class ExplanationService {
     return { data, ...(provenance.head ? { head: provenance.head } : {}) };
   }
 
+  /** Lightweight publication fence: rechecks saved records and sharing, without rereading immutable Git blobs. */
+  async reviewPublicationGuard(scope: ReviewSummaryScope, data: ReviewExportData): Promise<() => Promise<void>> {
+    const fence = this.fence(scope.root);
+    const identity = (): string => JSON.stringify([this.options.describeProvider(), this.overviewDescriptor(),
+      this.maxRequestBytes(), this.options.reviewFilterFingerprint?.(scope.root)]);
+    const settings = identity();
+    const key = reviewSummaryScopeKey(scope);
+    const cache = await this.readCache(scope.root);
+    const savedKeys = new Map(Object.entries(cache.comparisons ?? {}).map(([recordKey, record]) =>
+      [JSON.stringify(record), recordKey]));
+    const records = data.files.flatMap((file) => {
+      if (!file.comparison) return [];
+      const saved = JSON.stringify(file.comparison);
+      const recordKey = savedKeys.get(saved);
+      if (!recordKey) throw new Error("A saved file comparison changed before publishing.");
+      return [{ key: recordKey, saved }];
+    });
+    const summary = JSON.stringify(data.summary);
+    return async () => {
+      const check = (): void => {
+        if (vscode.workspace.isTrusted === false || this.fence(scope.root) !== fence || identity() !== settings) {
+          throw new Error("Workspace trust, review models, filters, or cache state changed before publishing.");
+        }
+      };
+      check();
+      const report = await (await currentPolicy()).repositoryReport(scope.root);
+      if (report.restricted || report.error) throw new Error("Repository sharing policy blocks publication or could not be verified.");
+      for (const item of scope.items) {
+        if (!(await this.reviewSummaryAllowed(item.ref))) throw new Error(`Sharing exclusions changed for ${item.path}; publication stopped.`);
+      }
+      const latest = await this.readCache(scope.root);
+      if (JSON.stringify(latest.reviewSummaries?.[key]) !== summary ||
+          records.some((record) => JSON.stringify(latest.comparisons?.[record.key]) !== record.saved)) {
+        throw new Error("Saved review evidence changed before publishing.");
+      }
+      check();
+    };
+  }
+
   /**
    * One explicit Overview-model request from frozen confirmed source diffs.
    * No overview priming, per-file generation or background consent.
@@ -1750,14 +1792,16 @@ export class ExplanationService {
 
   /**
    * Explains what the change between two exact versions of one file does,
-   * on explicit request or opted-in prefetch, with one bounded request holding both sides.
+   * on explicit request or opted-in prefetch. Large pairs use excerpts and at most
+   * two same-file context follow-ups, all under the same authorization and signal.
    * `reread` reads the sides again after the model answers; a result is
    * rejected, not saved, when either side changed meanwhile.
    */
   async explainComparison(
     snapshot: ComparisonSnapshot,
     reread: () => Promise<ComparisonSnapshot>,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    onProgress?: (detail: string) => void
   ): Promise<SavedComparison & { usage?: Usage; cached: boolean }> {
     this.requireModel();
     const { root } = snapshot;
@@ -1777,17 +1821,42 @@ export class ExplanationService {
       source: version.text
     });
     const repositoryPurpose = (await this.readCache(root)).overview?.value.purpose;
-    const input: ComparisonPromptInput = {
+    const inventories = await comparisonInventories(snapshot);
+    const baseInput: ComparisonPromptInput = {
       repositoryName: basename(root),
       languageId: bundledLanguageIdForPath(path) ?? (extname(path).slice(1) || "text"),
       original: side(snapshot.original),
       modified: side(snapshot.modified),
-      catalogue: await comparisonCatalogue(snapshot),
+      catalogue: inventories.catalogue,
       ...(repositoryPurpose ? { repositoryPurpose } : {})
     };
-    const [system, user] = comparisonPrompt(input);
-    const requestBytes = Buffer.byteLength(system + user, "utf8");
-    if (requestBytes > this.maxRequestBytes()) throw tooLarge("change", requestBytes, this.maxRequestBytes());
+    const limit = this.maxRequestBytes();
+    const bytes = (candidate: ComparisonPromptInput) => Buffer.byteLength(comparisonPrompt(candidate).join(""), "utf8");
+    const withExcerpt = (excerpt: ComparisonExcerpt, roundsLeft: number): ComparisonPromptInput => {
+      const omitted = excerptOmitted(snapshot, excerpt);
+      const excerptSide = (name: "original" | "modified") => ({
+        ...baseInput[name],
+        ...(baseInput[name].present ? {
+          excerpt: { ranges: excerpt[name], numbered: numberLineRanges(baseInput[name].source, excerpt[name]) }
+        } : {})
+      });
+      return {
+        ...baseInput, original: excerptSide("original"), modified: excerptSide("modified"),
+        context: {
+          roundsLeft,
+          limitations: [...excerpt.limitations,
+            `Diff-first context: ${omitted.original} original and ${omitted.modified} modified lines omitted. All changed lines are included; unseen code may affect behavior.`]
+        }
+      };
+    };
+    let excerpt: ComparisonExcerpt | undefined;
+    let input = baseInput;
+    if (bytes(input) > limit) {
+      excerpt = buildComparisonExcerpt(snapshot, inventories, (candidate) => bytes(withExcerpt(candidate, 2)) <= limit);
+      input = withExcerpt(excerpt, 2);
+    }
+    const requestBytes = bytes(input);
+    if (requestBytes > limit) throw tooLarge("change", requestBytes, limit);
     assertNotCancelled(signal);
     if (descriptor.kind !== "mock" && !(await this.options.authorizeExternalData(root, descriptor, requestBytes, signal))) {
       throw new DOMException("External code sharing was not authorized.", "AbortError");
@@ -1797,33 +1866,62 @@ export class ExplanationService {
       assertNotCancelled(signal);
       const current = this.options.describeProvider();
       if (vscode.workspace.isTrusted === false || current.kind !== descriptor.kind || current.modelId !== descriptor.modelId ||
-          this.fence(root) !== startingFence || comparisonProblem(latest) ||
+          this.fence(root) !== startingFence || this.maxRequestBytes() !== limit || comparisonProblem(latest) ||
           JSON.stringify(latest) !== JSON.stringify(snapshot) ||
           await sharingExclusion(root, resolve(root, snapshot.original.path)) || await sharingExclusion(root, resolve(root, snapshot.modified.path))) {
-        throw new Error("The files changed while the change was being explained, so the result was discarded.");
+        throw new Error("The files changed while the change was being explained, or its sharing/settings changed, so the result was discarded.");
       }
     };
     await validate();
     const provider = await this.options.createProvider(descriptor);
     await validate();
-    const generated = await provider.explainComparison(input, signal);
+    const usages: Usage[] = [];
+    let rounds = 0;
+    let generated = await provider.explainComparison(input, signal);
+    usages.push(generated.usage);
     assertNotCancelled(signal);
     await validate();
+    while (generated.value.contextRequests?.length) {
+      if (!excerpt || !input.context?.roundsLeft || rounds >= 2) {
+        throw new Error("The comparison requested additional context after its allowed rounds. Nothing was saved.");
+      }
+      const roundsLeft = input.context.roundsLeft - 1;
+      const next = expandComparisonExcerpt(snapshot, inventories, excerpt, generated.value.contextRequests,
+        (candidate) => bytes(withExcerpt(candidate, roundsLeft)) <= limit);
+      const added = JSON.stringify([next.original, next.modified]) !== JSON.stringify([excerpt.original, excerpt.modified]);
+      excerpt = next;
+      input = withExcerpt(excerpt, added ? roundsLeft : 0);
+      const nextBytes = bytes(input);
+      if (nextBytes > limit) throw tooLarge("change context", nextBytes, limit);
+      rounds++;
+      onProgress?.(added ? `Fetching more context (round ${rounds}/2)…` : "Completing comparison with available context…");
+      await validate();
+      generated = await provider.explainComparison(input, signal);
+      usages.push(generated.usage);
+      assertNotCancelled(signal);
+      await validate();
+    }
+    const usage = usageTotal(usages)!;
+    const { contextRequests: _requests, ...value } = generated.value;
     const comparison: FileComparison = {
-      ...generated.value,
-      limitations: [...new Set([...generated.value.limitations, ...input.catalogue!.limitations])],
-      changes: generated.value.changes.map((change) => ({
+      ...value,
+      limitations: [...new Set([...value.limitations, ...input.catalogue!.limitations, ...(input.context?.limitations ?? [])])],
+      changes: value.changes.map((change) => ({
         ...change,
-        original: checkedSpan(change.original, snapshot.original),
-        modified: checkedSpan(change.modified, snapshot.modified)
+        original: checkedSpan(change.original, snapshot.original, input.original.excerpt?.ranges),
+        modified: checkedSpan(change.modified, snapshot.modified, input.modified.excerpt?.ranges)
       }))
     };
     const record: ComparisonRecord = {
       catalogue: input.catalogue,
+      context: {
+        mode: excerpt ? "diff" : "full", rounds,
+        omittedLines: excerpt ? excerptOmitted(snapshot, excerpt) : { original: 0, modified: 0 }
+      },
       original: sideRecord(snapshot.original),
       modified: sideRecord(snapshot.modified),
       comparison,
-      usage: generated.usage,
+      usage,
       provider: descriptor.kind,
       model: descriptor.modelId,
       promptVersion: COMPARISON_PROMPT_VERSION,
@@ -1840,7 +1938,7 @@ export class ExplanationService {
       assertNotCancelled(signal);
       throw new Error("The files changed while the change was being explained, so the result was discarded.");
     }
-    return { ...savedComparison(record, snapshot), usage: generated.usage, cached: false };
+    return { ...savedComparison(record, snapshot), usage, cached: false };
   }
 
   async clearCache(root: string): Promise<void> {

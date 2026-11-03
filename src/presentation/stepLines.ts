@@ -1,10 +1,33 @@
-import type { FunctionExplanation, LineLinked } from "../core/types";
+import type { ComparisonSourceRange, FunctionExplanation, LineLinked } from "../core/types";
 
 /** Prefixes each source line with its 1-based number, as sent to the model. */
 export function numberLines(source: string): string {
   const lines = source.split(/\r?\n/);
   const width = String(lines.length).length;
   return lines.map((line, index) => `${String(index + 1).padStart(width)}| ${line}`).join("\n");
+}
+
+/** Excerpts keep snapshot line numbers; gaps are data, not invented source lines. */
+export function numberLineRanges(source: string, ranges: readonly ComparisonSourceRange[]): string {
+  const lines = source.split(/\r\n|\r|\n/);
+  const width = String(lines.length).length;
+  const numbered: string[] = [];
+  let next = 1;
+  for (const range of ranges) {
+    if (range.start > next) numbered.push(`[${range.start - next} lines omitted]`);
+    for (let line = range.start; line <= range.end; line++) {
+      numbered.push(`${String(line).padStart(width)}| ${lines[line - 1]}`);
+    }
+    next = range.end + 1;
+  }
+  if (next <= lines.length) numbered.push(`[${lines.length - next + 1} lines omitted]`);
+  return numbered.join("\n");
+}
+
+export function comparisonRangeIncluded(
+  ranges: readonly ComparisonSourceRange[] | undefined, start: number, end: number
+): boolean {
+  return ranges === undefined || ranges.some((range) => start >= range.start && end <= range.end);
 }
 
 function normalizeItems<T extends LineLinked>(items: readonly T[], lines: readonly string[]): T[] {

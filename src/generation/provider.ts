@@ -1,6 +1,7 @@
 import type {
   ExplanationFormat,
   ComparisonCatalogue,
+  ComparisonSourceRange,
   FileComparisonDraft,
   FileSummary,
   FolderSummary,
@@ -73,6 +74,10 @@ export interface ComparisonSidePromptInput {
   readonly label: string;
   readonly present: boolean;
   readonly source: string;
+  readonly excerpt?: {
+    readonly ranges: readonly ComparisonSourceRange[];
+    readonly numbered: string;
+  };
 }
 
 /** The exact original and modified text of one file in a diff. */
@@ -83,6 +88,23 @@ export interface ComparisonPromptInput {
   readonly modified: ComparisonSidePromptInput;
   readonly repositoryPurpose?: string;
   readonly catalogue?: ComparisonCatalogue;
+  readonly context?: {
+    readonly roundsLeft: number;
+    readonly limitations: readonly string[];
+  };
+}
+
+/** Bounds always describe the full snapshots, even when only excerpts are shared. */
+export function comparisonBounds(input: ComparisonPromptInput) {
+  const lines = (side: ComparisonSidePromptInput) =>
+    side.present ? side.source.split(/\r\n|\r|\n/).length : 0;
+  return {
+    originalLines: lines(input.original), modifiedLines: lines(input.modified),
+    originalPresent: input.original.present, modifiedPresent: input.modified.present,
+    originalRanges: input.original.excerpt?.ranges, modifiedRanges: input.modified.excerpt?.ranges,
+    contextRoundsLeft: input.context?.roundsLeft ?? 0,
+    catalogue: input.catalogue
+  };
 }
 
 /** One file or subfolder of a folder being summarized; names and summaries only, never code. */

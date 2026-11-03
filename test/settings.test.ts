@@ -39,6 +39,12 @@ describe("extension settings", () => {
     expect(manifest.activationEvents).toContain("onCommand:downsideUp.exportReviewSummary");
     expect(extension).toContain('registerCommand("downsideUp.exportReviewSummary"');
   });
+  it("registers PR publishing separately from local export", () => {
+    const manifest = JSON.parse(readFileSync(resolve("package.json"), "utf8"));
+    expect(manifest.contributes.commands.find((entry: { command: string }) =>
+      entry.command === "downsideUp.publishReviewSummary")).toMatchObject({ title: "Publish Review to Pull Request…" });
+    expect(manifest.activationEvents).toContain("onCommand:downsideUp.publishReviewSummary");
+  });
   it("defaults to setup and never offers mock as a production provider choice", () => {
     expect(declaredSettings()["downsideUp.provider"]).toMatchObject({
       default: "none", enum: ["none", "vscode-lm", "openai"]

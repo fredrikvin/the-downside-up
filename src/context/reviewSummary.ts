@@ -1,5 +1,6 @@
 import { isAbsolute } from "node:path";
 import { validReviewPattern, type LowValueClassification } from "./reviewFilter";
+import { CONTEXT_LINES, sourceHunks, sourceLines } from "./sourceDiff";
 import { cacheKey, fingerprint } from "../core/fingerprint";
 import type {
   ComparisonRecord, RepositoryCache, ReviewSummaryCoverage, ReviewSummaryEvidence, ReviewSummaryRecord
@@ -8,7 +9,7 @@ import { COMPARISON_PROMPT_VERSION, REVIEW_SUMMARY_PROMPT_VERSION, reviewSummary
 import type { ReviewSummaryPromptInput } from "../generation/provider";
 import {
   MAX_CHANGED_FILES, MAX_SIDE_BYTES, comparisonProblem, describeIdentity, snapshotSignature, sourceIdentity,
-  type ComparisonRef, type ComparisonSnapshot
+  type ChangedFile, type ComparisonRef, type ComparisonSnapshot
 } from "./comparison";
 
 export type { ReviewSummary, ReviewSummaryCoverage, ReviewSummaryEvidence, ReviewSummaryRecord } from "../core/types";
@@ -28,6 +29,8 @@ export interface ReviewSummaryScope {
   readonly excluded?: number;
   readonly skipped?: number;
   readonly truncated?: boolean;
+  /** Exact locally discovered file set, including files skipped or excluded from explanations. */
+  readonly changedFiles?: readonly ChangedFile[];
 }
 
 export type ReviewSummaryRead = (ref: ComparisonRef) => Promise<ComparisonSnapshot>;
@@ -72,6 +75,12 @@ export function validateReviewSummaryScope(scope: ReviewSummaryScope): void {
     throw new Error("The review summary scope is invalid or exceeds the 200-file limit.");
   }
   const seen = new Set<string>();
+  if (scope.changedFiles && (scope.changedFiles.length > MAX_CHANGED_FILES ||
+      scope.changedFiles.some((file) => !path(file.path) || (file.oldPath !== undefined && !path(file.oldPath)) ||
+        !["added", "deleted", "modified", "renamed"].includes(file.status)) ||
+      new Set(scope.changedFiles.map((file) => file.path)).size !== scope.changedFiles.length)) {
+    throw new Error("The confirmed review file list is invalid.");
+  }
   for (const item of scope.items) {
     if (!item || !path(item.path) || !item.ref || item.ref.root !== scope.root ||
         typeof item.confirmed !== "string" || !item.confirmed || item.confirmed.length > 8192 ||
@@ -125,111 +134,6 @@ export interface ReviewSummaryRequest {
 }
 
 export const reviewEvidenceFingerprint = (record: ComparisonRecord): string => fingerprint(JSON.stringify(record));
-
-const CONTEXT_LINES = 3;
-const ALIGNMENT_LOOKAHEAD = 64;
-const sourceLines = (text: string): string[] => text ? text.replace(/\n$/, "").split("\n") : [];
-
-/**
- * Language-neutral, bounded line alignment. Every changed line is retained.
- * Nearby equal lines split replacement regions; when matching would require
- * unbounded searching, retain the entire unresolved region, never guess or
- * silently drop changes. This need not be a minimal diff to be exact evidence.
- */
-function sourceHunks(snapshot: ComparisonSnapshot): Pick<ReviewSummaryPromptInput["files"][number],
-  "diff" | "contextLines" | "omittedContext" | "limitations"> {
-  const before = sourceLines(snapshot.original.text);
-  const after = sourceLines(snapshot.modified.text);
-  const edits: { readonly kind: " " | "-" | "+"; readonly text: string }[] = [];
-  let original = 0;
-  let modified = 0;
-  let endOriginal = before.length;
-  let endModified = after.length;
-  // Keep the common suffix available even if a large replacement cannot align.
-  while (endOriginal > 0 && endModified > 0 && before[endOriginal - 1] === after[endModified - 1]) {
-    endOriginal--;
-    endModified--;
-  }
-  let coarse = false;
-  const removeUntil = (end: number): void => {
-    while (original < end) edits.push({ kind: "-", text: before[original++]! });
-  };
-  const addUntil = (end: number): void => {
-    while (modified < end) edits.push({ kind: "+", text: after[modified++]! });
-  };
-  while (original < endOriginal || modified < endModified) {
-    if (original < endOriginal && modified < endModified && before[original] === after[modified]) {
-      edits.push({ kind: " ", text: before[original++]! });
-      modified++;
-      continue;
-    }
-    const next = new Map<string, number>();
-    for (let index = modified; index < Math.min(endModified, modified + ALIGNMENT_LOOKAHEAD); index++) {
-      if (!next.has(after[index]!)) next.set(after[index]!, index);
-    }
-    let anchor: { original: number; modified: number; distance: number } | undefined;
-    for (let index = original; index < Math.min(endOriginal, original + ALIGNMENT_LOOKAHEAD); index++) {
-      const match = next.get(before[index]!);
-      if (match === undefined) continue;
-      const distance = index - original + match - modified;
-      if (!anchor || distance < anchor.distance) anchor = { original: index, modified: match, distance };
-    }
-    if (!anchor) {
-      coarse = original < endOriginal && modified < endModified;
-      removeUntil(endOriginal);
-      addUntil(endModified);
-      break;
-    }
-    removeUntil(anchor.original);
-    addUntil(anchor.modified);
-  }
-  while (original < before.length && modified < after.length) {
-    edits.push({ kind: " ", text: before[original++]! });
-    modified++;
-  }
-  const ranges: { start: number; end: number }[] = [];
-  for (let index = 0; index < edits.length; index++) {
-    if (edits[index]!.kind === " ") continue;
-    const start = Math.max(0, index - CONTEXT_LINES);
-    const end = Math.min(edits.length, index + CONTEXT_LINES + 1);
-    const previous = ranges[ranges.length - 1];
-    if (previous && start <= previous.end) previous.end = end;
-    else ranges.push({ start, end });
-  }
-  // A rename-only or final-newline-only change still carries bounded source.
-  if (!ranges.length && edits.length) ranges.push({ start: 0, end: Math.min(CONTEXT_LINES, edits.length) });
-  let oldLine = 0;
-  let newLine = 0;
-  let includedOriginal = 0;
-  let includedModified = 0;
-  let cursor = 0;
-  const hunks: string[] = [];
-  for (const range of ranges) {
-    while (cursor < range.start) {
-      if (edits[cursor]!.kind !== "+") oldLine++;
-      if (edits[cursor++]!.kind !== "-") newLine++;
-    }
-    const lines = edits.slice(range.start, range.end);
-    const oldCount = lines.filter((line) => line.kind !== "+").length;
-    const newCount = lines.filter((line) => line.kind !== "-").length;
-    hunks.push(`@@ -${oldCount ? oldLine + 1 : oldLine},${oldCount} +${newCount ? newLine + 1 : newLine},${newCount} @@`);
-    for (const line of lines) hunks.push(line.kind + line.text);
-    includedOriginal += oldCount;
-    includedModified += newCount;
-    oldLine += oldCount;
-    newLine += newCount;
-    cursor = range.end;
-  }
-  const omittedContext = { original: before.length - includedOriginal, modified: after.length - includedModified };
-  return {
-    diff: hunks.join("\n"), contextLines: CONTEXT_LINES, omittedContext,
-    limitations: [
-      ...(omittedContext.original || omittedContext.modified
-        ? [`Unchanged surrounding source omitted: ${omittedContext.original} original and ${omittedContext.modified} modified lines; at most ${CONTEXT_LINES} context lines per hunk edge.`] : []),
-      ...(coarse ? ["Bounded diff alignment retained an entire replacement region; it may contain unchanged lines."] : [])
-    ]
-  };
-}
 
 /**
  * Local source-only preparation. No comparison cache miss can explain a file,

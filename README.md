@@ -71,13 +71,17 @@ Good to know:
 ### Understand a change
 
 With the preview open, show a Git diff in VS Code and click **Explain changes**.
-Both versions of the file go to the Functions model in **one request per file**.
+Both versions go to the Functions model in one request when they fit.
+For large files, it starts with every changed line and bounded surrounding
+context instead. The model may request more of the same file in up to two
+follow-ups, each within **Max Request Size**. Omitted context is disclosed;
+partial-file explanations can be less certain.
 
 | Section | What it shows |
 |---|---|
 | **Added**, **Removed** | A short summary per function. **Explain** requests its full Steps, Pseudocode, and Flowchart. |
 | **Changed** | Before, after, when, and flow items with paired visuals. Click an item to select its lines in the matching side of the diff; move the cursor in either side to highlight its items. |
-| **Other changes** | Edits outside functions. |
+| **Other changes** | Additional details about edits outside functions; omitted when the summary already covers them. |
 
 - Signature-only changes count; comment-only and formatting changes do not.
 - Renames, moves between containers, and ambiguous duplicates show as Removed
@@ -94,8 +98,8 @@ Both versions of the file go to the Functions model in **one request per file**.
 
 Run **Downside Up: Review Changes…**, choose a base (merge base, branch tip,
 uncommitted changes only, or a recent commit), and confirm how many files to
-explain. Each confirmed file is one comparison request, prepared in the
-background.
+explain. Each confirmed file is one comparison, prepared in the background,
+with up to two context follow-ups for large files.
 
 - The first file's diff opens on the left and the preview on the right,
   starting on **Review summary**.
@@ -169,6 +173,71 @@ How it behaves:
   is prepared, including time spent in the save dialog. Commit reviews use
   the exact commit and parent.
 
+### Publish a review to a pull request
+
+Run **Downside Up: Publish Review to Pull Request…**, enter the PR's HTTPS URL,
+then choose **Generate summary only** or **Generate full review**.
+Every invocation prepares the exact PR merge base and head, reuses current saved
+content, and asks for review/model sharing approval before generation. Posting
+requires a separate confirmation of the destination, account, revision, and
+comment actions. Install [GitHub CLI](https://cli.github.com/)
+and authenticate it for that host first (`gh auth login`). Downside Up uses
+that existing authentication; it does not store a GitHub token.
+
+- Posts a compact summary to the PR conversation and keeps file explanations
+  with their code under **Files changed** (source comments are sent first).
+  Steps, pseudocode, and Mermaid diagrams are collapsible; **Before** and
+  **After** appear vertically rather than in tables. GitHub web renders Mermaid;
+  other clients may show its source.
+  The opening summary, themes, and chart are visible; coverage, effects, and
+  caveats sit under **Review details**. File comments show their explanation
+  directly, grouped under recorded function names and Before/After source line
+  ranges. Each function gets its own inline comment on a changed line in its
+  **After** source; removed functions use the deleted **Before** source.
+  Both versions stay in that one comment, even when their locations differ.
+  File-wide context and functions without a suitable diff line stay in a
+  file-level comment; missing or incomplete GitHub patches also use that fallback.
+  Related behavior changes and execution details stay together, with
+  separate **Steps**, **Pseudocode**, and **Flowchart** accordions. Content
+  without recorded function ownership is labelled separately, not guessed
+  from generated titles. No nested wrappers or file limitations section.
+  Final confirmation shows how many function explanations will be inline and
+  how many require the file-level fallback.
+- Posting uses prepared saved content only and never changes the PR description.
+  Summary-only preparation does not generate file comparisons; missing
+  explanations and incomplete coverage are disclosed. Standalone export remains
+  available without GitHub CLI.
+- Requires the exact PR merge-base/head comparison, complete local history,
+  at most 200 PR files, and a repository-root review. For a multi-commit PR,
+  choose its merge base in **Review Changes…**, not just the last commit's parent.
+  The PR's commits must already be available locally; publishing never fetches.
+  Local/unsaved differences can be exported but cannot be mislabelled as PR content.
+  On-demand PR preparation reads committed snapshots, leaving local edits untouched.
+- Rechecks content, sharing exclusions, models, and PR revisions before each
+  comment. Posting is explicit and visible to everyone with access to the PR.
+  Cancellation cannot retract comments already sent. Errors report partial or
+  uncertain publication; no automatic retry or rollback occurs. Definite GitHub
+  rejections show a sanitized HTTP status and validation fields, not source text;
+  failures identify which comment action stopped.
+  Writes are spaced at least one second apart to reduce secondary throttling.
+  Inline requests use verified diff positions for GitHub API compatibility;
+  returned source line and side are checked before accepting each comment.
+  HTTP 422 may mean validation failure or comment spam protection, not necessarily
+  an invalid diff anchor. Recognized rejection reasons are shown without server text.
+- Repeat publishing skips identical comments by the same account. Choose
+  **Update existing publication** to refresh the summary in place and replace
+  file/function explanations. Same-revision inline comments update in place
+  only when their anchor still matches. New PR revisions get fresh anchors; earlier
+  unchanged comments without replies are removed after the replacement is
+  verified. Comments with replies are kept as superseded with replacement links.
+  Manually edited or legacy comments require extra confirmation to update and
+  are never automatically deleted. Deletion counts are shown before publishing.
+  Only the signed-in account's Downside Up comments are eligible. Reply checks
+  are repeated before deletion, but GitHub cannot make the check/delete atomic.
+  GitHub may mark inline discussions outdated after a push.
+  Later pushes never generate or update automatically. Oversized
+  comments are rejected rather than silently truncated.
+
 ### Follow callers
 
 The **Show callers** icon beside a function lists its direct callers. Choose
@@ -226,6 +295,7 @@ All commands are in the Command Palette under **Downside Up**.
 | **Review Changes…** | Prepares comparisons for changed files against a chosen base. |
 | **Prepare Commit Explanations…** | Prepares comparisons for one commit against its parent. |
 | **Export Review Summary…** | Chooses a review scope (local changes, a base, a commit, or the current/most recent review) and saves its summary as Markdown. |
+| **Publish Review to Pull Request…** | Uses saved content or prepares the exact PR review, then confirms publishing or updating summary/file comments. Requires authenticated GitHub CLI. |
 | **Show Changed Files** | While a review is active, opens one of its files or stops it. |
 | **Refresh Repository Context** | Updates the repository overview and project map. |
 | **Clear Repository Cache** | Removes this repository's cached results and saved sharing consent. |
@@ -294,7 +364,7 @@ All request limits are user only. The model's own input limit still applies.
 
 | Setting | Default | Range | Description |
 |---|---|---|---|
-| `downsideUp.maxRequestSize` | 96 KiB | 32–512 | Largest function or change explanation, added view, summary, or main flows request. A larger request is not sent, and you are told its size. |
+| `downsideUp.maxRequestSize` | 96 KiB | 32–512 | Per-request limit for explanations, added views, summaries, and main flows. Large comparisons use diff-first excerpts with up to two same-file context follow-ups; other oversized requests are not sent. |
 | `downsideUp.maxProjectContextRequestSize` | 256 KiB | 128–1024 | Largest repository overview and project map request, including previous context. Raising it does not scan more files or start generation. |
 | `downsideUp.maxConcurrentRequests` | 6 | 1–8 | How many requests may run at once. Your own requests always start before prefetches. |
 

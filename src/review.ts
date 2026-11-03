@@ -155,7 +155,8 @@ export class Review {
     readonly base: string,
     readonly items: ReviewItem[],
     readonly kind: "working" | "commit" = "working",
-    readonly coverage: { readonly excluded: number; readonly skipped: number; readonly truncated: boolean } = {
+    readonly coverage: { readonly excluded: number; readonly skipped: number; readonly truncated: boolean;
+      readonly changedFiles?: readonly ChangedFile[] } = {
       excluded: 0, skipped: 0, truncated: false
     },
     readonly filterFingerprint?: string,

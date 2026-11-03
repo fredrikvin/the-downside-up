@@ -222,6 +222,11 @@ export class MockProvider implements GenerationProvider {
   ): Promise<GenerationResult<FileComparisonDraft>> {
     const lineCount = (side: ComparisonPromptInput["original"]) =>
       side.present ? side.source.split(/\r\n|\r|\n/).length : 0;
+    const visibleSpan = (side: ComparisonPromptInput["original"], start: number, end: number) => {
+      if (!side.excerpt) return { startLine: start, endLine: end };
+      const range = side.excerpt.ranges.find((range) => range.start <= end && range.end >= start);
+      return range ? { startLine: Math.max(start, range.start), endLine: Math.min(end, range.end) } : { startLine: 0, endLine: 0 };
+    };
     const makeSide = (side: ComparisonPromptInput["original"]) => {
       if (!side.present) {
         return {
@@ -256,10 +261,11 @@ export class MockProvider implements GenerationProvider {
         .map((entry) => ({ functionId: entry.id, summary: `Mock summary of ${entry.name}; ${category === "removed" ? "historical dependencies are unknown" : "its behavior has not been interpreted"}.` }));
       const scopedSide = (side: ComparisonPromptInput["original"], range: NonNullable<typeof changed[number]["original"]>) => {
         const view = makeSide(side);
+        const span = visibleSpan(side, range.startLine + 1, range.endLine + 1);
         return { ...view, operations: view.operations.map((operation) => ({
           ...operation,
-          startLine: range.startLine + 1,
-          endLine: operation.id === "work" || operation.id === "end" ? range.endLine + 1 : range.startLine + 1
+          startLine: span.startLine,
+          endLine: operation.id === "work" || operation.id === "end" ? span.endLine : span.startLine
         })) };
       };
       const value = parseComparison({
@@ -268,8 +274,8 @@ export class MockProvider implements GenerationProvider {
         changes: changed.map((entry, index) => ({
           id: `change-${index}`, functionId: entry.id, title: `Placeholder change in ${entry.name}`,
           before: "Mock original behavior.", after: "Mock modified behavior.", when: "", flow: "",
-          original: { startLine: entry.original!.startLine + 1, endLine: entry.original!.endLine + 1 },
-          modified: { startLine: entry.modified!.startLine + 1, endLine: entry.modified!.endLine + 1 },
+          original: visibleSpan(input.original, entry.original!.startLine + 1, entry.original!.endLine + 1),
+          modified: visibleSpan(input.modified, entry.modified!.startLine + 1, entry.modified!.endLine + 1),
           visualScopeId: `scope-${index}`
         })),
         visualScopes: changed.slice(0, 3).map((entry, index) => ({
@@ -283,7 +289,8 @@ export class MockProvider implements GenerationProvider {
         limitations: ["Deterministic mock placeholder; not a real explanation of the change."]
       }, {
         originalLines: lineCount(input.original), modifiedLines: lineCount(input.modified),
-        originalPresent: input.original.present, modifiedPresent: input.modified.present, catalogue: input.catalogue
+        originalPresent: input.original.present, modifiedPresent: input.modified.present, catalogue: input.catalogue,
+        originalRanges: input.original.excerpt?.ranges, modifiedRanges: input.modified.excerpt?.ranges
       });
       return this.respond(input.original.source + "\0" + input.modified.source, value, signal);
     }

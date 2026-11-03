@@ -3,10 +3,10 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { FileRepositoryCacheStore, MemoryRepositoryCacheStore } from "../src/cache/store";
-import type { FunctionTarget, RepositoryCache } from "../src/core/types";
+import type { ComparisonContextRequest, FileComparisonDraft, FunctionTarget, RepositoryCache } from "../src/core/types";
 import { ExplanationService } from "../src/controller";
 import { MockProvider } from "../src/generation/mock";
-import { overviewPrompt, reviewPrompt } from "../src/generation/prompts";
+import { comparisonPrompt, overviewPrompt, reviewPrompt } from "../src/generation/prompts";
 import { COMPONENT_GUIDANCE } from "../src/languages/javascript/guidance";
 import { initializeJavaScriptParsersAt } from "../src/languages/javascript/syntax";
 import { javascriptSupport } from "../src/languages/javascript";
@@ -928,6 +928,127 @@ describe("ExplanationService", () => {
       fingerprint: `fp:${text}`, lines: text.split("\n").length
     });
     const snapshot = (original = "a\nb", modified = "a\nc") => ({ root, original: side("revision:" + "1".repeat(40), original), modified: side("working", modified) });
+    const largeSnapshot = () => {
+      const original = Array.from({ length: 4_000 }, (_, i) => `unchanged source line ${i + 1}: abcdefghijklmnop`).join("\n");
+      return snapshot(original, original.replace("line 2000:", "line 2000 changed:"));
+    };
+    const contextResult = (contextRequests: readonly ComparisonContextRequest[] = []) => ({
+      value: {
+        summary: "A small change.", changes: [], outside: "", possibleEffects: [], limitations: [], contextRequests
+      } satisfies FileComparisonDraft,
+      usage: { inputTokens: 10, outputTokens: 5, estimated: false },
+      provider: "mock" as const
+    });
+    const diffService = (provider: MockProvider, store = new MemoryRepositoryCacheStore(), authorize = vi.fn(async () => true)) =>
+      new ExplanationService({
+        store, describeProvider: () => ({ kind: "openai", modelId: "test" }),
+        createProvider: async () => provider, authorizeExternalData: authorize, maxRequestBytes: () => 32 * 1024
+      });
+
+    it("falls back to bounded absolute-line excerpts only for large pairs and saves the coverage", async () => {
+      const store = new MemoryRepositoryCacheStore();
+      const provider = new MockProvider();
+      const explain = vi.spyOn(provider, "explainComparison").mockResolvedValue(contextResult());
+      const authorize = vi.fn(async () => true);
+      const service = diffService(provider, store, authorize);
+      const pair = largeSnapshot();
+      const result = await service.explainComparison(pair, async () => pair);
+      const input = explain.mock.calls[0]![0];
+      expect(input.context?.roundsLeft).toBe(2);
+      expect(input.modified.excerpt?.numbered).toContain("2000| unchanged source line 2000 changed:");
+      expect(input.modified.excerpt?.numbered).not.toContain("source line 1000:");
+      expect(Buffer.byteLength(comparisonPrompt(input).join(""), "utf8")).toBeLessThanOrEqual(32 * 1024);
+      expect(result.comparison.limitations.join(" ")).toContain("lines omitted");
+      expect(Object.values((await store.read(root)).comparisons!)[0]?.context).toMatchObject({
+        mode: "diff", rounds: 0, omittedLines: { original: expect.any(Number), modified: expect.any(Number) }
+      });
+      expect(authorize).toHaveBeenCalledTimes(1);
+      expect(await service.explainComparison(pair, async () => pair)).toMatchObject({ cached: true });
+      expect(explain).toHaveBeenCalledTimes(1);
+    });
+
+    it("expands requested same-file context, counts all usage, and never saves an intermediate response", async () => {
+      const store = new MemoryRepositoryCacheStore();
+      const provider = new MockProvider();
+      const authorize = vi.fn(async () => true);
+      const explain = vi.spyOn(provider, "explainComparison")
+        .mockResolvedValueOnce(contextResult([{ side: "original", startLine: 1000, endLine: 1004, reason: "Needed helper" }]))
+        .mockResolvedValueOnce(contextResult());
+      const service = diffService(provider, store, authorize);
+      const pair = largeSnapshot();
+      const progress = vi.fn();
+      const result = await service.explainComparison(pair, async () => pair, undefined, progress);
+      expect(explain).toHaveBeenCalledTimes(2);
+      expect(explain.mock.calls[1]![0].original.excerpt?.numbered).toContain("1000| unchanged source line 1000:");
+      expect(explain.mock.calls[1]![0].context?.roundsLeft).toBe(1);
+      expect(progress).toHaveBeenCalledWith("Fetching more context (round 1/2)…");
+      expect(result.usage).toEqual({ inputTokens: 20, outputTokens: 10, estimated: false });
+      expect(result.comparison).not.toHaveProperty("contextRequests");
+      expect(authorize).toHaveBeenCalledTimes(1);
+      expect(Object.values((await store.read(root)).comparisons!)[0]?.context?.rounds).toBe(1);
+    });
+
+    it("caps follow-ups at two and sends the final round without permission to request more", async () => {
+      const provider = new MockProvider();
+      const explain = vi.spyOn(provider, "explainComparison")
+        .mockResolvedValueOnce(contextResult([{ side: "original", startLine: 1000, endLine: 1004, reason: "helper" }]))
+        .mockResolvedValueOnce(contextResult([{ side: "modified", startLine: 1500, endLine: 1504, reason: "another helper" }]))
+        .mockResolvedValueOnce(contextResult());
+      const service = diffService(provider);
+      const pair = largeSnapshot();
+      const result = await service.explainComparison(pair, async () => pair);
+      expect(explain.mock.calls.map(([input]) => input.context?.roundsLeft)).toEqual([2, 1, 0]);
+      expect(explain.mock.calls[2]![0].modified.excerpt?.numbered).toContain("1500| unchanged source line 1500:");
+      expect(result.usage).toMatchObject({ inputTokens: 30, outputTokens: 15 });
+    });
+
+    it("finalizes without adding invalid or out-of-budget context and discloses the omission", async () => {
+      const provider = new MockProvider();
+      const explain = vi.spyOn(provider, "explainComparison")
+        .mockResolvedValueOnce(contextResult([{ side: "original", startLine: 1, endLine: 999_999, reason: "too much" }]))
+        .mockResolvedValueOnce(contextResult());
+      const service = diffService(provider);
+      const pair = largeSnapshot();
+      const result = await service.explainComparison(pair, async () => pair);
+      expect(explain.mock.calls[1]![0].context?.roundsLeft).toBe(0);
+      expect(explain.mock.calls[1]![0].original.excerpt?.ranges).toEqual(explain.mock.calls[0]![0].original.excerpt?.ranges);
+      expect(result.comparison.limitations.join(" ")).toMatch(/request.*(?:invalid|not|declined|could|reject|outside)/i);
+    });
+
+    it.each(["cancel", "source", "exclusion"] as const)("discards all rounds on %s before the next dispatch", async (failure) => {
+      const store = new MemoryRepositoryCacheStore();
+      const provider = new MockProvider();
+      const pair = largeSnapshot();
+      const controller = new AbortController();
+      let changed = false;
+      const explain = vi.spyOn(provider, "explainComparison").mockImplementation(async () => {
+        if (failure === "cancel") controller.abort();
+        if (failure === "source") changed = true;
+        if (failure === "exclusion") harness.exclusion = "excluded now";
+        return contextResult([{ side: "original", startLine: 1000, endLine: 1004, reason: "helper" }]);
+      });
+      const service = diffService(provider, store);
+      const pending = service.explainComparison(pair,
+        async () => changed ? { ...pair, modified: side("working", "changed") } : pair, controller.signal);
+      if (failure === "cancel") await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+      else await expect(pending).rejects.toThrow("changed while");
+      expect(explain).toHaveBeenCalledTimes(1);
+      expect((await store.read(root)).comparisons).toBeUndefined();
+    });
+
+    it("rejects requests beyond the round cap without saving or making a fourth call", async () => {
+      const store = new MemoryRepositoryCacheStore();
+      const provider = new MockProvider();
+      const explain = vi.spyOn(provider, "explainComparison")
+        .mockResolvedValueOnce(contextResult([{ side: "original", startLine: 1000, endLine: 1004, reason: "helper" }]))
+        .mockResolvedValueOnce(contextResult([{ side: "modified", startLine: 1500, endLine: 1504, reason: "helper" }]))
+        .mockResolvedValue(contextResult([{ side: "modified", startLine: 1600, endLine: 1604, reason: "helper" }]));
+      const service = diffService(provider, store);
+      const pair = largeSnapshot();
+      await expect(service.explainComparison(pair, async () => pair)).rejects.toThrow("allowed rounds");
+      expect(explain).toHaveBeenCalledTimes(3);
+      expect((await store.read(root)).comparisons).toBeUndefined();
+    });
 
     it("explains a pair once, reuses it, and marks it outdated when either side changes, without generating", async () => {
       const provider = new MockProvider();

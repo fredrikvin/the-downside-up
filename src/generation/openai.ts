@@ -31,6 +31,7 @@ import {
   parseReviewSummary
 } from "./schema";
 import { comparisonPrompt, explanationPrompt, fileSummaryPrompt, folderSummaryPrompt, formatPrompt, partFlowsPrompt, projectFlowsPrompt, overviewPrompt, reviewPrompt, reviewSummaryPrompt } from "./prompts";
+import { comparisonBounds } from "./provider";
 import type {
   ExplanationPromptInput,
   ComparisonPromptInput,
@@ -109,15 +110,8 @@ export class OpenAIProvider implements GenerationProvider {
     signal?: AbortSignal
   ): Promise<GenerationResult<FileComparisonDraft>> {
     const [system, user] = comparisonPrompt(input);
-    const lineCount = (side: ComparisonPromptInput["original"]) =>
-      side.present ? side.source.split(/\r\n|\r|\n/).length : 0;
-    return this.request(system, user, "file_comparison", comparisonSchema, (value) => parseComparison(value, {
-      originalLines: lineCount(input.original),
-      modifiedLines: lineCount(input.modified),
-      originalPresent: input.original.present,
-      modifiedPresent: input.modified.present,
-      catalogue: input.catalogue
-    }), signal, MAX_COMPARISON_OUTPUT_TOKENS);
+    return this.request(system, user, "file_comparison", comparisonSchema,
+      (value) => parseComparison(value, comparisonBounds(input)), signal, MAX_COMPARISON_OUTPUT_TOKENS);
   }
 
   async summarizeFolder(

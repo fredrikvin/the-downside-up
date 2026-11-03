@@ -14,6 +14,10 @@ npm test
 npm run test:extension
 ```
 
+`npm run test:extension:publication` runs the isolated PR-publishing extension-host
+regressions with disposable Git history and an injected GitHub transport. It never
+authenticates or posts to a real PR. The full extension-host suite remains separate.
+
 Open the project in VS Code and press **F5** to launch an Extension Development
 Host. Open a source file there and run **Downside Up: Open Preview to the
 Side**. The default is model setup with local outlines and no AI requests.
@@ -76,7 +80,7 @@ Never read/update that store from its own validation hook (the repository write
 lock is held). Recheck exact snapshot signatures, policy/model/trust and request
 cancellation there. Rename is the commit point: test both pre-commit rejection
 and post-commit successful cancellation with deterministic gates, not sleeps.
-Comparison catalogue version 1 and prompt versions `downside-up-changes-7` /
+Comparison catalogue version 1 and prompt versions `downside-up-changes-9` /
 `downside-up-plain-11` invalidate changed records without migrating them or
 changing repository envelope schema 2/consent.
 

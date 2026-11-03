@@ -238,6 +238,17 @@ describe("VS Code language model generation", () => {
     expect(sendRequest.mock.calls[0]![0][0]!.content).not.toContain('"occurrenceId"');
   });
 
+  it("accepts bounded same-file context requests only when the comparison permits another round", async () => {
+    const contextRequests = [{ side: "original", startLine: 2, endLine: 5, reason: "Need the helper." }];
+    const { provider, sendRequest } = fakeModel(async () => streamOf([JSON.stringify({ contextRequests })]));
+    const result = await provider.explainComparison({
+      ...comparisonInput, catalogue: comparisonFunctionCatalogue, context: { roundsLeft: 2, limitations: [] }
+    });
+    expect(result.value.contextRequests).toEqual(contextRequests);
+    await expect(provider.explainComparison(comparisonInput)).rejects.toMatchObject({ code: "invalid-schema" });
+    expect(sendRequest).toHaveBeenCalledTimes(2);
+  });
+
   it("maps permission, quota, and availability failures to actionable messages", async () => {
     const failures = [
       LanguageModelError.NoPermissions(),

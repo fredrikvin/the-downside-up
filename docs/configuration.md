@@ -206,8 +206,10 @@ consistent function headers.
   Renames, container moves, and ambiguous duplicates are removed plus added,
   without guessed rename detection. Incomplete discovery falls back to an
   explicitly unclassified textual comparison, without Added/Removed cards.
-- All comparison summaries and Changed visuals come from one request per
-  file. Missing formats for Added/Removed details require their own explicit
+- Comparison summaries and Changed visuals normally come from one request per
+  file. Large comparisons use diff-first excerpts and may make up to two
+  same-file context follow-ups within the existing sharing approval.
+  Missing formats for Added/Removed details require their own explicit
   **Generate** request.
 
 **Preview header.** A shared sparkle icon groups two compact model buttons,
@@ -548,7 +550,26 @@ tools/*
 **Max Request Size** (`downsideUp.maxRequestSize`, default 96 KiB, 32 to
 512) caps each explanation, added view, file or folder summary, and main
 flows request. A request that would be larger is not sent, and the error
-says how large it would be. Raise it for very large functions with much
+says how large it would be, except that comparisons first try diff-first
+context: every changed line, nearby lines, complete enclosing functions when
+they fit, a bounded file header, and matching same-file function signatures.
+The signature matches are hints, not verified call resolution. Lower-priority
+context is omitted first; even nearby unchanged lines may be omitted to keep
+all changed lines. If the changed lines plus the prompt cannot fit, no request
+is sent. The existing 256 KiB per-snapshot read limit still applies.
+
+In diff-first mode the model may ask for up to six same-file line ranges of
+at most 200 lines each per round. The host checks them against the exact
+snapshots and expands to enclosing functions when possible. There are at most
+two follow-up rounds, never a repository scan or a request for another file.
+Each follow-up has the same size cap and uses the existing repository/model
+approval without prompting again, including opted-in prefetch; each consumes
+provider quota/billing. Cancellation covers all rounds. Unavailable context
+and omitted lines appear under limitations, including in exported or published
+reviews. This can reduce certainty; it does not prove that unseen code has no
+effect. Invalid responses still fail without repair requests.
+
+Raise the limit for very large functions with much
 related code; lower it to cap what each request costs. The model's own input
 limit still applies. **Max Project Context Request Size**
 (`downsideUp.maxProjectContextRequestSize`, default 256 KiB, 128 to 1024,
@@ -768,6 +789,66 @@ Reviewed sources, `HEAD`, trust, sharing policy, models, and saved evidence
 are rechecked after the save dialog; changes during preparation block export,
 but unrelated dirty files do not. Commit-review export uses the recorded immutable
 commit and parent.
+
+**Publishing to a PR.** **Downside Up: Publish Review to Pull Request…** offers
+summary-only or full preparation, not the active/retained local review as a base.
+Every invocation confirms the exact immutable PR merge-base/head comparison,
+uses normal model sharing consent, and reuses current saved records. Summary-only
+does not request Functions comparisons. Install and authenticate GitHub CLI for
+the destination host first. Enter an HTTPS PR URL; separately confirm the account,
+destination, exact revisions, visibility, and planned comment actions before posting.
+The saved summary becomes a conversation comment and current saved file
+comparisons become function-inline comments plus file-wide context. Changed/added
+functions anchor on a changed line in their After source; removed functions
+anchor on deleted Before source. Both versions appear in the same comment.
+Only saved catalogue ranges and complete GitHub diff hunks determine placement.
+Inline writes use verified diff positions, with returned line/side checks, to
+support GitHub servers rejecting line-based request parameters.
+Functions with no suitable diff line (or unavailable GitHub patches/ranges) stay
+in the file-level comment. Before/After diagrams appear
+vertically in separate Steps, Pseudocode, and Flowchart accordions per scope; file comments have
+no filename wrapper or limitations section. The opening summary, themes, and
+chart are visible, with effects, coverage, and caveats under **Review details**.
+File comments group changes and their execution details under the recorded
+qualified function name with Before/After source line ranges, rather than listing
+all behavior changes separately from their visuals. Unknown function ownership
+is labelled explicitly; non-function changes and file-wide effects stay separate.
+Generic mechanical boilerplate and empty sections are omitted; incomplete
+diff coverage still has a visible warning. Posting itself never makes model requests.
+No PR description edits, file attachments, or automatic updates occur.
+Final confirmation includes inline and fallback function counts. Definite GitHub
+rejections report a sanitized HTTP status and validation field names; source
+content and server error text are never shown. Lost responses and timeouts still
+report uncertain writes, and errors identify the comment action that stopped.
+Writes are spaced at least one second apart to reduce secondary throttling;
+waiting is cancellable and mutation identity/reply checks run afterwards.
+HTTP 422 can also indicate comment spam protection, not just validation failure.
+Recognized rejection reasons become fixed messages without raw server text.
+
+The review must match the full PR comparison (merge base against head), with
+complete commits available locally, a repository-root scope, and at most 200 PR
+files. A last-commit review is insufficient for a multi-commit PR unless its
+original revision is that PR's merge base. Changed local/unsaved source cannot
+be published as PR evidence; use standalone export for that. Missing saved
+comparisons are disclosed, not generated during posting. Oversized bodies and incomplete
+duplicate scans block publishing. Identical previously published comments are
+skipped. **Update existing publication** refreshes the summary in place;
+same-revision file comments can be updated in place; function comments additionally
+require the same line/side anchor. New revisions and outdated inline anchors get
+fresh comments. GitHub may mark old inline discussions outdated after a push.
+Existing file-level reviews can be split into inline comments using saved records,
+without regeneration. Once replacements are verified, unchanged v2 old file/function comments
+without replies are deleted (including already-superseded versions); threads
+with replies remain marked superseded. Edited/legacy comments are never
+automatically deleted. The final confirmation includes deletion counts, and
+complete reply/identity checks repeat before deletion. Unverifiable checks stop
+cleanup; a reply arriving between check and delete can still race. Only the signed-in account's
+marked Downside Up comments can be changed. Edited or legacy bodies require
+separate confirmation. Changed bodies detected immediately before writing block
+the update; GitHub's read/update pair is not atomic, so concurrent edits may race.
+Cancel stops remaining work but
+cannot remove posted comments. A failed request may already have reached GitHub;
+the error reports confirmed progress and uncertainty without automatic retries.
 
 ### Saved explanations on hover
 

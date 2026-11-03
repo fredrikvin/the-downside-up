@@ -170,6 +170,38 @@ beforeEach(() => {
 afterEach(() => vi.restoreAllMocks());
 
 describe("local source-grounded review summary preparation", () => {
+  it("fences publication with saved evidence and sharing settings without rereading Git or generating", async () => {
+    const h = harness();
+    await save(h.store);
+    await h.service.summarizeReview(scopeFor(), h.read, abortSignal());
+    const prepared = await h.service.prepareReviewExport(scopeFor(), h.read, {});
+    const guard = await h.service.reviewPublicationGuard(scopeFor(), prepared.data);
+    h.read.mockClear();
+    h.createProvider.mockClear();
+    h.authorizeExternalData.mockClear();
+    const update = vi.spyOn(h.store, "update");
+    await guard();
+    expect(h.read).not.toHaveBeenCalled();
+    expect(h.createProvider).not.toHaveBeenCalled();
+    expect(h.authorizeExternalData).not.toHaveBeenCalled();
+    expect(update).not.toHaveBeenCalled();
+    policy.exclusion = "newly excluded";
+    await expect(guard()).rejects.toThrow("Sharing exclusions changed");
+    policy.exclusion = undefined;
+    h.setOverviewModel("changed");
+    await expect(guard()).rejects.toThrow("review models");
+  });
+
+  it("stops a lightweight publication fence when saved summary or file records change", async () => {
+    const h = harness();
+    await save(h.store);
+    await h.service.summarizeReview(scopeFor(), h.read, abortSignal());
+    const prepared = await h.service.prepareReviewExport(scopeFor(), h.read, {});
+    const guard = await h.service.reviewPublicationGuard(scopeFor(), prepared.data);
+    await save(h.store, snapshot(), (record) => ({ ...record, savedAt: 2 }));
+    await expect(guard()).rejects.toThrow("Saved review evidence changed");
+  });
+
   it("exports a current saved summary and current file records from one read without generating or writing", async () => {
     const h = harness();
     const source = snapshot();

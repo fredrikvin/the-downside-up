@@ -467,8 +467,23 @@ export interface ComparisonVisualScope {
   readonly edgeCorrespondences: readonly ComparisonEdgeCorrespondence[];
 }
 
+export interface ComparisonSourceRange {
+  /** One-based, inclusive absolute lines in an exact snapshot. */
+  readonly start: number;
+  readonly end: number;
+}
+
+export interface ComparisonContextRequest {
+  readonly side: "original" | "modified";
+  readonly startLine: number;
+  readonly endLine: number;
+  readonly reason: string;
+}
+
 /** A model's explanation of one file's change, before the host has checked its line spans. */
 export interface FileComparisonDraft {
+  /** Intermediate response only; never saved as an explanation. */
+  readonly contextRequests?: readonly ComparisonContextRequest[];
   readonly summary: string;
   readonly added?: readonly ComparisonFunctionSummary[];
   readonly removed?: readonly ComparisonFunctionSummary[];
@@ -483,7 +498,7 @@ export interface FileComparisonDraft {
 }
 
 /** A comparison explanation whose spans were checked against the snapshots it was made from. */
-export interface FileComparison extends Omit<FileComparisonDraft, "changes"> {
+export interface FileComparison extends Omit<FileComparisonDraft, "changes" | "contextRequests"> {
   readonly changes: readonly ComparisonChangeDraft[];
 }
 
@@ -499,6 +514,11 @@ export interface ComparisonSideRecord {
 }
 
 export interface ComparisonRecord {
+  readonly context?: {
+    readonly mode: "full" | "diff";
+    readonly rounds: number;
+    readonly omittedLines: { readonly original: number; readonly modified: number };
+  };
   readonly catalogue?: ComparisonCatalogue;
   readonly original: ComparisonSideRecord;
   readonly modified: ComparisonSideRecord;

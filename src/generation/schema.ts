@@ -2,6 +2,8 @@ import type {
   ExplanationFormat,
   ComparisonCatalogue,
   ComparisonCatalogueEntry,
+  ComparisonContextRequest,
+  ComparisonSourceRange,
   ComparisonFlowchart,
   ComparisonFlowNode,
   ComparisonVisualScope,
@@ -24,6 +26,7 @@ import type {
   ReviewSummaryDiagram
 } from "../core/types";
 import { SchemaValidationError } from "./jsonResponse";
+import { comparisonRangeIncluded } from "../presentation/stepLines";
 
 const string = { type: "string" };
 const integer = { type: "integer" };
@@ -323,6 +326,15 @@ const comparisonSummariesSchema = {
 };
 export const comparisonSchema = objectSchema(
   {
+    contextRequests: {
+      type: "array", maxItems: 6,
+      items: objectSchema({
+        side: { type: "string", enum: ["original", "modified"] },
+        startLine: { type: "integer", minimum: 1 },
+        endLine: { type: "integer", minimum: 1 },
+        reason: { type: "string", maxLength: 300 }
+      }, ["side", "startLine", "endLine", "reason"])
+    },
     summary: string,
     added: comparisonSummariesSchema,
     removed: comparisonSummariesSchema,
@@ -338,7 +350,7 @@ export const comparisonSchema = objectSchema(
     possibleEffects: stringArray,
     limitations: stringArray
   },
-  ["summary", "added", "removed", "changes", "visualScopes", "outside", "possibleEffects", "limitations"]
+  ["contextRequests", "summary", "added", "removed", "changes", "visualScopes", "outside", "possibleEffects", "limitations"]
 );
 
 const flowNodeSchema = objectSchema(
@@ -784,6 +796,9 @@ interface ComparisonLineBounds {
   readonly modifiedLines: number;
   readonly originalPresent: boolean;
   readonly modifiedPresent: boolean;
+  readonly originalRanges?: readonly ComparisonSourceRange[];
+  readonly modifiedRanges?: readonly ComparisonSourceRange[];
+  readonly contextRoundsLeft?: number;
 }
 
 function comparisonId(value: unknown): value is string {
@@ -799,7 +814,9 @@ function comparisonTextLength(value: unknown): number {
   return 0;
 }
 
-function checkedComparisonSpan(value: unknown, lineCount: number): { startLine: number; endLine: number } {
+function checkedComparisonSpan(
+  value: unknown, lineCount: number, ranges?: readonly ComparisonSourceRange[]
+): { startLine: number; endLine: number } {
   const source = record(value);
   const start = source.startLine;
   const end = source.endLine;
@@ -808,7 +825,8 @@ function checkedComparisonSpan(value: unknown, lineCount: number): { startLine: 
     (start as number) < 0 || (end as number) < 0 ||
     ((start as number) === 0) !== ((end as number) === 0) ||
     (start as number) > (end as number) ||
-    (end as number) > lineCount
+    (end as number) > lineCount ||
+    (start !== 0 && !comparisonRangeIncluded(ranges, start as number, end as number))
   ) {
     throw new Error("A visual source span is outside its comparison side.");
   }
@@ -825,7 +843,8 @@ function parseComparisonSide(
   value: unknown,
   side: "original" | "modified",
   expectedPresent: boolean,
-  lineCount: number
+  lineCount: number,
+  ranges?: readonly ComparisonSourceRange[]
 ): ParsedComparisonSide {
   const source = record(value);
   const region = readText(source, "region", 300).trim();
@@ -843,7 +862,7 @@ function parseComparisonSide(
     const id = readText(operation, "id", 40);
     const label = readText(operation, "label", 160).trim();
     if (!comparisonId(id) || operations.has(id) || !label) throw new Error("Invalid or duplicate comparison operation id or label.");
-    const span = checkedComparisonSpan(operation, lineCount);
+    const span = checkedComparisonSpan(operation, lineCount, ranges);
     if (!expectedPresent || span.startLine === 0) throw new Error("A semantic operation needs a source span on a present side.");
     const hostId = `${side}-${units.length}`;
     const unit: ComparisonUnit = { id: hostId, label, side, occurrence: { id: hostId, ...span } };
@@ -931,8 +950,8 @@ function parseComparisonVisualScope(
   const source = record(value);
   const id = readText(source, "id", 40);
   if (!comparisonId(id)) throw new Error("Invalid comparison visual scope id.");
-  const original = parseComparisonSide(source.original, "original", bounds.originalPresent, bounds.originalLines);
-  const modified = parseComparisonSide(source.modified, "modified", bounds.modifiedPresent, bounds.modifiedLines);
+  const original = parseComparisonSide(source.original, "original", bounds.originalPresent, bounds.originalLines, bounds.originalRanges);
+  const modified = parseComparisonSide(source.modified, "modified", bounds.modifiedPresent, bounds.modifiedLines, bounds.modifiedRanges);
 
   const unitCorrespondences = comparisonMatches(() => {
     const matches = readObjects(source.operationMatches, "operation matches", 30, (item) => {
@@ -993,6 +1012,22 @@ function parseComparisonVisualScope(
 /** Keeps valid textual changes even when the optional paired visual representation is malformed. */
 export function parseComparison(value: unknown, bounds?: ComparisonLineBounds): FileComparisonDraft {
   const source = record(value);
+  if (source.contextRequests !== undefined) {
+    const contextRequests = readObjects(source.contextRequests, "comparison context requests", 6, (item): ComparisonContextRequest => {
+      if ((item.side !== "original" && item.side !== "modified") ||
+          !Number.isSafeInteger(item.startLine) || !Number.isSafeInteger(item.endLine)) {
+        throw new Error("Invalid comparison context request.");
+      }
+      return {
+        side: item.side, startLine: item.startLine as number, endLine: item.endLine as number,
+        reason: readText(item, "reason", 300).trim()
+      };
+    });
+    if (contextRequests.length) {
+      if (!bounds?.contextRoundsLeft) throw new Error("Additional comparison context was requested when no rounds remain.");
+      return { contextRequests, summary: "", added: [], removed: [], changes: [], outside: "", possibleEffects: [], limitations: [] };
+    }
+  }
   const catalogue = bounds?.catalogue;
   const byId = new Map(catalogue?.entries.map((entry) => [entry.id, entry]));
   const summaries = (category: "added" | "removed") => {
@@ -1058,6 +1093,10 @@ export function parseComparison(value: unknown, bounds?: ComparisonLineBounds): 
       ...(visualScopeId ? { visualScopeId } : {})
     };
     if (!parsed.title || (!parsed.before && !parsed.after)) return [];
+    if (bounds && ([["original", bounds.originalRanges], ["modified", bounds.modifiedRanges]] as const).some(([side, ranges]) =>
+      parsed[side].start !== 0 && !comparisonRangeIncluded(ranges, parsed[side].start, parsed[side].end))) {
+      throw new Error("Change evidence is outside the supplied comparison context.");
+    }
     if (fn && (!within(parsed.original.start, parsed.original.end, fn.original) ||
         !within(parsed.modified.start, parsed.modified.end, fn.modified))) throw new Error("Change evidence is outside its function.");
     seenChangeIds.add(id);

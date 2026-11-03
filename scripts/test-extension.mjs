@@ -18,7 +18,7 @@ try {
   await runTests({
     ...(executable ? { vscodeExecutablePath: executable } : { version: "stable" }),
     extensionDevelopmentPath: root,
-    extensionTestsPath: resolve(root, "dist/test/index.js"),
+    extensionTestsPath: resolve(root, process.argv[2] === "publication" ? "dist/test/publication.js" : "dist/test/index.js"),
     launchArgs: [
       "--disable-gpu",
       "--disable-workspace-trust",

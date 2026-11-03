@@ -16,6 +16,7 @@ import {
   commitComparisonRef,
   commitDetails,
   commitScope,
+  pullRequestMergeBase,
   EMPTY_SCHEME,
   snapshotSignature,
   readComparison,
@@ -34,6 +35,8 @@ import {
 } from "./controller";
 import { renderReviewExport, type ReviewExportData } from "./presentation/reviewExport";
 import { defaultReviewExportFolder, isInsideFolder, reviewExportFileName } from "./presentation/reviewExportFile";
+import { parsePullRequestUrl, pullRequestUrl, PullRequestClient, type GitHubRequest } from "./github/client";
+import { preparePublication, publishReview, PublicationValidationError } from "./github/reviewPublication";
 import {
   findRepositoryRoot,
   gatherInventory,
@@ -291,6 +294,10 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
   let reviewExportDialogForTest: (() => Promise<void>) | undefined;
   let reviewBasePickerForTest: vscode.QuickPick<vscode.QuickPickItem> | undefined;
   let reviewExportErrorForTest: string | undefined;
+  let publicationController: AbortController | undefined;
+  let publicationRequestForTest: GitHubRequest | undefined;
+  let publicationDialogForTest: PublicationDialogForTest | undefined;
+  let publicationErrorForTest: string | undefined;
   let summaryEditor: vscode.TextEditor | undefined;
   let summaryEditorPair: string | undefined;
   let summaryLookupEpoch = 0;
@@ -538,7 +545,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
         : "Your API usage is billed separately. Review OpenAI's data controls; store:false does not guarantee zero provider-side retention.";
       const accept = descriptor.kind === "vscode-lm" ? "Send code to language model" : "Send code to OpenAI";
       const action = await vscode.window.showWarningMessage(
-        `Downside Up will send selected functions, relevant snippets, repository documentation, and (for one-sentence file summaries) the text of files whose functions you explain, and both versions of a file whose change you explain, from:\n\n${root}\n\n${destination}${estimate}\n\n${terms} This consent is saved for this repository and model. Clear the repository cache to revoke it.`,
+        `Downside Up will send selected functions, relevant snippets, repository documentation, and (for one-sentence file summaries) the text of files whose functions you explain, and both versions of a file whose change you explain, from:\n\n${root}\n\n${destination}${estimate}\n\nLarge comparisons use excerpts and may make up to two additional requests for more of the same file, within the per-request size limit and this approval. ${terms} This consent is saved for this repository and model. Clear the repository cache to revoke it.`,
         { modal: true },
         accept
       );
@@ -2925,7 +2932,8 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
   };
 
   /** Stops review prefetching and aborts its requests, queued or sent; nothing more is saved. */
-  const cancelReview = (): void => {
+  const cancelReview = (keepPublication?: AbortController): void => {
+    if (publicationController !== keepPublication) publicationController?.abort();
     summaryPage?.controller?.abort();
     summaryLookupEpoch++;
     if (summaryRefreshTimer) clearTimeout(summaryRefreshTimer);
@@ -3062,7 +3070,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
 
   const plural = (count: number, noun: string): string => `${count} ${noun}${count === 1 ? "" : "s"}`;
 
-  const summaryScope = (session: Review): ReviewSummaryScope => ({
+  const summaryScope = (session: Pick<Review, "root" | "kind" | "provenance" | "base" | "filterFingerprint" | "items" | "coverage">): ReviewSummaryScope => ({
     root: session.root, kind: session.kind,
     base: session.kind === "commit" && session.provenance.commit
       ? `${session.provenance.commit}:${session.provenance.parent ?? "root"}`
@@ -3351,7 +3359,8 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     baseLabel: string,
     confirm: boolean,
     committed?: CommitScope,
-    intent: ReviewIntent = "full"
+    intent: ReviewIntent = "full",
+    publication?: AbortController
   ): Promise<number> => {
     if (intent === "full") {
       if (!(await ensureLanguageModelSelected())) return 0;
@@ -3409,9 +3418,9 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     }
     if (confirm) {
       const accept = committed ? "Prepare Explanations" : "Explain Changed Files";
-      const requests = committed
-        ? `${plural(pending, "initial request")}, up to ${pending * 2} requests including at most one retry per failed file`
-        : plural(pending, "request");
+      const requests = committed && !publication
+        ? `${plural(pending, "initial request")}, up to ${pending * 6} requests including context follow-ups and at most one retry per failed file`
+        : `${plural(pending, "initial request")}, up to ${pending * 3} requests including context follow-ups`;
       if (intent === "summary-only") {
         const answer = await vscode.window.showInformationMessage(
           `Prepare a summary-only review ${baseLabel}? ${items.length} confirmed files remain navigable; no Functions comparisons will be requested. A missing or outdated summary may be generated only after a separate confirmation with the Overview model. Low-value files are not summary evidence.`,
@@ -3419,10 +3428,10 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
           "Summary only", "Full review"
         );
         if (answer !== "Summary only" && answer !== "Full review") return 0;
-        if (answer === "Full review") return startReview(root, base, baseLabel, true, committed, "full");
+        if (answer === "Full review") return startReview(root, base, baseLabel, true, committed, "full", publication);
       } else {
         const answer = await vscode.window.showInformationMessage(
-          `Prepare this review ${baseLabel}? ${items.length} confirmed files: ${saved} saved, ${lowValue} low value (navigable; Explain changes explicitly), ${pending} pending. Background preparation: ${requests} to your Functions model, each sending the two versions of one file. Also prepare one summary of eligible confirmed diffs with the Overview model when evidence is available, reusing a current saved summary. Low-value files are not summary evidence. Model sharing approval is separate; provider quota or billing applies.`,
+          `Prepare this review ${baseLabel}? ${items.length} confirmed files: ${saved} saved, ${lowValue} low value (navigable; Explain changes explicitly), ${pending} pending. ${publication ? "Preparation" : "Background preparation"}: ${requests} to your Functions model. Each file sends both full versions when they fit, otherwise changed regions with bounded surrounding context and up to two same-file context follow-ups. Also prepare one summary of eligible confirmed diffs with the Overview model when evidence is available, reusing a current saved summary. Low-value files are not summary evidence. Model sharing approval is separate; provider quota or billing applies.`,
           { modal: true, detail: notes || undefined },
           accept
         );
@@ -3432,7 +3441,8 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     if (!vscode.workspace.isTrusted || model !== JSON.stringify(describeProvider()) || filter.fingerprint !== filterForReview(root).fingerprint) {
       throw new Error("Workspace trust, the Functions model, or the review filter changed. Run preparation again to confirm its scope.");
     }
-    cancelReview();
+    publication?.signal.throwIfAborted();
+    cancelReview(publication);
     stopPrefetch();
     change.stopPrefetch();
     const firstRevision = items.find((item) => item.ref.original.source.kind === "revision")?.ref.original.source;
@@ -3440,7 +3450,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       ? { commit: committed.commit, parent: committed.parent }
       : firstRevision?.kind === "revision" ? { baseSha: firstRevision.hash } : {};
     const session = new Review(reviewHost, root, baseLabel, items, committed ? "commit" : "working",
-      { excluded, skipped, truncated }, filter.fingerprint, intent, provenance);
+      { excluded, skipped, truncated, changedFiles: files }, filter.fingerprint, intent, provenance);
     reviewSession = session;
     const editor = vscode.window.activeTextEditor ?? lastTextEditor;
     const diff = diffForEditor(editor);
@@ -3464,9 +3474,10 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     // confirmed pair explicitly, cache-only, before any sharing-consent await.
     await showChange({ ...reviewDiffUris(first), nativeDiff: true }, false);
     if (reviewSession !== session) return items.length;
-    await showReviewSummary(session, intent === "full");
+    await showReviewSummary(session, intent === "full" && !publication);
     updateReviewStatus();
     render();
+    if (publication) return items.length;
     const sharingAllowed = intent === "summary-only" || pending === 0 || await reviewSharingAllowed(root);
     if (reviewSession !== session) return items.length;
     if (!sharingAllowed && !session.stopped) {
@@ -3665,6 +3676,234 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
   };
 
   const exportReviewSummaryCommand = async (): Promise<void> => reviewChangesCommand(true);
+
+  const publishReviewSummaryCommand = async (): Promise<void> => {
+    if (publicationController) {
+      await vscode.window.showInformationMessage("A PR publication is already in progress. Cancel it before starting another.");
+      return;
+    }
+    let retained = retainedReview;
+    let session = reviewSession ?? retained;
+    if (!vscode.workspace.isTrusted) {
+      await vscode.window.showWarningMessage("PR publishing requires a trusted workspace. Nothing was sent.");
+      return;
+    }
+    const controller = new AbortController();
+    publicationController = controller;
+    publicationErrorForTest = undefined;
+    const ownsSession = (): boolean => reviewSession === session || (!reviewSession && retainedReview === retained && retained !== undefined);
+    try {
+      const url = allowMock && publicationDialogForTest ? publicationDialogForTest.url : await vscode.window.showInputBox({
+        title: "Publish Review to Pull Request",
+        prompt: "HTTPS URL of the open PR to receive the saved summary and file comments. Uses GitHub CLI (gh) authentication.",
+        placeHolder: "https://github.com/owner/repository/pull/123", ignoreFocusOut: true,
+        validateInput: (value) => {
+          try { parsePullRequestUrl(value); return undefined; }
+          catch { return "Enter an HTTPS pull request URL without credentials, query, or fragment."; }
+        }
+      });
+      if (!url) return;
+      controller.signal.throwIfAborted();
+      const target = parsePullRequestUrl(url);
+      const client = new PullRequestClient(target, allowMock ? publicationRequestForTest : undefined);
+      const mode = allowMock && publicationDialogForTest
+        ? publicationDialogForTest.prepare ?? "full"
+        : (await vscode.window.showQuickPick([
+          { label: "Generate summary only", mode: "summary-only" as const,
+            description: "Prepare the PR merge base → head with the Overview model; reuse current saved content" },
+          { label: "Generate full review", mode: "full" as const,
+            description: "Prepare the exact PR comparison with Functions and Overview models; reuse current saved content" }
+        ], { title: "Prepare review for pull request", placeHolder: "Generation requires review confirmation; posting is confirmed separately" }))?.mode;
+      if (!mode) return;
+      controller.signal.throwIfAborted();
+      {
+        const ready = await vscode.window.withProgress({
+          location: vscode.ProgressLocation.Notification, title: "Preparing pull request review", cancellable: true
+        }, async (progress, token) => {
+          const cancellation = token.onCancellationRequested(() => controller.abort());
+          try {
+            progress.report({ message: "Checking the PR comparison and local history…" });
+            const root = session?.root ?? await rootForCommand() ?? (vscode.workspace.workspaceFolders?.length === 1
+              ? await findRepositoryRoot(vscode.workspace.workspaceFolders[0]!.uri.fsPath) : undefined);
+            if (!root) throw new Error("Open a source file in the PR repository before preparing its review.");
+            const revision = await client.revision(controller.signal);
+            const mergeBase = await pullRequestMergeBase(root, revision.base, revision.head);
+            const testConfirmation = allowMock ? publicationDialogForTest?.confirmPreparation : undefined;
+            if (testConfirmation && !(await testConfirmation(mode))) return false;
+            const started = await startReview(root, revision.head,
+              `for PR #${target.number} (${mergeBase.slice(0, 7)} → ${revision.head.slice(0, 7)})`,
+              !testConfirmation, { commit: revision.head, parent: mergeBase, files: [...revision.files], truncated: false },
+              mode, controller);
+            controller.signal.throwIfAborted();
+            if (!started || !reviewSession) return false;
+            const preparing = reviewSession;
+            session = preparing;
+            retained = undefined;
+            const cancelPreparation = (): void => {
+              preparing.cancel();
+              if (summaryPage?.session === preparing) summaryPage.controller?.abort();
+            };
+            controller.signal.addEventListener("abort", cancelPreparation, { once: true });
+            try {
+              if (preparing.intent === "full") {
+                for (const item of preparing.items.filter((item) => !item.lowValue && item.status !== "done")) {
+                  controller.signal.throwIfAborted();
+                  if (!ownsSession()) throw new Error("The confirmed review changed during preparation.");
+                  progress.report({ message: `Preparing ${item.path}…` });
+                  await preparing.explainNow(item);
+                  updateReviewStatus();
+                  if (item.status !== "done") {
+                    throw new Error(preparing.lastError ?? `Preparation stopped for ${item.path}; nothing was published.`);
+                  }
+                }
+              } else {
+                const detail = "Generate a summary of the confirmed eligible PR diffs with the Overview model? This may share source and use provider quota or billing. Posting to GitHub requires a separate confirmation.";
+                const accepted = testConfirmation ? await testConfirmation(detail) :
+                  await vscode.window.showInformationMessage(detail, { modal: true }, "Generate Summary") === "Generate Summary";
+                if (!accepted) return false;
+              }
+              controller.signal.throwIfAborted();
+              if (!ownsSession()) throw new Error("The confirmed review changed during preparation.");
+              progress.report({ message: "Preparing the review summary…" });
+              await generateReviewSummary();
+              controller.signal.throwIfAborted();
+              if (!ownsSession() || summaryPage?.session !== preparing || !summaryPage.prepared?.current) {
+                throw new Error(summaryPage?.error ?? "A current review summary could not be prepared. Nothing was published.");
+              }
+            } finally {
+              controller.signal.removeEventListener("abort", cancelPreparation);
+              preparing.cancel();
+            }
+            return true;
+          } finally {
+            cancellation.dispose();
+          }
+        });
+        if (!ready) return;
+      }
+      if (!session) throw new Error("The PR review could not be prepared. Nothing was published.");
+      if (session.items.some((item) => item.status === "explaining") ||
+          (summaryPage?.session === session && summaryPage.controller)) {
+        throw new Error("Wait for the current review requests to finish before publishing.");
+      }
+      const confirmedSession = session;
+      const updateExisting = allowMock && publicationDialogForTest
+        ? publicationDialogForTest.updateExisting ?? false
+        : (await vscode.window.showQuickPick([
+          { label: "Update existing publication", update: true,
+            description: "Refresh your comments, remove unchanged old comments without replies, and preserve discussions" },
+          { label: "Keep existing publication", update: false,
+            description: "Only add new comments; skip identical comments and never overwrite existing bodies" }
+        ], { title: "Existing PR review comments", placeHolder: "Changes to GitHub still require final confirmation" }))?.update;
+      if (updateExisting === undefined) return;
+      await vscode.window.withProgress({
+        location: vscode.ProgressLocation.Notification, title: "Publishing Downside Up review", cancellable: true
+      }, async (progress, token) => {
+        const cancellation = token.onCancellationRequested(() => controller.abort());
+        const scope = structuredClone(summaryScope(confirmedSession));
+        let evidenceGuard: (() => Promise<void>) | undefined;
+        const workingSnapshots = new Map<string, string>();
+        let allowEdited = false;
+        const check = (): void => {
+          controller.signal.throwIfAborted();
+          if (!ownsSession() || !vscode.workspace.isTrusted) throw new PublicationValidationError("The confirmed review or workspace trust changed. Nothing further will be published.");
+        };
+        const read = async (ref: ComparisonRef) => {
+          check();
+          const snapshot = await readComparison(ref, snapshotOptions());
+          if (ref.modified.source.kind === "working") {
+            workingSnapshots.set(ref.modified.path, JSON.stringify(snapshot.modified));
+          }
+          return snapshot;
+        };
+        const prepare = async (checkDuplicates = false) => {
+          check();
+          const provenance = confirmedSession.kind === "commit" ? confirmedSession.provenance : { head: (await commitDetails(confirmedSession.root, "HEAD")).hash };
+          const saved = await service.prepareReviewExport(scope, read, provenance).catch((error: unknown) => {
+            throw new PublicationValidationError(errorMessage(error));
+          });
+          check();
+          const prepared = await preparePublication(client, scope, saved.data, read, controller.signal,
+            { updateExisting, allowEdited, checkDuplicates: updateExisting || checkDuplicates });
+          evidenceGuard = await service.reviewPublicationGuard(scope, saved.data);
+          return prepared;
+        };
+        try {
+          progress.report({ message: "Checking saved evidence and exact PR revisions…" });
+          let prepared = await prepare(true);
+          if (prepared.parts.length === 0) {
+            void vscode.window.showInformationMessage("This review is already published by the signed-in account. No comments were added.");
+            return;
+          }
+          if (prepared.edited) {
+            const warning = `${prepared.edited} Downside Up comment(s) were manually edited or use legacy markers that cannot verify edits. Updating may replace edited content; reviewer replies will remain. Only this account's marked comments are eligible.`;
+            const overwrite = allowMock && publicationDialogForTest
+              ? await publicationDialogForTest.confirmEdited?.(warning) ?? false
+              : await vscode.window.showWarningMessage(warning, { modal: true }, "Allow Edited Comments") === "Allow Edited Comments";
+            if (!overwrite) return;
+            allowEdited = true;
+            const approved = prepared.fingerprint;
+            prepared = await prepare(true);
+            if (prepared.fingerprint !== approved) {
+              throw new PublicationValidationError("The PR or existing comments changed during overwrite confirmation. Start publishing again.");
+            }
+          }
+          const detail = [
+            `Destination: ${pullRequestUrl(target)}`,
+            `Signed in as: ${prepared.account}`,
+            `PR head: ${prepared.revision.head}`,
+            `Merge base: ${prepared.mergeBase}`,
+            `${prepared.counts.create} new comments, ${prepared.counts.update} updates, ${prepared.counts.supersede} superseded file comments, ${prepared.counts.delete} deletions; ${prepared.existing} identical comments already exist.`,
+            `${prepared.placement.inline} function explanation(s) placed inline; ${prepared.placement.fallback} kept in file comments because no suitable diff anchor was available.`,
+            "Generated text and diagrams may contain source details and will be visible to everyone who can read this PR. No new explanations will be generated. The PR description will not change.",
+            updateExisting
+              ? "Updates preserve discussions. After replacements are verified, unchanged old file comments without replies are deleted; others are retained as superseded. Replies are rechecked before deleting, but GitHub cannot make that check and deletion atomic. Cancel cannot roll back changes already sent."
+              : "Published comments cannot be rolled back by Cancel. Existing comments are never overwritten."
+          ].join("\n");
+          const confirmed = allowMock && publicationDialogForTest
+            ? await publicationDialogForTest.confirm(detail)
+            : await vscode.window.showWarningMessage(
+              `Publish saved explanations to ${target.owner}/${target.repo}#${target.number}?`,
+              { modal: true, detail }, "Publish Comments") === "Publish Comments";
+          if (!confirmed) return;
+          check();
+          const beforePost = async (): Promise<void> => {
+            check();
+            const heads = await client.heads(controller.signal);
+            if (heads.base !== prepared.revision.base || heads.head !== prepared.revision.head ||
+                await client.account(controller.signal) !== prepared.account) {
+              throw new PublicationValidationError("The PR revisions or signed-in account changed. Confirm publishing again.");
+            }
+            if (confirmedSession.kind === "working" && (await commitDetails(confirmedSession.root, "HEAD")).hash !== heads.head) {
+              throw new PublicationValidationError("Local HEAD changed before publishing.");
+            }
+            for (const item of scope.items) {
+              if (item.ref.modified.source.kind !== "working") continue;
+              const working = item.ref.modified;
+              const snapshot = await readComparison({ root: scope.root, original: working, modified: working }, snapshotOptions());
+              if (JSON.stringify(snapshot.modified) !== workingSnapshots.get(working.path)) {
+                throw new PublicationValidationError(`The reviewed source for ${item.path} changed before publishing.`);
+              }
+            }
+            if (!evidenceGuard) throw new PublicationValidationError("Review publication was not prepared.");
+            try { await evidenceGuard(); }
+            catch (error) { throw new PublicationValidationError(errorMessage(error)); }
+            check();
+          };
+          await publishReview(client, prepared, prepare, controller.signal, (message) => progress.report({ message }), beforePost);
+          void vscode.window.showInformationMessage(`Review published to ${pullRequestUrl(target)}. Comments describe head ${prepared.revision.head.slice(0, 7)}.`);
+        } finally {
+          cancellation.dispose();
+        }
+      });
+    } catch (error) {
+      if (allowMock) publicationErrorForTest = errorMessage(error);
+      if (publicationController === controller) publicationController = undefined;
+      void vscode.window.showWarningMessage(`PR publication stopped: ${errorMessage(error)}`);
+    } finally {
+      if (publicationController === controller) publicationController = undefined;
+    }
+  };
 
   /** Native URIs for a confirmed pair; absent sides retain their revision identity. */
   const reviewDiffUris = (item: ReviewItem): { original: vscode.Uri; modified: vscode.Uri } => {
@@ -4624,6 +4863,8 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
   const onTextSelectionChange = vscode.window.onDidChangeTextEditorSelection(handleTextSelectionChange);
 
   const onConfigChange = vscode.workspace.onDidChangeConfiguration((event) => {
+    if (event.affectsConfiguration("downsideUp") || event.affectsConfiguration("files.exclude") ||
+        event.affectsConfiguration("search.exclude")) publicationController?.abort();
     if (["downsideUp.provider", "downsideUp.languageModel", "downsideUp.openai"]
       .some((key) => event.affectsConfiguration(key))) cancelExplanations();
     // A confirmed preparation belongs to the selected model and sharing policy.
@@ -4700,6 +4941,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     }),
     vscode.commands.registerCommand("downsideUp.reviewChanges", reviewChangesCommand),
     vscode.commands.registerCommand("downsideUp.exportReviewSummary", exportReviewSummaryCommand),
+    vscode.commands.registerCommand("downsideUp.publishReviewSummary", publishReviewSummaryCommand),
     vscode.commands.registerCommand("downsideUp.prepareCommit", prepareCommitCommand),
     vscode.commands.registerCommand("downsideUp.showChangedFunctions", showChangedFunctionsCommand),
     reviewStatus,
@@ -4829,6 +5071,12 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     reviewBaseChoices: () => reviewBasePickerForTest?.enabled
       ? reviewBasePickerForTest.items.map((item) => item.label) : undefined,
     reviewExportError: () => reviewExportErrorForTest,
+    setPublicationRequest: (request, dialog) => {
+      publicationRequestForTest = request;
+      publicationDialogForTest = dialog;
+      publicationErrorForTest = undefined;
+    },
+    publicationError: () => publicationErrorForTest,
     reviewNavigation: () => {
       const owner = activeReviewNavigation;
       if (owner && owner.session === reviewSession && !owner.item && summarySelected) {
@@ -4949,6 +5197,8 @@ export interface DownsideUpTestApi {
   setReviewExportTarget(target: vscode.Uri | undefined, dialog?: () => Promise<void>): void;
   reviewBaseChoices(): readonly string[] | undefined;
   reviewExportError(): string | undefined;
+  setPublicationRequest(request: GitHubRequest | undefined, dialog?: PublicationDialogForTest): void;
+  publicationError(): string | undefined;
   reviewNavigation(): { token: string; fileName: string; position: number; total: number; canPrevious: boolean; canNext: boolean; summary?: boolean } | undefined;
   invokeReviewNavigation(direction: "previous" | "next" | "picker", token: string): Promise<void>;
   shownReviewSummary(): ReviewSummaryView | undefined;
@@ -4984,6 +5234,15 @@ export interface DownsideUpTestApi {
   addFormat(functionName: string, format: ExplanationFormat): Promise<void>;
   explanationOf(functionName: string): FunctionExplanation | undefined;
   fileSummary(): { text: string; current: boolean } | undefined;
+}
+
+interface PublicationDialogForTest {
+  readonly url: string;
+  readonly confirm: (detail: string) => Promise<boolean>;
+  readonly prepare?: "summary-only" | "full";
+  readonly confirmPreparation?: (detail: string) => Promise<boolean>;
+  readonly updateExisting?: boolean;
+  readonly confirmEdited?: (detail: string) => Promise<boolean>;
 }
 
 export function deactivate(): void {}

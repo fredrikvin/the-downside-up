@@ -511,7 +511,11 @@ export class ChangeSession {
         if (controller.signal.aborted || (prefetching && !mayPrefetch())) {
           throw new DOMException("Prefetching moved on.", "AbortError");
         }
-        return this.host.service.explainComparison(snapshot, () => this.currentPair(shown, root), controller.signal);
+        return this.host.service.explainComparison(snapshot, () => this.currentPair(shown, root), controller.signal, (detail) => {
+          if (this.shown !== shown || controller.signal.aborted) return;
+          shown.detail = detail;
+          this.host.changed();
+        });
       }, prefetching ? "prefetch" : "explicit");
       if (this.shown === shown) {
         shown.saved = result;

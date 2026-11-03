@@ -462,8 +462,13 @@ links disappear for outdated comparisons and revalidate the exact pair on click.
 Behavior sections have extra whitespace between evidence, before/after,
 conditions, and paired visuals. Legacy items without a function name
 retain their behavior-title heading. This is display-only and works with saved
-comparisons without generation. Other changes covers non-function edits and explicitly unclassified
-regions. Possible consequences and limitations stay separate. Textual comparison
+comparisons without generation. Other changes covers additional implementation
+details of non-function edits and explicitly unclassified regions, not a repeat
+or paraphrase of the summary or function entries. It is empty and omitted when
+those already convey all useful information, including with an empty catalogue.
+Discovery limitations belong in limitations, not Other changes. This is prompt
+guidance, not semantic duplicate detection; generated wording is not guaranteed.
+Possible consequences and limitations stay separate. Textual comparison
 still works for any eligible text file when function classification is unavailable.
 Everything renders as text; evidence links go
 through host-validated ids and reveal the lines in the visible original or
@@ -517,8 +522,40 @@ matches and zero-based edge matches, never navigation targets. Missing-file
 presence comes from the snapshots, not model output. Each side allows at most
 30 operations, still capped at 24 chart nodes and 40 edges, with the existing
 whole-response budgets checked after expansion.
-This remains one comparison request per file for both exact snapshots, all
-Added/Removed summaries, and the Changed functions' three paired views.
+When both full snapshots fit the configured request limit, one comparison
+request covers all Added/Removed summaries and the Changed functions' three
+paired views. Otherwise a local diff-first builder preserves every changed
+line with original absolute line numbers, adding nearby unchanged lines,
+complete enclosing functions, a bounded leading header, and signatures of
+same-file functions whose names appear as call-like tokens in changed lines,
+in that priority order while the full serialized prompt fits. Signature
+matches are conservative context hints, not verified dependencies. Discovery
+remains language-owned; unclassified files still get textual hunks.
+Lower-priority context is dropped before required changed lines. If even
+changed lines and required prompt/catalogue data cannot fit, nothing is sent
+and an actionable size error is shown; added/removed bodies are never silently
+truncated to hide changed lines. The 256 KiB per-side snapshot read bound is
+unchanged. Omitted unchanged regions and incomplete enclosing functions are
+disclosed, not treated as evidence of absent behavior.
+
+Diff-first responses may request up to six same-file source ranges per round,
+each at most 200 lines, with at most two follow-up rounds (three requests in
+total per comparison attempt). Host validation rejects invalid/absent-side
+ranges, keeps all prior context, and adds only ranges that fit the serialized
+prompt, preferably their enclosing functions. Invalid, duplicate or unfit
+requests are disclosed; if no new context fits, the next response must be
+final. This is bounded context acquisition, not an automatic retry or repair
+of invalid JSON. Requests never load another file or execute model-supplied
+paths/commands. All rounds use the same cancellation signal and existing
+repository/model approval, without additional prompts; opt-in prefetch never
+prompts. Trust, exclusions, source identity/text, model, cache-clear fence and
+size setting are checked before every send and before saving. Only the final
+response is saved; usage aggregates all rounds. Preview loading text names
+follow-up rounds. Source evidence and visual operations must fit wholly
+within a supplied range; omitted gaps are never valid navigation spans.
+Host-owned limitations disclose coverage in previews, exports and publication.
+Saved records include full/diff mode, follow-up count and omitted line counts.
+Changing the request-size limit does not invalidate a current saved comparison.
 Uncached card details are separate explicit or opted-in prefetch requests (one each, plus any
 needed normal working-source overview priming/review); missing formats add
 one request each. Review confirmation counts only file comparisons and never
@@ -529,7 +566,7 @@ repair call, retry, or model fallback is made for diff prefetch.
 The comparison prompt version is bumped for this contract; old comparison
 records are not migrated or reused under the new version.
 
-The comparison prompt is `downside-up-changes-7`, with catalogue version 1;
+The comparison prompt is `downside-up-changes-9`, with catalogue version 1;
 function explanations/file summaries use `downside-up-plain-11` for the
 source-context contract. These invalidate only their own record lookups.
 The repository cache envelope remains schema version 2, preserving consent.
@@ -753,6 +790,128 @@ this export read, so only a change made while it is prepared stops it.
 Commit reviews use their immutable commit
 and parent provenance. No file is staged, saved, or committed by export.
 
+**Publish Review to Pull Request…** is a separate explicit action. It asks for an
+HTTPS PR URL and offers **Generate summary only** or **Generate full review**.
+The active/retained local review is not offered as a publication base.
+Every invocation prepares the exact immutable PR
+merge base and head, confirms the file set using the normal review flow, reuses
+current records, and retains per-model sharing consent. Summary-only never
+requests Functions comparisons; missing summary generation is explicitly
+confirmed. Full preparation completes the confirmed comparisons and summary
+before offering publication. Cancelling preparation never posts comments.
+Immutable PR preparation ignores, and never saves or discards, local/unsaved edits.
+The command uses an installed,
+already authenticated GitHub CLI (`gh`); it never logs in or stores GitHub
+credentials. All API requests name the selected host and base repository
+explicitly and use argv plus stdin JSON, not shell interpolation. The new
+external destination requires a modal confirmation of host/repository/PR,
+account, immutable revisions, comment counts, and visibility. Read-only PR and
+account lookups precede confirmation; no generated text is posted before it.
+Posting never requests a model, generates missing records, changes the PR
+description, stages/saves/commits files, fetches, or changes refs.
+
+Publication requires an open PR with at most 200 changed files and complete local
+history in a repository-root review. The comparison is the unique merge base
+of the PR base/head commits against its head, not the current default branch
+tip or the synthetic merge commit. Confirmed original revisions and paths must
+match that base; immutable modified revisions must match the PR head. A working
+review additionally requires local HEAD to match the PR head and both sides'
+exact text/presence (including unsaved buffers) to equal immutable PR content.
+Unrelated edits outside the confirmed set do not block. Truncated scopes, missing
+objects, shallow/ambiguous history, unavailable confirmed sources, and PR file-set
+mismatches block publication. Skipped/excluded files and missing comparisons stay
+disclosed, never substituted with today's source. A single-commit review of a
+multi-commit PR is not silently relabelled as a whole-PR summary.
+
+The compact conversation comment shows the opening summary, themes, and chart
+directly, in that order. One final **Review details** section contains effects,
+substantive caveats, coverage, omitted-file lists, and model information.
+Generic grounding and diff-alignment/unchanged-line-budget boilerplate is omitted;
+unavailable or budget-omitted diffs retain a short visible coverage warning.
+Empty sections are omitted. Each current saved file comparison is split into
+function comments and file-wide context, pinned to the PR head and host-validated
+path; deleted files and rename paths use the PR file listing. Each function's
+Before/After explanation is one inline review comment (response `subject_type: line`):
+the request uses GitHub's documented diff `position` parameter for compatibility
+with servers rejecting `line`/`subject_type` request keys. Positions count patch
+lines after the first hunk header, including subsequent headers; source line and
+side are still verified in the response. There is no automatic failed-write retry.
+Changed/added functions use the first added RIGHT-side diff line inside their
+recorded modified range; removed functions use a deleted LEFT-side line inside
+their original range. An enclosing function does not anchor inside a nested
+function that has its own explanation. No model-provided line selects the anchor.
+Only complete, bounded GitHub patch hunks supply anchors, never arbitrary source
+lines outside the diff. Missing/invalid patches, unavailable ranges, and functions
+without a suitable changed line fall back to the file-level comment
+(`subject_type: file`) alongside file-wide context and unassigned changes.
+Both versions remain together even when the function moved.
+Final confirmation reports inline and fallback function counts so fallback
+placement is visible before posting.
+File explanations start as normal
+prose, without a repeated filename accordion or limitations section. File content
+is grouped by the saved host-validated function catalogue: each function has its
+qualified name, added/removed/changed classification, and recorded Before/After
+source line ranges. Behavior changes include their recorded changed-line ranges.
+Related changes and execution scopes stay together using saved function and
+visual-scope IDs, with a shared visual scope shown only once. Unclassified
+content is labelled separately; generated titles never establish function
+ownership. Non-function changes appear under **Other**, and file-wide possible effects remain separate.
+Each execution scope has a normal heading followed by sibling **Steps**, **Pseudocode**,
+and **Flowchart** accordions (only available optional formats), without an outer
+execution-details wrapper. File visuals are collapsible,
+Before then After vertically, with host-built Mermaid outside HTML tables.
+Markdown block boundaries include blank lines so headings after accordions render
+as headings instead of literal Markdown. This is presentation-only; existing
+records can be republished without model requests.
+Generated prose is inert except for safely parsed inline code spans; model links,
+HTML, mentions, and diagram directives are not executed or trusted. GitHub web
+diagram layout is client-dependent and is not a synchronized source preview.
+The standalone export format is unchanged.
+
+Each rendered comment has a hard UTF-8 size limit; oversized content is rejected,
+not truncated or split mid-diagram. File comments post sequentially before the
+summary; superseding updates and deletions follow once replacements are verified.
+Trust, session ownership, source freshness, policy, account, model/evidence
+identity, and PR revisions are rechecked after confirmation and before each
+mutation. Cancel, review invalidation, and relevant configuration changes stop
+remaining publication; GitHub writes are not transactional, and already posted
+comments cannot be rolled back. Errors report confirmed progress and uncertain
+writes and the comment action that stopped. Definite HTTP 4xx rejections (except
+request timeouts) show only a sanitized status, allowlisted validation field
+names, and fixed actionable guidance; server text, subprocess stderr, and source
+content remain hidden. Definite rejections are not reported as possibly
+successful writes. Timeouts, lost responses, and server failures remain uncertain.
+No automatic retry occurs. Comment writes use at least one-second spacing, with cancellation during the wait
+and fresh identity/reply checks afterwards. HTTP 422 alone is not treated as
+proof of invalid data: GitHub also uses it for spam protection. Recognized
+rate-limit/spam, pending-review, diff-line, and review-count rejection signals
+are translated to fixed host-authored messages without revealing raw server text.
+Versioned deterministic markers and bounded
+comment scans (at most 1,000 per comment type) skip identical same-account comments.
+An explicit **Update existing publication** choice refreshes the summary in
+place. File comments can update in place for the same head; function comments
+also require matching line/side coordinates. A new head or an outdated/mismatched
+inline anchor requires a fresh comment; GitHub may mark older inline threads
+outdated after pushes. Function markers carry a separate catalogue-derived key;
+unrelated line comments are never adopted. Existing file-level publications can
+be updated using saved records without regeneration: the file comment retains
+its overview and fallback content, and function explanations get inline comments.
+Unchanged, verifiable v2 file/function comments without replies can
+be deleted once their replacement (or the current summary) is verified; this
+also cleans up already-superseded comments. Counts are confirmed before writing.
+File comments with replies are retained as superseded with replacement links;
+edited or legacy bodies are never automatically deleted and require a separate
+confirmation to update. Only marked comments by the signed-in account are eligible.
+Complete bounded reply scans, comment identity/body, account, and cancellation
+are rechecked before deleting; an unverifiable scan stops cleanup. GitHub does
+not offer an atomic reply-check/delete, so a newly arriving reply may still race.
+Each mutation rechecks the expected existing body to reject detected concurrent
+edits; GitHub's GET/PATCH pair is not atomic, so a small read/write race remains.
+Content hashes detect edits; markers are provenance hints, not authentication.
+Markers do not
+guarantee exactly-once posting across concurrent windows/clients. Later pushes
+never generate, update, or republish automatically.
+
 `downsideUp.review.lowValuePatterns` classifies common lockfiles, vendored,
 generated, minified, and snapshot files as low value for review preparation.
 They stay in the confirmed set and remain navigable, but do not enter background
@@ -769,10 +928,11 @@ Single-parent commits compare against that parent; a merge requires an explicit
 choice of one actual parent before confirmation. Root commits compare against
 Git's empty tree (SHA-1 or SHA-256). No index, untracked, working-tree or unsaved
 editor content substitutes for a committed side. The confirmation names both
-revisions, eligible/cached/skipped counts and the bound of initial requests plus
-at most one retry per failed file. At most 200 files are considered, with the
+revisions, eligible/cached/skipped counts and the bound of initial requests,
+up to two context follow-ups per attempt, and at most one retry per failed file.
+At most 200 files are considered, with the
 same per-side exclusions, request bounds, trust and final persistence checks.
-Each successful uncached file is one comparison request, never a request for
+Each successful uncached file is one comparison attempt, never a request for
 Added/Removed function details. No prompt/schema change or cache migration is
 needed: both revision IDs and old/new paths are the native Git diff cache keys.
 

@@ -30,13 +30,13 @@ async function bundle() {
     logLevel: "info"
   });
   await build({
-    entryPoints: ["test/extensionHost/runner.ts"],
+    entryPoints: { index: "test/extensionHost/runner.ts", publication: "test/extensionHost/publication.ts" },
     bundle: true,
     platform: "node",
     target: "node18",
     format: "cjs",
     external: ["vscode", "web-tree-sitter"],
-    outfile: resolve(outdir, "test/index.js"),
+    outdir: resolve(outdir, "test"),
     logLevel: "info"
   });
 }

@@ -15,6 +15,7 @@ import type { ComparisonPromptInput, ExplanationPromptInput } from "../src/gener
 import { comparisonInput, comparisonResponse } from "./comparisonFixture";
 import { classifiedComparisonResponse, comparisonFunctionCatalogue } from "./comparisonFixture";
 import { MockProvider } from "../src/generation/mock";
+import { numberLineRanges } from "../src/presentation/stepLines";
 
 const overview: RepositoryOverview = {
   purpose: "Observed checkout flow.",
@@ -55,6 +56,27 @@ const promptInput: ExplanationPromptInput = {
   limitations: [],
   formats: []
 };
+
+it("sends only numbered excerpt ranges, retaining absolute lines and bounded context instructions", () => {
+  const source = ["hidden prefix", "included line", "omitted middle", "included suffix", "hidden tail"].join("\n");
+  const ranges = [{ start: 2, end: 2 }, { start: 4, end: 4 }];
+  const [system, user] = comparisonPrompt({
+    ...comparisonInput,
+    original: { ...comparisonInput.original, source, excerpt: { ranges, numbered: numberLineRanges(source, ranges) } },
+    context: { roundsLeft: 2, limitations: ["Source omitted."] }
+  });
+  const payload = JSON.parse(user);
+  expect(payload.original.numberedSource).toBe(
+    "[1 lines omitted]\n2| included line\n[1 lines omitted]\n4| included suffix\n[1 lines omitted]");
+  expect(user).not.toContain("hidden prefix");
+  expect(user).not.toContain("hidden tail");
+  expect(user).not.toContain("omitted middle");
+  expect(payload.original.includedRanges).toEqual(ranges);
+  expect(payload.context.roundsLeft).toBe(2);
+  expect(payload.totalLines.original).toBe(5);
+  expect(system).toContain("at most 200 lines per range");
+  expect(system).toContain("never another file");
+});
 
 function response(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -146,6 +168,15 @@ describe("structured generation", () => {
     expect(system).toContain("Always finish the JSON object");
   });
 
+  it("asks for additional Other details only, including when function discovery has no entries", () => {
+    const [system] = comparisonPrompt(comparisonInput);
+    expect(system).toContain("Include only information not already conveyed by summary or the function entries");
+    expect(system).toContain("do not repeat or paraphrase their conclusions");
+    expect(system).toContain("An empty function catalogue does not require an outside description");
+    expect(system).toContain("if summary covers all useful information, use an empty string");
+    expect(system).toContain("Keep discovery limitations in limitations, not outside");
+  });
+
   it("validates model output, reports provider token counts, and disables response storage", async () => {
     const fetch = vi.fn().mockResolvedValue(response({
       status: "completed",
@@ -221,6 +252,19 @@ describe("structured generation", () => {
     expect(request.text.format.strict).toBe(true);
     expect(JSON.stringify(request.text.format.schema)).toContain('"operations"');
     expect(JSON.stringify(request.text.format.schema)).not.toContain('"occurrenceId"');
+  });
+
+  it("accepts a bounded intermediate context request through the OpenAI schema", async () => {
+    const contextRequests = [{ side: "modified", startLine: 3, endLine: 6, reason: "Need the branch." }];
+    const fetch = vi.fn().mockResolvedValue(response({
+      output: [{ content: [{ type: "output_text", text: JSON.stringify({ contextRequests }) }] }]
+    }));
+    vi.stubGlobal("fetch", fetch);
+    const result = await new OpenAIProvider("test-model", "test-key").explainComparison({
+      ...comparisonInput, catalogue: comparisonFunctionCatalogue, context: { roundsLeft: 2, limitations: [] }
+    });
+    expect(result.value.contextRequests).toEqual(contextRequests);
+    expect(fetch).toHaveBeenCalledOnce();
   });
 
   it("allocates a bounded output budget for paired visual comparisons", async () => {

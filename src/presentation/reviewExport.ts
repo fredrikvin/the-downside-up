@@ -179,6 +179,11 @@ function flowchartCell(side: ComparisonVisualSide): string {
   return lines.join("\n");
 }
 
+/** Rebuilds one saved side's graph using host-assigned Mermaid IDs and safe labels. */
+export function renderReviewComparisonFlowchart(side: ComparisonVisualSide): string {
+  return flowchartCell(side);
+}
+
 function renderVisualScope(scope: ComparisonVisualScope, record: ComparisonRecord): string {
   const labels = sideLabels(record, scope);
   const hasPseudocode = SIDES.some((key) => scope[key].pseudocode.length);
@@ -211,6 +216,19 @@ function renderDiagram(record: ReviewSummaryRecord, evidence: readonly ReviewSum
   }
   lines.push("```");
   return lines.join("\n");
+}
+
+/** Rebuilds the saved overview graph as inert Mermaid; never returns model Markdown. */
+export function renderReviewSummaryDiagram(
+  record: ReviewSummaryRecord,
+  evidence: readonly ReviewSummaryEvidence[]
+): string {
+  return renderDiagram(record, evidence);
+}
+
+/** Escapes text for the HTML summary labels used by review exports. */
+export function renderReviewExportHtmlText(value: string): string {
+  return htmlText(value, true);
 }
 
 function evidencePaths(ids: readonly string[], evidence: readonly ReviewSummaryEvidence[]): string[] {
