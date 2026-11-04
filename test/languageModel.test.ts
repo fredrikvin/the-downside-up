@@ -4,6 +4,7 @@ import type { FunctionExplanation, RepositoryOverview } from "../src/core/types"
 import {
   isUsableLanguageModelVendor,
   LANGUAGE_MODEL_JUSTIFICATION,
+  languageModelRequestTimeoutMs,
   LanguageModelProvider,
   languageModelConsentId,
   orderLanguageModels,
@@ -99,6 +100,14 @@ function fakeModel(send: SendRequest, maxInputTokens = 100_000, countsTokens = t
 }
 
 describe("VS Code language model generation", () => {
+  it("scales the request deadline by input size with a 10-to-30-minute bound", () => {
+    expect(languageModelRequestTimeoutMs(0)).toBe(10 * 60_000);
+    expect(languageModelRequestTimeoutMs(9_999)).toBe(10 * 60_000);
+    expect(languageModelRequestTimeoutMs(10_000)).toBe(11 * 60_000);
+    expect(languageModelRequestTimeoutMs(300_000)).toBe(30 * 60_000);
+    expect(languageModelRequestTimeoutMs(500_000)).toBe(30 * 60_000);
+  });
+
   it("summarizes source diffs and rejects unknown file IDs without a repair request", async () => {
     const input = {
       coverage: { total: 2, included: 1, unavailable: 0, omitted: 0, lowValue: 1 }, limitations: [],
@@ -125,7 +134,7 @@ describe("VS Code language model generation", () => {
     await expect(provider.summarizeReview(input)).rejects.toMatchObject({ code: "invalid-schema" });
     expect(sendRequest).toHaveBeenCalledTimes(2);
   });
-  it("allows slow models past 90 seconds, then cancels after ten minutes without retrying", async () => {
+  it("extends the request timeout for larger prompts and cancels without retrying", async () => {
     vi.useFakeTimers();
     try {
       let token: FakeToken | undefined;
@@ -137,11 +146,12 @@ describe("VS Code language model generation", () => {
           })()
         };
       });
-      const result = provider.explainFunction(promptInput).catch((error: unknown) => error);
-      await vi.advanceTimersByTimeAsync(90_001);
+      const input = { ...promptInput, source: "x".repeat(40_000) };
+      const result = provider.explainFunction(input).catch((error: unknown) => error);
+      await vi.advanceTimersByTimeAsync(10 * 60_000);
       expect(token?.isCancellationRequested).toBe(false);
-      await vi.advanceTimersByTimeAsync(600_000 - 90_001);
-      expect(await result).toMatchObject({ message: expect.stringContaining("timed out after 10 minutes") });
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(await result).toMatchObject({ message: expect.stringContaining("timed out after 11 minutes") });
       expect(token?.isCancellationRequested).toBe(true);
       expect(sendRequest).toHaveBeenCalledTimes(1);
     } finally {

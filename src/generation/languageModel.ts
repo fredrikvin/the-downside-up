@@ -47,8 +47,20 @@ import {
   parseReviewSummary
 } from "./schema";
 
-const REQUEST_TIMEOUT_MS = 10 * 60_000;
+const MIN_REQUEST_TIMEOUT_MS = 10 * 60_000;
+const MAX_REQUEST_TIMEOUT_MS = 30 * 60_000;
+const INPUT_TOKENS_PER_EXTRA_MINUTE = 10_000;
 const MAX_OUTPUT_CHARACTERS = 64 * 1024;
+
+export function languageModelRequestTimeoutMs(inputTokens: number): number {
+  const extraMinutes = Math.floor(Math.max(0, inputTokens) / INPUT_TOKENS_PER_EXTRA_MINUTE);
+  return Math.min(MAX_REQUEST_TIMEOUT_MS, MIN_REQUEST_TIMEOUT_MS + extraMinutes * 60_000);
+}
+
+function timeoutError(timeoutMs: number): Error {
+  const minutes = Math.ceil(timeoutMs / 60_000);
+  return new Error(`The language model request timed out after ${minutes} minutes. No automatic retry was made; try again or choose a faster model.`);
+}
 
 export const LANGUAGE_MODEL_JUSTIFICATION =
   "Downside Up sends the function you asked it to explain, with bounded repository context, to generate an explanation.";
@@ -255,10 +267,12 @@ export class LanguageModelProvider implements GenerationProvider {
 
     const tokenSource = new vscode.CancellationTokenSource();
     let timedOut = false;
-    const timeout = setTimeout(() => {
+    const startedAt = Date.now();
+    let timeoutMs = languageModelRequestTimeoutMs(estimateTokens(text));
+    let timeout = setTimeout(() => {
       timedOut = true;
       tokenSource.cancel();
-    }, REQUEST_TIMEOUT_MS);
+    }, timeoutMs);
     const onAbort = () => tokenSource.cancel();
     signal?.addEventListener("abort", onAbort, { once: true });
 
@@ -267,6 +281,16 @@ export class LanguageModelProvider implements GenerationProvider {
     try {
       inputTokens = await this.countTokens(message, text, tokenSource.token);
       if (signal?.aborted) throw cancelled();
+      const measuredTimeoutMs = languageModelRequestTimeoutMs(inputTokens);
+      if (measuredTimeoutMs > timeoutMs) {
+        timeoutMs = measuredTimeoutMs;
+        clearTimeout(timeout);
+        timeout = setTimeout(() => {
+          timedOut = true;
+          tokenSource.cancel();
+        }, Math.max(0, timeoutMs - (Date.now() - startedAt)));
+      }
+      if (timedOut) throw timeoutError(timeoutMs);
       if (inputTokens > this.model.maxInputTokens) {
         throw new LocalLimitError(
           `The request needs about ${inputTokens.toLocaleString()} tokens, but ${this.model.name} accepts at most ${this.model.maxInputTokens.toLocaleString()}; no code was sent.`
@@ -286,7 +310,7 @@ export class LanguageModelProvider implements GenerationProvider {
       }
     } catch (error) {
       if (signal?.aborted) throw cancelled();
-      if (timedOut) throw new Error("The language model request timed out after 10 minutes. No automatic retry was made; try again or choose a faster model.");
+      if (timedOut) throw timeoutError(timeoutMs);
       if (error instanceof LocalLimitError) throw error;
       throw describeFailure(error, this.model.name);
     } finally {
@@ -295,7 +319,7 @@ export class LanguageModelProvider implements GenerationProvider {
       tokenSource.dispose();
     }
     if (signal?.aborted) throw cancelled();
-    if (timedOut) throw new Error("The language model request timed out after 10 minutes. No automatic retry was made; try again or choose a faster model.");
+    if (timedOut) throw timeoutError(timeoutMs);
     if (!output.trim()) {
       throw new Error(
         `${this.model.name} (${this.model.vendor}) returned no output. Some models listed by VS Code cannot answer extension requests; run “Downside Up: Choose Language Model” and pick another model, such as one from the “copilot” vendor.`
