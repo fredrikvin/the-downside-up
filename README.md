@@ -422,6 +422,8 @@ correctness guarantee or a whole-repository audit.
 
 - [Detailed usage and configuration](docs/configuration.md): provider setup,
   prefetch, review mode, request limits, and enterprise exclusions.
+- [How it works](docs/architecture.md): a short developer tour of local
+  analysis, model roles, validation, and caching.
 - [Architecture and privacy contract](docs/prototype.md), including known
   limitations.
 - [Development](docs/development.md): contributor setup, development agents,

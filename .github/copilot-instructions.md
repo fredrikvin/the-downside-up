@@ -65,7 +65,9 @@ behavior.
   `Release <x.y.z>` (changing only `package.json`, `package-lock.json`, and
   `README.md`), after the commits with the changes it ships.
 - Update `README.md` and `docs/prototype.md` when setup, privacy, cache
-  behavior, supported tooling, or limitations change.
+  behavior, supported tooling, or limitations change. Update
+  `docs/architecture.md` when the analysis pipeline, model roles, validation,
+  or cache design it describes change.
 
 ## Development agents
 

@@ -43,11 +43,13 @@ values, sequences, sqlc-named queries, and explicit schema/query explanations.
 
 ## Architecture and conventions
 
-Read `docs/prototype.md` and `.github/copilot-instructions.md` before changing
-product behavior. Preserve explicit-request-only generation, bounded context
-collection, per-repository/model consent, restrictive webviews, cancellation,
-and cache freshness checks. Prefetch is an opt-in exception; opening an
-unmapped project preview is an explicit mapping request.
+For an overview of how analysis, context, models, validation, and caching fit
+together, start with `docs/architecture.md`. Read `docs/prototype.md` and
+`.github/copilot-instructions.md` before changing product behavior. Preserve
+explicit-request-only generation, bounded context collection,
+per-repository/model consent, restrictive webviews, cancellation, and cache
+freshness checks. Prefetch is an opt-in exception; opening an unmapped project
+preview is an explicit mapping request.
 
 Language support is modular. Each bundled language has a folder under
 `src/languages/` exporting one `LanguageSupport` (`src/languages/support.ts`):
