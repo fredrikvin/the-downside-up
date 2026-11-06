@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.64.3
+
+- Scale VS Code language-model request timeouts with input size, from a
+  10-minute minimum to a 30-minute maximum.
+- Add a developer architecture tour covering local analysis, context building,
+  model roles, validation, caching, and privacy.
+
+## 0.64.0
+
+- Publish prepared, function-aligned reviews to pull requests with explicit
+  confirmation and host-validated comment locations. Large comparisons use
+  bounded diff-first excerpts with follow-up context when needed.
+- Choose a review-export scope and export local changes.
+
 ## 0.59.2
 
 - Make exported changes match the preview: each step's detail is included (so
