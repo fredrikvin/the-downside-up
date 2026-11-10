@@ -4,12 +4,14 @@ import { resolve } from "node:path";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { FileRepositoryCacheStore, MemoryRepositoryCacheStore } from "../src/cache/store";
 import type { ComparisonContextRequest, FileComparisonDraft, FunctionTarget, RepositoryCache } from "../src/core/types";
+import { fingerprint } from "../src/core/fingerprint";
 import { ExplanationService } from "../src/controller";
 import { MockProvider } from "../src/generation/mock";
 import { comparisonPrompt, overviewPrompt, reviewPrompt } from "../src/generation/prompts";
 import { COMPONENT_GUIDANCE } from "../src/languages/javascript/guidance";
 import { initializeJavaScriptParsersAt } from "../src/languages/javascript/syntax";
 import { javascriptSupport } from "../src/languages/javascript";
+import { pythonSupport } from "../src/languages/python";
 import { Range, Position, Uri, workspace } from "./vscode";
 
 vi.mock("node:fs/promises", async (importOriginal) => {
@@ -24,6 +26,7 @@ const harness = vi.hoisted(() => ({
   gitHeadHash: "head-main",
   primedPaths: ["README.md"],
   source: "export function checkout(catalog, title) { return catalog.find(title); }",
+  pythonGuidance: undefined as string | undefined,
   gatherInventory: undefined as unknown as (...args: unknown[]) => unknown,
   gatherFunctionContext: undefined as unknown as (...args: unknown[]) => unknown,
   exclusion: undefined as string | undefined
@@ -72,11 +75,18 @@ function makeInventory(_root: string, previous?: Record<string, string>) {
 function makeContext(target: FunctionTarget) {
   const selectedPath = "src/checkout.js";
   const relatedPath = "src/storage.js";
+  const inputs = [
+    { path: selectedPath, description: "selected checkout", fingerprint: harness.functionHash },
+    { path: relatedPath, description: "related storage declaration", fingerprint: harness.storageHash }
+  ];
+  if (target.languageId === "python") {
+    inputs.push({
+      path: selectedPath, description: "file-scoped explanation guidance",
+      fingerprint: fingerprint(JSON.stringify([harness.source, harness.pythonGuidance ?? "no guidance"]))
+    });
+  }
   return {
-    inputs: [
-      { path: selectedPath, description: "selected checkout", fingerprint: harness.functionHash },
-      { path: relatedPath, description: "related storage declaration", fingerprint: harness.storageHash }
-    ],
+    inputs,
     sourceReferences: [{
       id: "selected-function",
       path: selectedPath,
@@ -87,7 +97,9 @@ function makeContext(target: FunctionTarget) {
     }],
     referenceUris: new Map([["selected-function", target.uri]]),
     text: `${harness.source}\n\npersist(book);`,
-    limitations: []
+    limitations: [],
+    ...(target.name === "Cart" ? { guidance: COMPONENT_GUIDANCE } : {}),
+    ...(target.languageId === "python" && harness.pythonGuidance ? { guidance: harness.pythonGuidance } : {})
   };
 }
 
@@ -99,6 +111,7 @@ function setHarness(): void {
   harness.primedPaths = ["README.md"];
   harness.exclusion = undefined;
   harness.source = "export function checkout(catalog, title) { return catalog.find(title); }";
+  harness.pythonGuidance = undefined;
   harness.gatherInventory = (...args: unknown[]) =>
     makeInventory(args[0] as string, args[1] as Record<string, string> | undefined);
   harness.gatherFunctionContext = (...args: unknown[]) =>
@@ -159,7 +172,10 @@ function createService(
 }
 
 describe("ExplanationService", () => {
-  beforeAll(() => initializeJavaScriptParsersAt(resolve(".")));
+  beforeAll(async () => {
+    await initializeJavaScriptParsersAt(resolve("."));
+    await pythonSupport.initialize!(resolve("."));
+  });
   beforeEach(() => {
     setHarness();
     workspace.__resetConfiguration();
@@ -758,6 +774,82 @@ describe("ExplanationService", () => {
     expect(Object.keys((await store.read(root)).explanations)).toHaveLength(0);
   });
 
+  it("does not deduplicate Python requests across import-only edits and rejects stale results", async () => {
+    harness.source = "import numpy as np\ndef checkout(values):\n    return np.mean(values)\n";
+    harness.pythonGuidance = "NumPy background";
+    const document = {
+      ...fakeDocument, uri: Uri.file(resolve(root, "src/checkout.py")), languageId: "python"
+    } as import("vscode").TextDocument;
+    const selected = async () => {
+      const found = await pythonSupport.findFunction(document, new Position(1, 0) as unknown as import("vscode").Position);
+      if (!found) throw new Error("Python test function was not found.");
+      return found;
+    };
+    const provider = new MockProvider();
+    const original = provider.explainFunction.bind(provider);
+    let releaseFirst!: () => void;
+    let firstStarted!: () => void;
+    const firstStartedPromise = new Promise<void>((resolveStarted) => { firstStarted = resolveStarted; });
+    const firstGate = new Promise<void>((resolveFirst) => { releaseFirst = resolveFirst; });
+    let calls = 0;
+    const explain = vi.spyOn(provider, "explainFunction").mockImplementation(async (input, signal) => {
+      calls++;
+      if (calls === 1) {
+        expect(input.guidance).toBe("NumPy background");
+        firstStarted();
+        await firstGate;
+      } else {
+        expect(input.guidance).toBeUndefined();
+      }
+      return original(input, signal);
+    });
+    const service = createService(new MemoryRepositoryCacheStore(), provider);
+    const first = service.explain(root, await selected(), document);
+    await Promise.race([
+      firstStartedPromise,
+      first.then(() => { throw new Error("Python explanation completed before its first provider call."); })
+    ]);
+
+    harness.source = harness.source.replace("import numpy as np", "import facade as np");
+    harness.pythonGuidance = undefined;
+    const second = await service.explain(root, await selected(), document);
+    expect(explain).toHaveBeenCalledTimes(2);
+    releaseFirst();
+    await expect(first).rejects.toThrow(/context changed while the explanation was generating/i);
+    expect(second.cached).toBe(false);
+  });
+
+  it("rechecks file-scoped Python guidance after provider setup before dispatch", async () => {
+    harness.source = "import numpy as np\ndef checkout(values):\n    return np.mean(values)\n";
+    harness.pythonGuidance = "NumPy background";
+    const document = {
+      ...fakeDocument, uri: Uri.file(resolve(root, "src/checkout.py")), languageId: "python"
+    } as import("vscode").TextDocument;
+    const selected = await pythonSupport.findFunction(document, new Position(1, 0) as unknown as import("vscode").Position);
+    if (!selected) throw new Error("Python test function was not found.");
+    const provider = new MockProvider();
+    const explain = vi.spyOn(provider, "explainFunction");
+    let providerSetups = 0;
+    const service = new ExplanationService({
+      allowMock: true,
+      store: new MemoryRepositoryCacheStore(),
+      describeProvider: () => ({ kind: "mock", modelId: provider.modelId }),
+      authorizeExternalData: async () => true,
+      createProvider: async () => {
+        providerSetups++;
+        if (providerSetups === 2) {
+          harness.source = harness.source.replace("import numpy as np", "import facade as np");
+          harness.pythonGuidance = undefined;
+        }
+        return provider;
+      }
+    });
+
+    await expect(service.explain(root, selected, document))
+      .rejects.toThrow("The file or its explanation guidance changed before dispatch; nothing was sent.");
+    expect(explain).not.toHaveBeenCalled();
+  });
+
   it("saves an explanation despite an unrelated file edit during generation", async () => {
     const provider = new MockProvider();
     const service = createService(new MemoryRepositoryCacheStore(), provider);
@@ -944,6 +1036,45 @@ describe("ExplanationService", () => {
         store, describeProvider: () => ({ kind: "openai", modelId: "test" }),
         createProvider: async () => provider, authorizeExternalData: authorize, maxRequestBytes: () => 32 * 1024
       });
+
+    it("uses separate guidance selected from each exact Python comparison side", async () => {
+      const provider = new MockProvider();
+      const explain = vi.spyOn(provider, "explainComparison").mockResolvedValue(contextResult());
+      const pair = {
+        root,
+        original: side("revision:" + "1".repeat(40),
+          "import numpy as np\ndef calculate(values):\n    return np.mean(values)\n", "src/calculate.py"),
+        modified: side("working",
+          "import pandas as pd\ndef calculate(values):\n    return pd.DataFrame(values)\n", "src/calculate.py")
+      };
+      await diffService(provider).explainComparison(pair, async () => pair);
+      const input = explain.mock.calls[0]![0];
+      expect(input.catalogue?.entries).toHaveLength(1);
+      expect(input.catalogue?.entries[0]?.category).toBe("changed");
+      expect(input.original.guidance?.[0]?.text).toContain("NumPy background");
+      expect(input.original.guidance?.[0]?.functionIds).toEqual([input.catalogue?.entries[0]?.id]);
+      expect(input.modified.guidance?.[0]?.text).toContain("pandas background");
+      expect(input.modified.guidance?.[0]?.functionIds).toEqual([input.catalogue?.entries[0]?.id]);
+    });
+
+    it("omits file-scoped Python guidance when comparison sides are excerpted", async () => {
+      const provider = new MockProvider();
+      const explain = vi.spyOn(provider, "explainComparison").mockResolvedValue(contextResult());
+      const makeSource = (body: string) =>
+        `import numpy as np\n${"# padding line\n".repeat(3_000)}def calculate(values):\n    return np.${body}(values)\n`;
+      const pair = {
+        root,
+        original: side("revision:" + "1".repeat(40), makeSource("mean"), "src/calculate.py"),
+        modified: side("working", makeSource("sum"), "src/calculate.py")
+      };
+      await diffService(provider).explainComparison(pair, async () => pair);
+      const input = explain.mock.calls[0]![0];
+      expect(input.original.excerpt).toBeDefined();
+      expect(input.modified.excerpt).toBeDefined();
+      expect(input.original.guidance).toBeUndefined();
+      expect(input.modified.guidance).toBeUndefined();
+      expect(input.context?.limitations.join(" ")).toContain("File-scoped explanation guidance was omitted");
+    });
 
     it("falls back to bounded absolute-line excerpts only for large pairs and saves the coverage", async () => {
       const store = new MemoryRepositoryCacheStore();

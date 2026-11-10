@@ -393,7 +393,14 @@ Each setting is a user-only path to a plain-text policy file. See
 - Python handles functions, async functions, class methods, properties, and
   nested functions, and follows local helpers, repository imports, and
   same-class `self`/`cls` methods. Dynamic dispatch, inheritance, star
-  imports, and re-exports are not resolved.
+  imports, and re-exports are not resolved. Explanations also include
+  syntax-aware background and conservative NumPy, pandas, or PyTorch guidance
+  when the function uses names from explicit imports; this does not verify
+  installed packages or runtime types, values, shapes, or devices.
+- Python explanation freshness includes the file's syntax-aware structure so
+  import or binding changes cannot leave library guidance stale. Meaningful
+  same-file edits can therefore mark explanations outdated, while formatting
+  changes that preserve the syntax tree do not.
 
 ## Privacy and control
 
@@ -405,6 +412,10 @@ Each setting is a user-only path to a plain-text policy file. See
   workspace and your approval for each repository and model.
 - **What is sent.** Depending on the action: selected source, related code,
   file text, diffs, or bounded repository context.
+- Python guidance selection reads the eligible local snapshot, but adds only
+  fixed extension-authored background to the request, not another copy of the
+  whole file. Comparison guidance is selected independently from each exact
+  side and omitted for excerpted Python sides.
 - **What is never sent.** Files excluded by Git ignore rules, `.copilotignore`,
   VS Code exclusions, secret-like or generated file names, or the
   [organization exclusion files](#organization-exclusion-files).

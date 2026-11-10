@@ -78,6 +78,8 @@ export interface ComparisonSidePromptInput {
     readonly ranges: readonly ComparisonSourceRange[];
     readonly numbered: string;
   };
+  /** Fixed extension-authored guidance, keyed to host-issued function IDs on this exact side. */
+  readonly guidance?: readonly { readonly functionIds: readonly string[]; readonly text: string }[];
 }
 
 /** The exact original and modified text of one file in a diff. */

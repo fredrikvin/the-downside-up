@@ -7,6 +7,7 @@ import { cacheKey, fingerprint } from "./core/fingerprint";
 import type {
   ExplanationFormat,
   ComparisonRecord,
+  ComparisonCatalogueEntry,
   ComparisonSideRecord,
   ComparisonSpan,
   ComparisonSourceRange,
@@ -199,6 +200,49 @@ function comparisonKey(snapshot: ComparisonSnapshot, descriptor: ProviderDescrip
 }
 
 const sideRecord = (side: SideSnapshot): ComparisonSideRecord => ({ path: side.path, identity: side.identity, fingerprint: side.fingerprint, lines: side.lines });
+
+const MAX_COMPARISON_GUIDANCE_FUNCTIONS = 12;
+const MAX_COMPARISON_GUIDANCE_BYTES = 4 * 1024;
+type ComparisonGuidance = NonNullable<ComparisonPromptInput["original"]["guidance"]>;
+
+async function comparisonGuidance(
+  side: SideSnapshot,
+  sideName: "original" | "modified",
+  entries: readonly ComparisonCatalogueEntry[]
+): Promise<{ readonly guidance?: ComparisonGuidance; readonly limitations: readonly string[] }> {
+  if (side.state !== "present") return { limitations: [] };
+  const language = languageFor({ path: side.path });
+  if (!language.explanationGuidance) return { limitations: [] };
+  const functions = entries.flatMap((entry) => {
+    const source = entry[sideName];
+    return source ? [{ id: entry.id, source }] : [];
+  });
+  const limitations: string[] = [];
+  if (functions.length > MAX_COMPARISON_GUIDANCE_FUNCTIONS) {
+    limitations.push(`Function guidance was limited to the first ${MAX_COMPARISON_GUIDANCE_FUNCTIONS} catalogue functions on the ${sideName} side.`);
+  }
+  const byText = new Map<string, string[]>();
+  let bytes = 0;
+  for (const { id, source } of functions.slice(0, MAX_COMPARISON_GUIDANCE_FUNCTIONS)) {
+    const text = await language.explanationGuidance({
+      path: side.path, text: side.text, line: source.startLine,
+      name: source.name, qualifiedName: source.qualifiedName
+    }).catch(() => undefined);
+    if (!text || byText.has(text)) {
+      if (text) byText.get(text)!.push(id);
+      continue;
+    }
+    const size = Buffer.byteLength(text, "utf8");
+    if (size > MAX_COMPARISON_GUIDANCE_BYTES - bytes) {
+      limitations.push(`Function guidance exceeded the ${MAX_COMPARISON_GUIDANCE_BYTES}-byte limit on the ${sideName} side.`);
+      break;
+    }
+    bytes += size;
+    byText.set(text, [id]);
+  }
+  const guidance = [...byText].map(([text, functionIds]) => ({ functionIds, text }));
+  return { ...(guidance.length ? { guidance } : {}), limitations };
+}
 
 /** A saved comparison, current or not. */
 export interface SavedComparison {
@@ -565,23 +609,6 @@ export class ExplanationService {
     return results;
   }
 
-  /** Background on this kind of function from its language support, such as how a React component runs. */
-  private async guidanceFor(
-    root: string,
-    target: FunctionTarget,
-    document: vscode.TextDocument
-  ): Promise<{ guidance?: string }> {
-    const path = relative(root, target.uri.fsPath).split(sep).join("/");
-    const guidance = await languageFor({ languageId: target.languageId, path }).explanationGuidance?.({
-      path,
-      text: document.getText(),
-      line: target.range.start.line,
-      name: target.name,
-      qualifiedName: target.qualifiedName
-    }).catch(() => undefined);
-    return guidance ? { guidance } : {};
-  }
-
   private readonly overviewLocks = new Map<string, Promise<unknown>>();
 
   /** Runs `task` after earlier tasks for the same repository have settled. */
@@ -611,12 +638,14 @@ export class ExplanationService {
   ): Promise<ExplanationResult> {
     this.requireModel(true);
     const descriptor = this.options.describeProvider();
+    const language = languageFor({ languageId: target.languageId, path: target.uri.fsPath });
     const requestId = JSON.stringify([
       root,
       target.symbolId,
       target.structuralFingerprint,
       descriptor.kind,
       descriptor.modelId,
+      language.explanationGuidanceScope === "file" ? fingerprint(document.getText()) : "function-guidance",
       validateSource ? fingerprint(document.getText()) : "working"
     ]);
     const existing = this.inFlight.get(requestId);
@@ -641,6 +670,7 @@ export class ExplanationService {
   ): Promise<ExplanationResult> {
     const startingFence = this.fence(root);
     const sourceAtStart = document.getText();
+    const language = languageFor({ languageId: target.languageId, path: target.uri.fsPath });
     const progress = (stage: ProgressStage, detail: string, usage?: Usage) =>
       onProgress?.({ stage, detail, ...(usage ? { usage } : {}) });
     progress("checking", "Checking source, repository context, and local cache.");
@@ -661,7 +691,8 @@ export class ExplanationService {
     const providerCallFor = async <T>(
       using: ProviderDescriptor,
       bytes: number,
-      call: (provider: GenerationProvider) => Promise<GenerationResult<T>>
+      call: (provider: GenerationProvider) => Promise<GenerationResult<T>>,
+      validateBeforeDispatch?: () => Promise<void>
     ) => {
       const id = `${using.kind}\0${using.modelId}`;
       if (using.kind !== "mock" && !authorized.has(id)) {
@@ -673,6 +704,7 @@ export class ExplanationService {
       }
       assertNotCancelled(signal);
       await validateSource?.();
+      await validateBeforeDispatch?.();
       const current = this.options.describeProvider();
       if (vscode.workspace.isTrusted === false || current.kind !== descriptor.kind || current.modelId !== descriptor.modelId ||
           await sharingExclusion(root, target.uri.fsPath)) {
@@ -681,10 +713,14 @@ export class ExplanationService {
       const provider = await this.options.createProvider(using);
       assertNotCancelled(signal);
       await validateSource?.();
+      await validateBeforeDispatch?.();
       return call(provider);
     };
-    const providerCallForRequest = <T>(bytes: number, call: (provider: GenerationProvider) => Promise<GenerationResult<T>>) =>
-      providerCallFor(descriptor, bytes, call);
+    const providerCallForRequest = <T>(
+      bytes: number,
+      call: (provider: GenerationProvider) => Promise<GenerationResult<T>>,
+      validateBeforeDispatch?: () => Promise<void>
+    ) => providerCallFor(descriptor, bytes, call, validateBeforeDispatch);
 
     const settingsHash = fingerprint(EXPLANATION_SETTINGS);
     const key = explanationCacheKey(
@@ -772,6 +808,15 @@ export class ExplanationService {
     }
 
     progress("explaining", `Generating an explanation with ${descriptor.kind === "mock" ? "deterministic mock mode" : descriptor.modelId}.`);
+    const validateGuidanceContext = async () => {
+      if (language.explanationGuidanceScope !== "file") return;
+      const currentInventory = await gatherInventory(root, inventory.snapshot);
+      const currentTarget = await this.refreshedTarget(target, document, sourceAtStart);
+      const currentContext = currentTarget && await this.functionContext(currentTarget, document, currentInventory);
+      if (!currentContext || !inputsMatch(context.inputs, currentContext.inputs)) {
+        throw new Error("The file or its explanation guidance changed before dispatch; nothing was sent.");
+      }
+    };
     const prompt: ExplanationPromptInput = {
       repositoryName: inventory.name,
       languageId: target.languageId,
@@ -780,7 +825,7 @@ export class ExplanationService {
       source: target.source,
       overview: overviewRecord.value,
       formats: this.options.explanationFormats?.() ?? [],
-      ...await this.guidanceFor(root, target, document),
+      ...(context.guidance ? { guidance: context.guidance } : {}),
       relatedContext: context.text,
       limitations: [...new Set([...inventory.limitations, ...context.limitations])]
     };
@@ -789,7 +834,8 @@ export class ExplanationService {
     if (explanationBytes > this.maxRequestBytes()) throw tooLarge("explanation", explanationBytes, this.maxRequestBytes());
     const generated = await providerCallForRequest(
       explanationBytes,
-      (provider) => provider.explainFunction(prompt, signal)
+      (provider) => provider.explainFunction(prompt, signal),
+      validateGuidanceContext
     );
     usages.push(generated.usage);
     // Step lines come from the model, so they are checked against the source before they are saved.
@@ -1059,7 +1105,7 @@ export class ExplanationService {
       source: target.source,
       format,
       stepTitles: saved.explanation.steps.map((step) => step.title),
-      ...await this.guidanceFor(root, target, document)
+      ...(saved.context.guidance ? { guidance: saved.context.guidance } : {})
     };
     const [system, user] = formatPrompt(input);
     const requestBytes = Buffer.byteLength(system + user, "utf8");
@@ -1122,11 +1168,16 @@ export class ExplanationService {
   private async snapshotContext(target: FunctionTarget, scope: SnapshotExplanationSource): Promise<FunctionContext> {
     const language = languageFor({ languageId: target.languageId, path: scope.side.path });
     const preamble = (await language.preamble?.(scope.side.text, scope.side.path) ?? "").slice(0, 4096);
+    const guidance = await language.explanationGuidance?.({
+      path: scope.side.path, text: scope.side.text, line: target.range.start.line,
+      name: target.name, qualifiedName: target.qualifiedName
+    }).catch(() => undefined);
     return {
       text: preamble ? `Same-snapshot preamble (bounded to 4096 characters):\n${preamble}` : "",
       inputs: [{ path: scope.side.path, description: `Isolated snapshot ${scope.side.identity}`, fingerprint: scope.side.fingerprint, depth: 0 }],
       sourceReferences: [], referenceUris: new Map(),
-      limitations: ["Historical callers and cross-file dependencies were not resolved; only the selected snapshot's function and bounded same-file preamble are used."]
+      limitations: ["Historical callers and cross-file dependencies were not resolved; only the selected snapshot's function and bounded same-file preamble are used."],
+      ...(guidance ? { guidance } : {})
     };
   }
 
@@ -1187,13 +1238,9 @@ export class ExplanationService {
     if (format && saved?.explanation[format]) return saved;
     if (!format && saved) return saved;
     const context = await this.snapshotContext(target, scope);
-    const guidance = await languageFor({ languageId: target.languageId, path: scope.side.path }).explanationGuidance?.({
-      path: scope.side.path, text: scope.side.text, line: target.range.start.line,
-      name: target.name, qualifiedName: target.qualifiedName
-    });
     const common = {
       repositoryName: basename(root), languageId: target.languageId, functionName: target.qualifiedName,
-      signature: target.signature, source: target.source, ...(guidance ? { guidance } : {})
+      signature: target.signature, source: target.source, ...(context.guidance ? { guidance: context.guidance } : {})
     };
     const explanationInput: ExplanationPromptInput = {
       ...common, relatedContext: context.text, limitations: context.limitations,
@@ -1814,19 +1861,29 @@ export class ExplanationService {
     const restricted = await (await currentPolicy()).repositoryRestriction(root);
     if (restricted) throw new Error(`Nothing was sent because ${restricted}.`);
     const path = snapshot.modified.state === "present" ? snapshot.modified.path : snapshot.original.path;
-    const side = (version: SideSnapshot): ComparisonPromptInput["original"] => ({
+    const side = (
+      version: SideSnapshot,
+      guidance?: ComparisonPromptInput["original"]["guidance"]
+    ): ComparisonPromptInput["original"] => ({
       path: version.path,
       label: describeIdentity(version.identity),
       present: version.state === "present",
-      source: version.text
+      source: version.text,
+      ...(guidance?.length ? { guidance } : {})
     });
     const repositoryPurpose = (await this.readCache(root)).overview?.value.purpose;
     const inventories = await comparisonInventories(snapshot);
+    const [originalGuidance, modifiedGuidance] = await Promise.all([
+      comparisonGuidance(snapshot.original, "original", inventories.catalogue.entries),
+      comparisonGuidance(snapshot.modified, "modified", inventories.catalogue.entries)
+    ]);
+    const hasFileScopedGuidance = [snapshot.original, snapshot.modified].some((version) =>
+      version.state === "present" && languageFor({ path: version.path }).explanationGuidanceScope === "file");
     const baseInput: ComparisonPromptInput = {
       repositoryName: basename(root),
       languageId: bundledLanguageIdForPath(path) ?? (extname(path).slice(1) || "text"),
-      original: side(snapshot.original),
-      modified: side(snapshot.modified),
+      original: side(snapshot.original, originalGuidance.guidance),
+      modified: side(snapshot.modified, modifiedGuidance.guidance),
       catalogue: inventories.catalogue,
       ...(repositoryPurpose ? { repositoryPurpose } : {})
     };
@@ -1837,14 +1894,19 @@ export class ExplanationService {
       const excerptSide = (name: "original" | "modified") => ({
         ...baseInput[name],
         ...(baseInput[name].present ? {
-          excerpt: { ranges: excerpt[name], numbered: numberLineRanges(baseInput[name].source, excerpt[name]) }
+          excerpt: { ranges: excerpt[name], numbered: numberLineRanges(baseInput[name].source, excerpt[name]) },
+          ...(languageFor({ path: baseInput[name].path }).explanationGuidanceScope === "file"
+            ? { guidance: undefined } : {})
         } : {})
       });
       return {
         ...baseInput, original: excerptSide("original"), modified: excerptSide("modified"),
         context: {
           roundsLeft,
-          limitations: [...excerpt.limitations,
+          limitations: [...excerpt.limitations, ...originalGuidance.limitations, ...modifiedGuidance.limitations,
+            ...(hasFileScopedGuidance && (excerpt.original.length || excerpt.modified.length)
+              ? ["File-scoped explanation guidance was omitted for excerpted comparison sides; surrounding imports were not used for those sides."]
+              : []),
             `Diff-first context: ${omitted.original} original and ${omitted.modified} modified lines omitted. All changed lines are included; unseen code may affect behavior.`]
         }
       };

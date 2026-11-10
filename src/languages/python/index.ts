@@ -2,6 +2,7 @@ import { fingerprint } from "../../core/fingerprint";
 import type { LanguageSupport } from "../support";
 import { namedChildren, structuralTokens } from "../treeSitter";
 import { findPythonDependencies } from "./dependencies";
+import { pythonGuidance } from "./guidance";
 import { pythonFileImports } from "./imports";
 import { describePythonSource } from "./outline";
 import { findPythonFunction, initializePythonParserAt, listPythonFunctions, pythonComparisonFunctions, withPythonSyntaxTree } from "./syntax";
@@ -14,6 +15,8 @@ export const pythonSupport: LanguageSupport = {
   findFunction: findPythonFunction,
   listFunctions: listPythonFunctions,
   comparisonFunctions: pythonComparisonFunctions,
+  explanationGuidanceScope: "file",
+  explanationGuidance: pythonGuidance,
   async preamble(source) {
     return (await withPythonSyntaxTree(source, (root) => namedChildren(root)
       .filter((node) => node.type === "import_statement" || node.type === "import_from_statement")

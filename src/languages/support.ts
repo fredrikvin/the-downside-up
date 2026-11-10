@@ -43,10 +43,12 @@ export interface LanguageSupport {
   /**
    * Background for explaining this kind of function, such as how a React
    * component runs. It must be the language support's own fixed text, never
-   * repository text, and depend only on the function's own source so saved
-   * explanations stay tied to their tracked inputs.
+   * repository text. File-scoped guidance is tied to a structural fingerprint
+   * of the exact source snapshot used to select it.
    */
   explanationGuidance?(request: GuidanceRequest): Promise<string | undefined>;
+  /** Defaults to function. File scope permits conservative use of surrounding source such as imports. */
+  readonly explanationGuidanceScope?: "function" | "file";
   /**
    * Repository-relative files or folders a file imports, for structure
    * diagrams. Local and syntactic only; unresolvable imports are left out.
@@ -72,6 +74,8 @@ export interface GuidanceRequest {
   readonly line: number;
   readonly name: string;
   readonly qualifiedName: string;
+  /** Whether an eligible repository-relative file exists in the exact working snapshot. */
+  readonly hasFile?: (path: string) => boolean;
 }
 
 export interface FunctionSlice {

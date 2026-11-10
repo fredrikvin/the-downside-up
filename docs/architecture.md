@@ -68,7 +68,7 @@ whether their output can reach a model:
 | `findFunction`, `listFunctions` | Function boundaries, qualified names, identities | Yes: the function's source, and names in outlines and folder catalogs |
 | `preamble` | The file's imports and declarations | Yes, with every function of the file |
 | `findDependencies` | Items the function uses | Yes: bodies at depth 1, signatures at depth 2 |
-| `explanationGuidance` | Fixed background for a kind of function (such as React components) | Yes; extension-authored text only, never repository text |
+| `explanationGuidance` | Fixed background for a kind of function; Python may select it from the exact file snapshot | Yes; extension-authored text only, never repository text |
 | `comparisonFunctions` | Exact-snapshot inventory for diffs | Yes: host-issued ids for Added/Changed/Removed |
 | `fileImports` | Import edges for structure diagrams | Edge names in folder summary and flow requests |
 | `describeSource` | Plain-language outline in the preview | **No**, display only |
@@ -97,12 +97,20 @@ reduced to names (`deploymentFacts`), never values.
 Every snippet is labelled with its file and kind. Each included item is
 recorded as a tracked input with its depth and whether it was whole or a
 signature, so freshness later matches exactly what the model saw.
+Python guidance is computed from one immutable source snapshot. Its whole-file
+syntax fingerprint and selected guidance outcome are tracked without adding
+the whole file to provider context. This deliberately means substantive edits
+elsewhere in the same Python file can invalidate an explanation; syntax-
+preserving formatting does not.
 
 **Bounds.** Requests are capped by `downsideUp.maxRequestSize` (default
 96 KiB) and priming by `downsideUp.maxProjectContextRequestSize` (default
 256 KiB), measured on the serialized request, plus the model's own token
 limit. Oversized requests fail before sending. Large diffs switch to a
 diff-first excerpt with up to two bounded same-file follow-ups.
+Comparison guidance is attached to host-issued function IDs separately for
+each exact side, deduplicated and bounded to 12 catalogue functions and 4 KiB
+per side. File-scoped Python guidance is omitted on excerpted sides.
 
 ## 3. Models
 
@@ -161,6 +169,10 @@ change comparisons, review summaries, token usage, and per-model consent.
   rejects the result if tracked inputs, exclusions, trust, or the model
   changed, or the cache was cleared. Writes are atomic (temporary file, then
   rename), with a final validation hook just before the rename.
+- **Guidance safety:** file-scoped guidance is captured with its source
+  snapshot, included in request identity, rechecked before explanation
+  dispatch, after generation, and at persistence. A stale result is rejected;
+  no automatic regeneration follows.
 - **Versioning:** prompt and schema versions are bumped whenever a format
   changes; old records are simply not reused, not migrated.
 

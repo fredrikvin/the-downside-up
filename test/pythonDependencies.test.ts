@@ -216,4 +216,71 @@ def caller(arg=target()):
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  it("tracks file-scoped Python guidance across import changes while tolerating formatting", async () => {
+    const root = await realpath(await mkdtemp(resolve(tmpdir(), "downside-up-python-guidance-")));
+    let source = "import numpy as np\ndef caller(values):\n    return np.mean(values)\n";
+    const path = resolve(root, "app.py");
+    const document = {
+      uri: Uri.file(path), languageId: "python", version: 1, getText: () => source
+    } as import("vscode").TextDocument;
+    const context = async () => {
+      await writeFile(path, source);
+      const entry = (await listPythonFunctions(source)).find((candidate) => candidate.qualifiedName === "caller")!;
+      const target = await pythonSupport.findFunction(document, new Position(entry.startLine, 0));
+      return gatherFunctionContext(target!, document, await gatherInventory(root));
+    };
+    try {
+      const original = await context();
+      expect(original.guidance).toContain("NumPy background");
+      expect(original.text).not.toContain("NumPy background");
+      expect(original.inputs).toContainEqual(expect.objectContaining({
+        path: "app.py", description: "file-scoped explanation guidance"
+      }));
+
+      source = "import  numpy as np\n\n\ndef caller(values):\n    return np.mean(values)\n";
+      expect(inputsMatch(original.inputs, (await context()).inputs)).toBe(true);
+
+      source = "import pandas as pd\ndef caller(values):\n    return pd.DataFrame(values)\n";
+      const changedProfile = await context();
+      expect(changedProfile.guidance).toContain("pandas background");
+      expect(inputsMatch(original.inputs, changedProfile.inputs)).toBe(false);
+
+      source = "def caller(values):\n    return values\n";
+      const noProfile = await context();
+      expect(noProfile.guidance).toBeUndefined();
+      expect(inputsMatch(changedProfile.inputs, noProfile.inputs)).toBe(false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("tracks a no-profile outcome when an eligible local module shadows a library import", async () => {
+    const root = await realpath(await mkdtemp(resolve(tmpdir(), "downside-up-python-shadow-")));
+    const source = "import numpy as np\ndef caller(values):\n    return np.mean(values)\n";
+    const path = resolve(root, "app.py");
+    const document = {
+      uri: Uri.file(path), languageId: "python", version: 1, getText: () => source
+    } as import("vscode").TextDocument;
+    const context = async () => {
+      await writeFile(path, source);
+      const target = await pythonSupport.findFunction(document, new Position(1, 0) as unknown as import("vscode").Position);
+      return gatherFunctionContext(target!, document, await gatherInventory(root));
+    };
+    try {
+      await writeFile(resolve(root, "numpy.py"), "def mean(values):\n    return values\n");
+      const shadowed = await context();
+      expect(shadowed.guidance).toBeUndefined();
+      expect(shadowed.inputs).toContainEqual(expect.objectContaining({
+        path: "app.py", description: "file-scoped explanation guidance"
+      }));
+
+      await rm(resolve(root, "numpy.py"));
+      const externalImport = await context();
+      expect(externalImport.guidance).toContain("NumPy background");
+      expect(inputsMatch(shadowed.inputs, externalImport.inputs)).toBe(false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });

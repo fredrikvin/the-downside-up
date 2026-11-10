@@ -78,6 +78,29 @@ it("sends only numbered excerpt ranges, retaining absolute lines and bounded con
   expect(system).toContain("never another file");
 });
 
+it("keeps comparison guidance attached to host-issued function IDs on each exact side", () => {
+  const [system, user] = comparisonPrompt({
+    ...comparisonInput,
+    original: {
+      ...comparisonInput.original,
+      guidance: [{ functionIds: ["fn-original"], text: "A generator yields values as iteration advances." }]
+    },
+    modified: {
+      ...comparisonInput.modified,
+      guidance: [{ functionIds: ["fn-modified"], text: "Tensor operations may record gradients." }]
+    }
+  });
+  const payload = JSON.parse(user);
+  expect(payload.original.functionGuidance).toEqual([
+    { functionIds: ["fn-original"], text: "A generator yields values as iteration advances." }
+  ]);
+  expect(payload.modified.functionGuidance).toEqual([
+    { functionIds: ["fn-modified"], text: "Tensor operations may record gradients." }
+  ]);
+  expect(system).toContain("apply it only to the listed host-issued function IDs");
+  expect(system).toContain("treat library behavior as conditional");
+});
+
 function response(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,

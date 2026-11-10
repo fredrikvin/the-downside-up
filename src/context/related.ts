@@ -1,7 +1,7 @@
 import { readFile, realpath, stat } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import * as vscode from "vscode";
-import { cacheKey } from "../core/fingerprint";
+import { cacheKey, fingerprint } from "../core/fingerprint";
 import type { ContextInput, FunctionTarget, TrackedInput } from "../core/types";
 import type { RepositoryInventory } from "./inventory";
 import { isEligibleRelativePath } from "./inventory";
@@ -31,6 +31,7 @@ export interface FunctionContext {
   readonly referenceUris: Map<string, vscode.Uri>;
   readonly text: string;
   readonly limitations: string[];
+  readonly guidance?: string;
 }
 
 function isWithin(root: string, target: string): boolean {
@@ -276,6 +277,25 @@ export async function gatherFunctionContext(
   const request = dependencyRequest(target, targetPath, document, inventory, {
     deadline: Date.now() + DEPENDENCY_TIME_BUDGET_MS
   });
+  let guidance: string | undefined;
+  if (language.explanationGuidance) {
+    guidance = await language.explanationGuidance({
+      path: targetPath,
+      text: request.text,
+      line: target.range.start.line,
+      name: target.name,
+      qualifiedName: target.qualifiedName,
+      hasFile: (path) => Object.hasOwn(inventory.snapshot, path)
+    }).catch(() => undefined);
+    if (language.explanationGuidanceScope === "file") {
+      const sourceHash = await sourceFingerprint(request.text, { languageId: target.languageId, path: targetPath });
+      inputs.push({
+        path: targetPath,
+        description: "file-scoped explanation guidance",
+        fingerprint: fingerprint(JSON.stringify([sourceHash, guidance ?? "no guidance"]))
+      });
+    }
+  }
   const found: DependencyResult = await language.findDependencies(request)
     .catch(() => ({ dependencies: [], limitations: [UNRESOLVED_DEPENDENCIES] }));
   const preamble = found.preamble ??
@@ -372,6 +392,7 @@ export async function gatherFunctionContext(
     sourceReferences,
     referenceUris,
     text,
-    limitations: [...new Set(limitations)]
+    limitations: [...new Set(limitations)],
+    ...(guidance ? { guidance } : {})
   };
 }

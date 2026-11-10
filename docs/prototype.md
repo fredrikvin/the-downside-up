@@ -989,6 +989,23 @@ by their enclosing classes/functions (`Catalog.find`, `outer.inner`).
 Property setters/deleters have distinct identities. Lambdas are not separate
 explainable functions. Python's local outline uses module/class/function
 docstrings, attached comments, imports, classes and bases, values, and signatures.
+Python explanations also use bounded, syntax-aware background for async
+functions, generators, context managers, definition-time decorators/defaults,
+nested callables, exceptions, and visible mutation. Conservative NumPy,
+pandas, and PyTorch profiles require a used name resolved from an explicit
+unambiguous import; aliases and direct imports are supported. These profiles
+are conditional background, not package, type, shape, dtype, device, version,
+or runtime verification. They do not infer library types from familiar
+parameter names or trace arbitrary receivers.
+
+Selecting Python library guidance reads one eligible source snapshot and
+records a syntax-aware whole-file fingerprint, but does not add the whole file
+to provider context. Consequently, any substantive edit in a Python file can
+mark its explanations outdated, including unrelated changes; formatting-only
+changes that preserve the syntax structure remain current. Historical details
+and comparisons use each exact side's source independently. Comparison guidance
+is capped at 12 catalogue functions and 4 KiB per side, and is omitted for
+excerpted sides; no extra provider calls are made.
 SQL uses its own bundled bounded lexer, not Tree-sitter or a database
 connection. Explainable units in `.sql` files are `CREATE FUNCTION`,
 `PROCEDURE`, `TRIGGER`, and `VIEW` (including materialized views), tables,
@@ -1855,8 +1872,12 @@ project flow tests cover the catalog (files with summaries or functions, no
 code), dropping malformed flows, keeping only confirmed file and function
 references, and saving flows with the overview model, outdated when the
 catalog changes but not when the background does;
-review-mode tests cover changed lines from diffs (ranges, removals, deleted
-files, paths with spaces), when a removal counts for a function, base choices
+Python guidance tests cover async/generator timing, callable boundaries,
+decorator/default execution, conservative alias and shadowing resolution,
+same-file freshness, historical snapshots, paired exact-side guidance, and
+excerpt suppression. Review-mode tests cover changed lines from diffs (ranges,
+removals, deleted files, paths with spaces), when a removal counts for a
+function, base choices
 in a real Git repository (merge base, branch tip, uncommitted only, recent
 commits), committed, uncommitted, and untracked changes relative to a
 subdirectory root, and the order of changed functions near the reader;
@@ -1923,7 +1944,11 @@ webview's content-security policy.
   `sys.path`/import hooks. Absolute imports use bounded repository, `src/`,
   and package/script roots; ambiguous matches are omitted. Dependencies inside
   nested functions are attributed to those functions, not the enclosing body.
-  There is no dedicated notebook or `.pyi` stub support.
+  Library guidance is selected from syntax and visible imports only: local
+  shadow modules are suppressed when known, but import hooks and monkey
+  patches can change meaning. It never proves a distribution is installed or
+  infers runtime types, values, shapes, dtype, devices, package versions, or
+  training results. There is no dedicated notebook or `.pyi` stub support.
 - SQL is a bounded lexer, not a full dialect parser or database catalog.
   Dynamic SQL, non-SQL routine bodies, runtime schema changes, synonyms,
   migration execution order, and complete dialect semantics are not resolved.

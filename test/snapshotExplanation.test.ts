@@ -8,10 +8,14 @@ import { ExplanationService, type SnapshotExplanationSource } from "../src/contr
 import { fingerprint } from "../src/core/fingerprint";
 import { MockProvider } from "../src/generation/mock";
 import { javascriptSupport } from "../src/languages/javascript";
+import { pythonSupport } from "../src/languages/python";
 import type { ExplanationPromptInput } from "../src/generation/provider";
 
 let root = "";
-beforeAll(() => javascriptSupport.initialize!(process.cwd()));
+beforeAll(async () => {
+  await javascriptSupport.initialize!(process.cwd());
+  await pythonSupport.initialize!(process.cwd());
+});
 beforeEach(async () => { root = await realpath(await mkdtemp(join(tmpdir(), "dsu-snapshot-"))); });
 afterEach(async () => { vi.restoreAllMocks(); await rm(root, { recursive: true, force: true }); });
 
@@ -43,6 +47,30 @@ const gate = () => {
 };
 
 describe("isolated snapshot function explanations", () => {
+  it("selects Python guidance and added formats from the exact historical side", async () => {
+    const { service, provider } = await setup();
+    const text = "import numpy as np\ndef removed(values):\n    return np.mean(values)\n";
+    const document = {
+      uri: vscode.Uri.file(join(root, "removed.py")), languageId: "python", getText: () => text
+    } as vscode.TextDocument;
+    const target = await pythonSupport.findFunction(document, new vscode.Position(1, 0));
+    expect(target).toBeDefined();
+    const scope: SnapshotExplanationSource = {
+      side: { path: "removed.py", identity: "revision:python", state: "present", detail: "", text, fingerprint: fingerprint(text), lines: 4 },
+      occurrenceId: "removed-python", validate: vi.fn(async () => undefined)
+    };
+    const explanations: ExplanationPromptInput[] = [];
+    const explain = provider.explainFunction.bind(provider);
+    vi.spyOn(provider, "explainFunction").mockImplementation((input, signal) => {
+      explanations.push(input); return explain(input, signal);
+    });
+    const formats = vi.spyOn(provider, "explainFormat");
+    await service.explainSnapshot(root, target!, scope);
+    expect(explanations[0]?.guidance).toContain("NumPy background");
+    await service.explainSnapshot(root, target!, scope, undefined, "pseudocode");
+    expect(formats.mock.calls[0]?.[0].guidance).toContain("NumPy background");
+  });
+
   it("uses only historical function and bounded same-file imports even if the file is deleted today", async () => {
     const { service, store, provider, target, scope } = await setup();
     await writeFile(join(root, "today.ts"), "export const currentSecretOfMeaning = 'never historical evidence';");
