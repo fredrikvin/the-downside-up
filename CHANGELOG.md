@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.65.0
+
+- Improve Python explanations with syntax-aware guidance for async functions,
+  generators, decorators, context managers, exceptions, and visible mutation.
+- Add conservative NumPy, pandas, and PyTorch background when imports and their
+  use are statically supported. Guidance is tracked with the Python file so
+  changes that affect it make saved explanations outdated; it does not infer
+  runtime types, shapes, devices, or installed package versions.
+- Apply Python guidance to historical explanations and exact sides of change
+  comparisons without using current-file imports for historical code.
+
 ## 0.64.3
 
 - Scale VS Code language-model request timeouts with input size, from a
