@@ -57,6 +57,7 @@ languages itself.
 |---|---|---|
 | Rust, Go, Python | Bundled Tree-sitter WASM | Bundled static resolution |
 | JavaScript, TypeScript, React | Bundled Tree-sitter WASM | VS Code's built-in TypeScript go-to-definition |
+| Svelte | Bounded component scanner + bundled TypeScript grammar | Static local import resolution |
 | SQL | Bundled bounded lexer | Static lookup in eligible `.sql` files |
 | Others | VS Code document symbols | VS Code go-to-definition, if installed |
 
@@ -102,6 +103,15 @@ syntax fingerprint and selected guidance outcome are tracked without adding
 the whole file to provider context. This deliberately means substantive edits
 elsewhere in the same Python file can invalidate an explanation; syntax-
 preserving formatting does not.
+
+Svelte uses a bounded scanner to separate component scripts, markup, and
+styles while preserving source offsets. Script functions use the existing
+bundled TypeScript grammar; a whole component is also an explainable and
+comparable unit. Its fingerprint combines script structure with normalized
+markup, and style blocks are excluded from component source and fingerprints.
+Related local components are found through
+relative imports and the conventional SvelteKit `$lib` alias; no Svelte
+language server or compiler is required.
 
 **Bounds.** Requests are capped by `downsideUp.maxRequestSize` (default
 96 KiB) and priming by `downsideUp.maxProjectContextRequestSize` (default

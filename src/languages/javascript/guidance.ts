@@ -42,7 +42,7 @@ export function nestedGuidance(owner: string): string {
 
 /** Background for React components, hooks, and functions defined inside them; nothing for other code. */
 export async function javascriptGuidance(request: GuidanceRequest): Promise<string | undefined> {
-  return withJavaScriptSyntaxTree(request.text, request.path, (root) => {
+  const guidance = await withJavaScriptSyntaxTree(request.text, request.path, (root) => {
     const functions = javascriptFunctionNodes(root);
     const entry = functions.find((candidate) => candidate.qualifiedName === request.qualifiedName && candidate.node.startPosition.row === request.line) ??
       functions.find((candidate) => candidate.qualifiedName === request.qualifiedName);
@@ -56,4 +56,8 @@ export async function javascriptGuidance(request: GuidanceRequest): Promise<stri
       .sort((left, right) => (left.node.endIndex - left.node.startIndex) - (right.node.endIndex - right.node.startIndex))[0];
     return owner && (owner.kind === "component" || owner.kind === "hook") ? nestedGuidance(owner.simpleName) : undefined;
   });
+  if (!/\.svelte\.(?:js|ts)$/i.test(request.path)) return guidance;
+  const runeGuidance =
+    "This function is in a Svelte rune module (.svelte.js or .svelte.ts). $state creates shared reactive state, $derived computes from reactive values, and $effect runs work when its dependencies change. Explain which exported values are shared and how updates propagate; do not describe the module as a rendered component.";
+  return guidance ? `${guidance} ${runeGuidance}` : runeGuidance;
 }

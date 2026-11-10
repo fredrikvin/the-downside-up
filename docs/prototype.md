@@ -25,7 +25,8 @@ import, module, function/method, type, constant/static, local variable
 binding, and standalone comment in plain language, in source order and
 without regrouping, with attached doc comments and attributes. These
 descriptions are deterministic and local (Tree-sitter for
-Rust, Go, Python, JavaScript, and TypeScript; a bundled lexer for SQL;
+Rust, Go, Python, JavaScript, and TypeScript; a bounded block scanner with
+the TypeScript grammar for Svelte; a bundled lexer for SQL;
 VS Code document symbols plus line-based import and comment
 detection for other languages) and are labelled as not AI-generated. Go
 descriptions also explain Go-specific meaning, such as exported names,
@@ -1045,7 +1046,19 @@ languages use VS Code document-symbol providers,
 including nested symbols such as class methods; unnamed functions that
 providers name by position (such as TypeScript's `find() callback`) are
 treated as part of the function around them. The fixtures exercise Rust, Go,
-Python, JavaScript, and React with TypeScript.
+Python, JavaScript, React with TypeScript, and Svelte.
+
+Svelte components use a bounded local block scanner, with script contents
+parsed by the existing TypeScript grammar. The whole component (script and
+markup) and named functions in instance or module scripts are explainable and
+available to comparisons and review mode. Fixed guidance covers Svelte 5
+runes and common Svelte 4 reactive syntax, template branches, child
+components, bindings, and delayed event handlers. Component imports resolve
+locally through relative paths and SvelteKit's conventional `$lib` alias;
+arbitrary aliases, compiler/type information, and language-server-dependent
+features are not assumed. `.svelte.js` and `.svelte.ts` modules use JavaScript
+discovery with additional rune guidance. Svelte styles are excluded from
+component explanation source and structural fingerprints.
 
 Language support is modular. Each language with bundled analysis is a folder
 under `src/languages/` (parser, local file description, and dependency
@@ -1069,7 +1082,7 @@ collaboration, and marketplace publishing are out of scope.
 
 Before the first explanation, the extension gathers bounded local evidence:
 project manifests, README and architecture-style documents, selected source
-files, and a small symbol outline. Rust, Go, Python, JavaScript, and TypeScript symbols use Tree-sitter; other
+files, and a small symbol outline. Rust, Go, Python, JavaScript, and TypeScript symbols use Tree-sitter; Svelte uses its block scanner and the TypeScript grammar; other
 symbols use VS Code providers where available, except SQL, which uses its lexer.
 Function context adds related types,
 imports, directly related helpers, and references where tooling can resolve
@@ -1791,7 +1804,7 @@ values, wrapper notes, plain JavaScript descriptions, hooks, rendered
 components, and helpers in order of first use, hovered-name-only lookups,
 waiting for TypeScript to load the project, and the props type and depth-2
 signatures with their freshness). Extension
-host tests exercise Rust, Go, Python, JavaScript, and React discovery (Go and
+host tests exercise Rust, Go, Python, JavaScript, React, and Svelte discovery (Go and
 Python without a language server), distinct identities for
 same-named Rust methods in different `impl` blocks, document-ordered outlines,
 explanations requested by selecting text and opening the preview, preview creation, selection changes during an in-flight
@@ -1968,7 +1981,7 @@ webview's content-security policy.
 - Structure diagrams show imports only: dependency injection, plugin
   registries, message queues, HTTP calls between services, Rust `super::`
   and `self::` paths, Go imports of other modules, TypeScript `baseUrl`
-  imports without `paths`, and languages other than Rust, Go, Python, JavaScript, and
+  imports without `paths`,   and languages other than Rust, Go, Python, JavaScript, Svelte, and
   TypeScript are not drawn. A child folder counts as one box, however large.
 - Callers are tracked only when VS Code tooling reports them. In languages
   other than Rust, Go, Python, SQL, JavaScript, and TypeScript, only called functions are tracked (not the types,
@@ -2019,9 +2032,9 @@ webview's content-security policy.
   accessibility inspection has not been completed.
 - Local descriptions are syntactic: they restate declarations, signatures,
   imports, and comments, not behavior. Languages other than Rust, Go,
-  Python, SQL, JavaScript, and TypeScript depend
+  Python, SQL, JavaScript, TypeScript, and Svelte depend
   on the installed symbol provider's detail; import detection covers JavaScript/
-  TypeScript, Python, Go, Java/Kotlin/Scala/Groovy, C#, C/C++, PHP, Ruby, and
+  TypeScript, Svelte, Python, Go, Java/Kotlin/Scala/Groovy, C#, C/C++, PHP, Ruby, and
   Swift.
 - Two moderate npm audit findings affect the development-only Vitest toolchain;
   production dependency audit reports no advisories. The findings are recorded

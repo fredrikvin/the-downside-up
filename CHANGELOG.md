@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.66.0
+
+- Add bundled Svelte component support with local script and markup discovery,
+  Svelte 5 rune and Svelte 4 guidance, comparison/review support, and static
+  resolution for relative imports and the conventional SvelteKit `$lib` alias.
+  Svelte files do not require a Svelte language server and are not type-checked.
+
 ## 0.65.0
 
 - Improve Python explanations with syntax-aware guidance for async functions,

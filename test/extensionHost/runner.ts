@@ -19,6 +19,7 @@ import { goSupport } from "../../src/languages/go";
 import { rustSupport } from "../../src/languages/rust";
 import { pythonSupport } from "../../src/languages/python";
 import { sqlSupport } from "../../src/languages/sql";
+import { svelteSupport } from "../../src/languages/svelte";
 
 async function waitFor<T>(
   operation: () => Promise<T | undefined>,
@@ -775,6 +776,7 @@ async function runWithCommitRepository(commitRoot: string): Promise<void> {
   const servicesRoot = resolve(__dirname, "../../fixtures/services-app");
   const pythonRoot = resolve(__dirname, "../../fixtures/python-app");
   const sqlRoot = resolve(__dirname, "../../fixtures/sql-app");
+  const svelteRoot = resolve(__dirname, "../../fixtures/svelte-app");
   // VS Code rejects a second folder change in this session, so all folders are added at once.
   assert.ok(vscode.workspace.updateWorkspaceFolders(
     1,
@@ -785,6 +787,7 @@ async function runWithCommitRepository(commitRoot: string): Promise<void> {
     { uri: vscode.Uri.file(servicesRoot), name: "services-app" },
     { uri: vscode.Uri.file(pythonRoot), name: "python-app" },
     { uri: vscode.Uri.file(sqlRoot), name: "sql-app" },
+    { uri: vscode.Uri.file(svelteRoot), name: "svelte-app" },
     { uri: vscode.Uri.file(commitRoot), name: "commit-preparation-test" }
   ), "The JavaScript, Go, React, services, Python, and SQL fixture folders are added.");
   const jsFile = resolve(jsRoot, "src/checkout.js");
@@ -1233,6 +1236,33 @@ async function runWithCommitRepository(commitRoot: string): Promise<void> {
     await rm(nextBadgePath, { force: true });
   }
   console.log("Downside Up integration tests: review mode explained the changed files.");
+  await svelteSupport.initialize?.(extension.extensionPath);
+  const svelteDocument = await vscode.workspace.openTextDocument(vscode.Uri.file(resolve(svelteRoot, "src/App.svelte")));
+  const svelteSource = svelteDocument.getText();
+  const svelteMarkup = svelteDocument.positionAt(svelteSource.indexOf("<Card"));
+  const svelteTarget = await svelteSupport.findFunction(svelteDocument, svelteMarkup);
+  assert.equal(svelteTarget?.qualifiedName, "App");
+  assert.equal(svelteTarget?.analysis, "svelte-scanner", "Svelte discovery works without a Svelte language extension.");
+  const svelteOutline = await buildFileOverview(svelteDocument, "src/App.svelte");
+  assert.ok(svelteOutline.entries.some((entry) => entry.kindLabel === "Component" && entry.name === "App" && entry.explainable));
+  const svelteEditor = await vscode.window.showTextDocument(svelteDocument, vscode.ViewColumn.One);
+  const svelteBefore = api.allExplanations().length;
+  svelteEditor.selection = new vscode.Selection(svelteMarkup, svelteMarkup);
+  await vscode.commands.executeCommand("downsideUp.showFileOverview");
+  assert.equal(api.allExplanations().length, svelteBefore, "Opening Svelte with a cursor does not generate.");
+  const svelteSelection = svelteMarkup.translate(0, 1);
+  svelteEditor.selection = new vscode.Selection(svelteMarkup, svelteSelection);
+  await vscode.commands.executeCommand("downsideUp.showFileOverview");
+  await waitFor(async () => api.previewExplanations().some((view) =>
+    view.functionName === "App" && view.status === "current") ? true : undefined,
+  "the Svelte component explanation from an explicit selection");
+  await api.previewFolder("");
+  const svelteFolder = await waitFor(async () => api.shownFolder()?.edges.length ? api.shownFolder() : undefined,
+    "the Svelte repository's import structure");
+  assert.ok(svelteFolder.edges.some((edge) => edge.includes("src > components")),
+    "Svelte file imports use local static resolution.");
+  console.log("Downside Up integration tests: Svelte discovery, explicit explanation, and import structure completed.");
+  await vscode.window.showTextDocument(cartViewDocument, vscode.ViewColumn.One);
   await testCommitPreparation(api, commitRoot);
   await testLowValueReviews(api, commitRoot);
 

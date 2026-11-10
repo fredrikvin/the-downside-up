@@ -5,6 +5,7 @@ import { javascriptSupport } from "./javascript";
 import { pythonSupport } from "./python";
 import { rustSupport } from "./rust";
 import { sqlSupport } from "./sql";
+import { svelteSupport } from "./svelte";
 import type { LanguageSupport } from "./support";
 import { formatTolerantFingerprint } from "../core/fingerprint";
 
@@ -13,7 +14,7 @@ import { formatTolerantFingerprint } from "../core/fingerprint";
  * a `LanguageSupport`, list it here, and, for a Tree-sitter grammar, add the
  * grammar to `esbuild.config.mjs`.
  */
-const BUNDLED: readonly LanguageSupport[] = [rustSupport, goSupport, javascriptSupport, pythonSupport, sqlSupport];
+const BUNDLED: readonly LanguageSupport[] = [rustSupport, goSupport, svelteSupport, javascriptSupport, pythonSupport, sqlSupport];
 
 export interface LanguageFile {
   readonly languageId?: string;

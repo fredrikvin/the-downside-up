@@ -385,11 +385,18 @@ Each setting is a user-only path to a plain-text policy file. See
 |---|---|---|
 | Rust, Go, Python | Bundled parser | Bundled static analysis |
 | JavaScript, TypeScript (including JSX and React) | Bundled parser | VS Code's built-in TypeScript go-to-definition |
+| Svelte | Bounded component scanner and bundled TypeScript grammar | Static local import resolution |
 | SQL | Bundled lexer: tables, queries, views, and routines | Static lookup in eligible `.sql` files |
 | Other languages | Your language extension's document symbols | Your language extension's go-to-definition |
 
 - No language server is needed for Rust, Go, Python, JavaScript, TypeScript,
-  or SQL. Support for other languages varies with installed extensions.
+  Svelte, or SQL. Support for other languages varies with installed extensions.
+- Svelte support explains a component's script and markup together, plus
+  named functions in `<script>`. It recognizes Svelte 5 runes and common
+  Svelte 4 syntax, and resolves relative component imports and the conventional
+  SvelteKit `$lib` alias locally. It does not type-check Svelte or resolve
+  arbitrary SvelteKit aliases. `<style>` blocks are left out of component
+  explanations and structural fingerprints.
 - Python handles functions, async functions, class methods, properties, and
   nested functions, and follows local helpers, repository imports, and
   same-class `self`/`cls` methods. Dynamic dispatch, inheritance, star

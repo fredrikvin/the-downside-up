@@ -30,6 +30,10 @@ export function withJavaScriptSyntaxTree<T>(
   return (typescript ? typescriptGrammar : tsxGrammar).withSyntaxTree(source, use);
 }
 
+export function withTypeScriptSyntaxTree<T>(source: string, use: (root: SyntaxNode) => T): Promise<T | undefined> {
+  return typescriptGrammar.withSyntaxTree(source, use);
+}
+
 export type JsFunctionKind = "function" | "method" | "component" | "hook";
 
 export interface JsFunctionNode {

@@ -16,9 +16,9 @@ import type {
 /** Version of the repository overview and project map prompt; changing it rebuilds overviews and maps. */
 export const PROMPT_VERSION = "downside-up-3";
 /** Version of the function explanation and file summary prompts; changing it outdates saved explanations. */
-export const EXPLANATION_PROMPT_VERSION = "downside-up-plain-12";
+export const EXPLANATION_PROMPT_VERSION = "downside-up-plain-13";
 /** Version of the change explanation prompt; changing it outdates saved comparisons. */
-export const COMPARISON_PROMPT_VERSION = "downside-up-changes-10";
+export const COMPARISON_PROMPT_VERSION = "downside-up-changes-11";
 /** Version of the folder summary and flow prompts; changing it outdates saved folder summaries and flows. */
 export const FOLDER_PROMPT_VERSION = "downside-up-folders-1";
 /** Independent version for source-grounded summaries of confirmed review diffs. */
