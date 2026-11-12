@@ -1055,6 +1055,8 @@ export function parseComparison(value: unknown, bounds?: ComparisonLineBounds): 
       if (catalogue && id !== "" && id !== undefined) throw new Error("Unclassified comparison references an unknown function id.");
       return undefined;
     }
+    // Behavior outside every catalogued function, such as anonymous test callbacks, has no owner.
+    if (id === "" || id === undefined) return undefined;
     const entry = typeof id === "string" ? byId.get(id) : undefined;
     if (entry?.category !== "changed") throw new Error("Invalid Changed function id.");
     return entry;
@@ -1115,7 +1117,7 @@ export function parseComparison(value: unknown, bounds?: ComparisonLineBounds): 
         const scopeIssues: string[] = [];
         try {
           const fn = changedFunction(record(rawScope).functionId);
-          if (catalogue && !fn) throw new Error("Unclassified comparisons have no function visuals.");
+          if (catalogue && !fn) throw new Error("Only Changed functions have visuals.");
           scope = parseComparisonVisualScope(rawScope, bounds!, (reason) => scopeIssues.push(reason));
           if (fn) {
             if (scope.units.some((unit) => !within(unit.occurrence.startLine, unit.occurrence.endLine, fn[unit.side]))) {

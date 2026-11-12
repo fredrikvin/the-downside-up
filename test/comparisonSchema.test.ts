@@ -33,6 +33,18 @@ describe("host catalogue response validation", () => {
     response.changes[0]!.original.startLine = 1;
     expect(() => parseComparison(response, checkedBounds)).toThrow("outside its function");
   });
+  it("keeps changes outside every catalogued function, such as in an empty classified catalogue", () => {
+    const empty = { ...catalogue, entries: [] };
+    const base = comparisonResponse();
+    const response = { ...base, added: [], removed: [],
+      changes: base.changes.map((change): typeof change & { functionId: string } => ({ ...change, functionId: "" })) };
+    const parsed = parseComparison(response, { ...bounds, catalogue: empty });
+    expect(parsed.changes).toHaveLength(1);
+    expect(parsed.changes[0]).not.toHaveProperty("functionId");
+    expect(parsed.visualScopes).toBeUndefined();
+    response.changes[0]!.functionId = "invented";
+    expect(() => parseComparison(response, { ...bounds, catalogue: empty })).toThrow("Changed function id");
+  });
   it("omits out-of-function, wrong-category and orphan visuals without losing independently valid text", () => {
     for (const bad of ["span", "id", "orphan"]) {
       const response = classifiedComparisonResponse();
