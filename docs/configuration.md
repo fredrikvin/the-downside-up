@@ -627,8 +627,11 @@ and source span once; the extension constructs the linked views locally while
 preserving explicit text order and graph connections.
 
 If a response cannot be used, the preview reports that generation failed and
-offers an explicit retry. It does not expose parser or schema diagnostics, and
-does not cause another model call automatically.
+offers an explicit retry. The message names the failure kind (`incomplete-json`,
+`malformed-json`, or `invalid-schema`), the response length for incomplete
+JSON, and, for schema failures, the extension's own validation reason, so a
+failure can be reported without sharing source. It never includes response or
+source text, and does not cause another model call automatically.
 
 Recent function context is reused within the session while the selected document
 and its tracked files and unsaved buffers are unchanged. Clicking or refocusing the

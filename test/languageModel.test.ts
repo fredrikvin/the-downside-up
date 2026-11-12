@@ -206,10 +206,10 @@ describe("VS Code language model generation", () => {
     const { provider, sendRequest } = fakeModel(async () => streamOf([outputs.shift() ?? ""]));
     await expect(provider.explainFunction(promptInput)).rejects.toThrow(/returned no output/);
     await expect(provider.explainFunction(promptInput)).rejects.toThrow(
-      "Generation failed. No automatic retry was made; try again."
+      "Generation failed (malformed-json). No automatic retry was made; try again."
     );
     await expect(provider.explainFunction(promptInput)).rejects.toThrow(
-      "Generation failed. No automatic retry was made; try again."
+      /^Generation failed \(invalid-schema(: [^)]+)?\)\. No automatic retry was made; try again\.$/
     );
     expect(sendRequest).toHaveBeenCalledTimes(3);
   });

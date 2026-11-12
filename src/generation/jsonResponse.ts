@@ -6,10 +6,23 @@ export class ModelResponseError extends Error {
 
   constructor(
     readonly code: "incomplete-json" | "malformed-json" | "invalid-schema",
-    readonly outputCharacters: number
+    readonly outputCharacters: number,
+    reason?: string
   ) {
-    super("Generation failed. No automatic retry was made; try again.");
+    const detail = code === "incomplete-json" ? `${code} after ${outputCharacters.toLocaleString("en-US")} characters`
+      : reason ? `${code}: ${reason}` : code;
+    super(`Generation failed (${detail}). No automatic retry was made; try again.`);
   }
+}
+
+/**
+ * Only validation messages written by the host may be shown; runtime errors
+ * (TypeError and similar) and anything else keep just the failure kind.
+ */
+function hostReason(error: Error): string | undefined {
+  if (error.constructor !== Error && error.constructor !== SchemaValidationError) return undefined;
+  const reason = error.message.replace(/[\x00-\x1f\x7f]+/g, " ").trim();
+  return reason && reason.length <= 200 ? reason : undefined;
 }
 
 /** A diagnostic hint, not a proof of provider truncation and never a repair. */
@@ -53,6 +66,6 @@ export function parseModelResponse<T>(
     return parse(decoded);
   } catch (error) {
     if (!(error instanceof Error)) throw error;
-    throw new ModelResponseError("invalid-schema", output.length);
+    throw new ModelResponseError("invalid-schema", output.length, hostReason(error));
   }
 }

@@ -1588,8 +1588,10 @@ one-time permission prompt for language-model access in addition to this
 extension's consent. The API has no system role or schema-constrained output,
 so the instructions and JSON Schema are sent in a single user message, and the
 reply is validated with the same parser as other providers. Responses that
-cannot be used are reported to the user as a generic generation failure;
-parser and schema diagnostics and response character counts are not shown.
+cannot be used are reported as a generation failure with its kind
+(`incomplete-json` with the response length, `malformed-json`, or
+`invalid-schema` with the extension's own validation reason); response and
+source text are never shown.
 No automatic retry is made. The request is checked against the model's
 `maxInputTokens` before sending, the output is capped, and requests time out
 after 10 minutes, allowing slower reasoning and overview models time to finish.

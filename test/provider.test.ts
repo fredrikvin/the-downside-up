@@ -255,7 +255,7 @@ describe("structured generation", () => {
       output: [{ content: [{ type: "output_text", text: JSON.stringify({ purpose: "only one field" }) }] }]
     }));
     await expect(provider.explainFunction(promptInput)).rejects.toThrow(
-      "Generation failed. No automatic retry was made; try again."
+      /^Generation failed \(invalid-schema(: [^)]+)?\)\. No automatic retry was made; try again\.$/
     );
   });
 
