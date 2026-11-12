@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.66.2
+
+- Fix change comparisons failing with "Generation failed" for files whose
+  changes are outside any named function, such as test files made of
+  anonymous `test(...)` callbacks. Such changes are now kept and shown
+  without a function. Saved comparisons are regenerated once on request
+  because the comparison prompt changed.
+- Show the failure kind (`incomplete-json` with the response length,
+  `malformed-json`, or `invalid-schema` with the extension's own validation
+  reason) when a model response cannot be used, so failures can be reported
+  without sharing source. Response and source text are never shown.
+
 ## 0.66.0
 
 - Add bundled Svelte component support with local script and markup discovery,
