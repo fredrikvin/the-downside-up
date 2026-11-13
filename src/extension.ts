@@ -293,6 +293,8 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
   let reviewExportTargetForTest: vscode.Uri | undefined;
   let reviewExportDialogForTest: (() => Promise<void>) | undefined;
   let reviewBasePickerForTest: vscode.QuickPick<vscode.QuickPickItem> | undefined;
+  let reviewFilesPickerForTest: vscode.QuickPick<vscode.QuickPickItem> | undefined;
+  let renderedChangeForTest: PanelState["change"];
   let reviewExportErrorForTest: string | undefined;
   let publicationController: AbortController | undefined;
   let publicationRequestForTest: GitHubRequest | undefined;
@@ -1056,6 +1058,9 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     }
     renderedReviewNavigation.push(reviewNavigationView && { fileName: reviewNavigationView.fileName, loading: reviewNavigationView.loading === true, stats: stats !== undefined });
     if (renderedReviewNavigation.length > 50) renderedReviewNavigation.shift();
+    const reviewPattern = navigation?.items[navigation.index]?.lowValue?.pattern;
+    const panelChange = changeView && reviewPattern ? { ...changeView, reviewLowValuePattern: reviewPattern } : changeView;
+    if (allowMock) renderedChangeForTest = panelChange;
     panel.update({
       provider: descriptor.kind,
       welcome: !modelConfigured(),
@@ -1067,7 +1072,7 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
       ...(headerError?.root === shownRoot ? { statsError: headerError?.text } : {}),
       ...(preview && !changeView && !summaryShown ? { document: { ...preview.overview, entries: shownEntries() } } : {}),
       ...(folder ? { folder } : {}),
-      ...(changeView ? { change: changeView } : {}),
+      ...(panelChange ? { change: panelChange } : {}),
       ...(reviewSession && (shownReviewItem || summaryShown) ? { review: reviewProgress(reviewSession) } : {}),
       ...(reviewNavigationView ? { reviewNavigation: reviewNavigationView } : {}),
       ...(summaryShown && reviewNavigationView ? { reviewSummary: reviewSummaryView(summaryShown, reviewNavigationView.token) } : {}),
@@ -3950,21 +3955,41 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     const resume = session.intent === "full" && !running && session.items.some((item) => item.status === "pending")
       ? [{ label: "$(debug-start) Continue explaining changed files", action: "resume" as const }]
       : [];
-    const picked = await vscode.window.showQuickPick<vscode.QuickPickItem & { item?: ReviewItem; action?: "summary" | "stop" | "dismiss" | "resume" }>(
-      [
-        { label: "$(list-unordered) Review summary", description: "Source-grounded overview of the confirmed diff", action: "summary" },
-        ...session.items.map((item) => ({
-          label: `${icons[item.status]} ${item.path}`,
-          description: item.file.status === "modified" ? undefined : item.file.status,
-          detail: item.lowValue ? `Low value (${item.lowValue.pattern}); excluded from background work and summary evidence. Open the diff and choose Explain changes.` : item.status === "outdated" ? "Changed since it was confirmed; open the diff and choose Explain changes." : undefined,
-          item
-        })),
-        { label: "", kind: vscode.QuickPickItemKind.Separator },
-        ...resume,
-        control
-      ],
-      { title: `Changed files ${session.base}`, placeHolder: "Open the diff of a changed file", matchOnDescription: true }
-    );
+    type ReviewPick = vscode.QuickPickItem & { item?: ReviewItem; action?: "summary" | "stop" | "dismiss" | "resume" };
+    const currentItem = navigationOwner?.session === session ? navigationOwner.item : undefined;
+    const summaryPick: ReviewPick = { label: "$(list-unordered) Review summary", description: "Source-grounded overview of the confirmed diff", action: "summary" };
+    const quickPick = vscode.window.createQuickPick<ReviewPick>();
+    quickPick.items = [
+      summaryPick,
+      ...session.items.map((item) => ({
+        label: `${icons[item.status]} ${item.path}`,
+        description: [item === currentItem ? "Current file" : "", item.file.status === "modified" ? "" : item.file.status].filter(Boolean).join(" · ") || undefined,
+        detail: item.lowValue ? `Low value (${item.lowValue.pattern}); excluded from background work and summary evidence. Open the diff and choose Explain changes.` : item.status === "outdated" ? "Changed since it was confirmed; open the diff and choose Explain changes." : undefined,
+        item
+      })),
+      { label: "", kind: vscode.QuickPickItemKind.Separator },
+      ...resume,
+      control
+    ];
+    quickPick.title = `Changed files ${session.base}`;
+    quickPick.placeholder = "Open the diff of a changed file";
+    quickPick.matchOnDescription = true;
+    if (allowMock) reviewFilesPickerForTest = quickPick;
+    const pickedPromise = new Promise<ReviewPick | undefined>((resolvePick) => {
+      quickPick.onDidAccept(() => resolvePick(quickPick.selectedItems[0]));
+      quickPick.onDidHide(() => resolvePick(undefined));
+    });
+    quickPick.show();
+    const active = quickPick.items.find((entry) => entry.item === currentItem && currentItem !== undefined)
+      ?? (navigationOwner?.session === session && !navigationOwner.item ? summaryPick : undefined);
+    if (active) quickPick.activeItems = [active];
+    let picked: ReviewPick | undefined;
+    try {
+      picked = await pickedPromise;
+    } finally {
+      if (reviewFilesPickerForTest === quickPick) reviewFilesPickerForTest = undefined;
+      quickPick.dispose();
+    }
     if (!picked) return;
     if (reviewSession !== session ||
         (expectedToken && activeReviewNavigation?.token !== expectedToken)) return;
@@ -5070,6 +5095,10 @@ export function activate(context: vscode.ExtensionContext): DownsideUpTestApi | 
     },
     reviewBaseChoices: () => reviewBasePickerForTest?.enabled
       ? reviewBasePickerForTest.items.map((item) => item.label) : undefined,
+    reviewFilesPicker: () => reviewFilesPickerForTest
+      ? { items: reviewFilesPickerForTest.items.map(({ label, description }) => ({ label, description })),
+          active: reviewFilesPickerForTest.activeItems[0]?.label } : undefined,
+    renderedChange: () => renderedChangeForTest,
     reviewExportError: () => reviewExportErrorForTest,
     setPublicationRequest: (request, dialog) => {
       publicationRequestForTest = request;
@@ -5196,6 +5225,8 @@ export interface DownsideUpTestApi {
   /** Where Export Review Summary writes instead of asking with a native save dialog. */
   setReviewExportTarget(target: vscode.Uri | undefined, dialog?: () => Promise<void>): void;
   reviewBaseChoices(): readonly string[] | undefined;
+  reviewFilesPicker(): { items: Array<{ label: string; description?: string }>; active?: string } | undefined;
+  renderedChange(): PanelState["change"];
   reviewExportError(): string | undefined;
   setPublicationRequest(request: GitHubRequest | undefined, dialog?: PublicationDialogForTest): void;
   publicationError(): string | undefined;

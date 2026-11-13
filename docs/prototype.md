@@ -640,7 +640,8 @@ disappear and reflow. Boundary buttons are disabled and navigation does
 not wrap. The summary precedes the first file: Previous from that file returns
 to the summary and Next from the summary opens the first file. The
 filename/position opens the existing **Show Changed Files** picker, whose first
-entry is **Review summary**. File counts still count files, not the summary.
+entry is **Review summary** and whose current file is marked and highlighted.
+File counts still count files, not the summary.
 The top band also holds the single compact progress status
 (**Review:** or **Commit:** ready/total) with **Stop**. A progress update
 changes only that line; it does not re-render the bands or charts. Starting
@@ -917,7 +918,9 @@ never generate, update, or republish automatically.
 generated, minified, and snapshot files as low value for review preparation.
 They stay in the confirmed set and remain navigable, but do not enter background
 comparison prefetch or summary evidence. An explicit **Explain changes** still
-works under the ordinary privacy and size rules. User patterns replace the
+works under the ordinary privacy and size rules. Their preview identifies the
+matching pattern and explains these exclusions, including when a saved comparison
+is present. User patterns replace the
 shipped defaults; workspace and workspace-folder patterns add to them. This
 filter never overrides content-sharing exclusions.
 

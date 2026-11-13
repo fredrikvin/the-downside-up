@@ -110,14 +110,15 @@ with up to two context follow-ups for large files.
   reused; an outdated one shows a refresh icon and is regenerated only on
   request.
 - **‹ Previous** and **Next ›** step through the files in path order, and the
-  filename opens the **Show Changed Files** picker. Progress shows as
+  filename opens the **Show Changed Files** picker with the current file highlighted. Progress shows as
   **Review: 3/8 ready**.
 - Reading only reorders pending work; it never adds files or starts requests.
   Opening a file outside the review ends review mode.
 - Source Control's **Changes** list, and Graph diffs with matching content,
   return to the review.
 - Low-value files such as lockfiles, generated files, and snapshots stay
-  navigable but skip background comparisons and summary evidence; see
+  navigable but skip background comparisons and summary evidence. Their preview
+  shows the matching pattern and offers an explicit explanation; see
   `downsideUp.review.lowValuePatterns` under [Settings](#reviews).
 
 Details: [Review mode](docs/configuration.md#review-mode).

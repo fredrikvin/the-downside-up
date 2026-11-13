@@ -556,12 +556,28 @@ async function testLowValueReviews(api: DownsideUpTestApi, root: string): Promis
     await assertReviewLayout(api, "a.generated.ts");
     assert.equal(api.reviewNavigation()?.total, 2, "Filtered files remain in native navigation.");
     assert.equal(api.shownChange()?.explained, false);
+    assert.equal(api.renderedChange()?.reviewLowValuePattern, "**/*.generated.*");
+    const picker = api.invokeReviewNavigation("picker", api.reviewNavigation()!.token);
+    const choices = await waitFor(async () => api.reviewFilesPicker(), "the changed files picker");
+    assert.match(choices.active ?? "", /a\.generated\.ts/);
+    assert.equal(choices.items.find((item) => item.label.includes("a.generated.ts"))?.description, "Current file · added");
+    assert.ok(!choices.items.find((item) => item.label.includes("package-lock.json"))?.description?.includes("Current file"));
+    await vscode.commands.executeCommand("workbench.action.acceptSelectedQuickOpenItem");
+    await picker;
+    await assertReviewLayout(api, "a.generated.ts");
     await api.explainChange();
     assert.equal(api.reviewItems().find((item) => item.path === "a.generated.ts")?.status, "done",
       "Explicit Explain changes updates readiness without removing classification.");
+    assert.equal(api.renderedChange()?.reviewLowValuePattern, "**/*.generated.*", "A saved explanation remains excluded from review summary evidence.");
     await api.showReviewSummary();
     assert.match(api.shownReviewSummary()?.coverage ?? "", /2 low value/);
     assert.equal(api.shownReviewSummary()?.canGenerate, false, "Explicit saves do not turn filtered files into evidence.");
+    const summaryPicker = api.invokeReviewNavigation("picker", api.reviewNavigation()!.token);
+    const summaryChoices = await waitFor(async () => api.reviewFilesPicker(), "the summary's changed files picker");
+    assert.match(summaryChoices.active ?? "", /Review summary/);
+    assert.ok(summaryChoices.items.every((item) => !item.description?.includes("Current file")));
+    await vscode.commands.executeCommand("workbench.action.closeQuickOpen");
+    await summaryPicker;
 
     await api.openReviewedFile("package-lock.json");
     const pair = api.reviewDiffUris("package-lock.json")!;
@@ -577,6 +593,7 @@ async function testLowValueReviews(api: DownsideUpTestApi, root: string): Promis
     await vscode.commands.executeCommand("vscode.diff", pair.original, pair.modified, "Discarded low-value review (test)");
     await vscode.commands.executeCommand("downsideUp.showFileOverview");
     assert.equal(api.reviewItems().length, 0, "A setting change also discards retained confirmation.");
+    assert.equal(api.renderedChange()?.reviewLowValuePattern, undefined);
 
     await settings.update("review.lowValuePatterns", undefined, vscode.ConfigurationTarget.Global);
     await writeFile(source, "export function source() { return 7; }\n");

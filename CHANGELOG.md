@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.66.3
+
+- Highlight and mark the current file in the changed-files picker.
+- Explain why low-value review files are excluded from background comparisons
+  and summary evidence, including the matching pattern. They remain navigable
+  and can still be explained explicitly.
+
 ## 0.66.2
 
 - Fix change comparisons failing with "Generation failed" for files whose

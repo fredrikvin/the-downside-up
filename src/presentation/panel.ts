@@ -267,6 +267,8 @@ export interface ChangeView {
   readonly status: "ready" | "loading" | "current" | "outdated" | "failed" | "unavailable";
   readonly detail?: string;
   readonly message?: string;
+  /** Review-only classification; it does not override source-sharing exclusions. */
+  readonly reviewLowValuePattern?: string;
   readonly canExplain: boolean;
   /** The pair is still being resolved and looked up; the body shows a placeholder of its usual shape. */
   readonly reading?: boolean;
@@ -2314,6 +2316,9 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
         return [status, renderChangeSkeleton()];
       }
       const parts = [el("p", "muted small", change.originalLabel + " → " + change.modifiedLabel)];
+      if (change.reviewLowValuePattern) {
+        parts.push(el("p", "muted", "Low-value review file: matches " + change.reviewLowValuePattern + ". Excluded from background comparisons and review summary evidence. An explicit explanation is subject to the usual sharing and size rules."));
+      }
       if (change.status === "loading") {
         parts.push(explanationSkeleton(change.detail || "Explaining the changes…", () => post({ type: "cancel" })));
         return parts;
@@ -2322,7 +2327,7 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
       const result = change.result;
       if (!result) {
         if (change.canExplain) {
-          if (change.status === "ready") parts.push(el("p", "muted", "This change has not been explained yet."));
+          if (change.status === "ready" && !change.reviewLowValuePattern) parts.push(el("p", "muted", "This change has not been explained yet."));
           parts.push(explainChangesButton(change, change.status === "failed" ? "Try again" : "Explain changes"));
         }
         return parts;

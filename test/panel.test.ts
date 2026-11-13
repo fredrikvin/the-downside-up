@@ -1567,6 +1567,24 @@ describe("change view", () => {
     expect(messages).toContainEqual({ type: "explainChanges" });
   });
 
+  it("explains the low-value review exclusion without implying a failed or pending request", () => {
+    const { renderChange, messages } = webviewHelpers();
+    const view: ChangeView = { ...base, reviewLowValuePattern: "**/*.generated.ts" };
+    const nodes = renderChange(view).flatMap((node) => node.elements());
+    const text = texts(renderChange(view)).join(" ");
+    expect(text).toContain("matches **/*.generated.ts");
+    expect(text).toContain("Excluded from background comparisons and review summary evidence");
+    expect(text).not.toContain("This change has not been explained yet.");
+    expect(messages).toEqual([]);
+    nodes.find((node) => node.textContent === "Explain changes")?.listeners.get("click")?.();
+    expect(messages).toEqual([{ type: "explainChanges" }]);
+
+    const result = { summary: "An explicitly saved explanation.", changes: [], outside: "", possibleEffects: [], limitations: [], model: "m" };
+    expect(texts(renderChange({ ...view, status: "current", result })).join(" ")).toContain("review summary evidence");
+    const blocked = texts(renderChange({ ...view, status: "unavailable", canExplain: false, message: "Sharing is blocked." })).join(" ");
+    expect(blocked).toContain("Sharing is blocked.");
+  });
+
   it("shows a saved result as text with host-owned links", () => {
     const { renderChange, messages } = webviewHelpers();
     const view: ChangeView = {
