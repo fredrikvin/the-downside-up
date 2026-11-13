@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.66.4
+
+- Keep valid parts of a change comparison when a model cites lines outside
+  their assigned function. Unsafe changes and their orphaned visuals are
+  omitted with an incompleteness warning, and an explicit retry is offered.
+
 ## 0.66.3
 
 - Highlight and mark the current file in the changed-files picker.

@@ -25,6 +25,7 @@ import type {
   ReviewSummary,
   ReviewSummaryDiagram
 } from "../core/types";
+import { COMPARISON_EVIDENCE_OMITTED } from "../core/types";
 import { SchemaValidationError } from "./jsonResponse";
 import { comparisonRangeIncluded } from "../presentation/stepLines";
 
@@ -1068,6 +1069,7 @@ export function parseComparison(value: unknown, bounds?: ComparisonLineBounds): 
     typeof item[key] === "string" && (item[key] as string).length <= max ? (item[key] as string).trim() : "";
   const seenChangeIds = new Set<string>();
   let malformedVisual = false;
+  let omittedChangeEvidence = false;
   const visualIssues: string[] = [];
   const parsedChanges = changes.flatMap((change) => {
     if (typeof change !== "object" || change === null) return [];
@@ -1100,7 +1102,10 @@ export function parseComparison(value: unknown, bounds?: ComparisonLineBounds): 
       throw new Error("Change evidence is outside the supplied comparison context.");
     }
     if (fn && (!within(parsed.original.start, parsed.original.end, fn.original) ||
-        !within(parsed.modified.start, parsed.modified.end, fn.modified))) throw new Error("Change evidence is outside its function.");
+        !within(parsed.modified.start, parsed.modified.end, fn.modified))) {
+      omittedChangeEvidence = true;
+      return [];
+    }
     seenChangeIds.add(id);
     return [parsed];
   });
@@ -1162,6 +1167,10 @@ export function parseComparison(value: unknown, bounds?: ComparisonLineBounds): 
   }
   if (source.visualScopes !== undefined && Array.isArray(source.visualScopes) && source.visualScopes.length > 0 && !visualScopes?.length) malformedVisual = true;
   const limitations = readStrings(source.limitations, "limitations", 10).map((entry) => entry.trim()).filter(Boolean);
+  if (omittedChangeEvidence) {
+    limitations.unshift(COMPARISON_EVIDENCE_OMITTED);
+    if (limitations.length > 10) limitations.pop();
+  }
   if (malformedVisual) {
     const notice = "The paired visual comparison was omitted because its data was invalid or exceeded the safety limits; the textual comparison is still available.";
     if (limitations.length >= 10) limitations.splice(9, 1, notice);
@@ -1171,13 +1180,18 @@ export function parseComparison(value: unknown, bounds?: ComparisonLineBounds): 
     if (limitations.length < 10) limitations.push(issue);
     else limitations[9] = `${limitations[9]} ${issue}`.slice(0, 1_500);
   }
+  const summary = readText(source, "summary", 800).trim();
+  const outside = optionalText(source, "outside", 1_200);
+  if (omittedChangeEvidence && !summary && !outside && !parsedChanges.length && !added?.length && !removed?.length) {
+    throw new Error("Change evidence is outside its function; no usable comparison remains.");
+  }
   return {
-    summary: readText(source, "summary", 800).trim(),
+    summary,
     ...(added ? { added } : {}),
     ...(removed ? { removed } : {}),
     changes: parsedChanges,
     ...(visualScopes?.length ? { visualScopes } : {}),
-    outside: optionalText(source, "outside", 1_200),
+    outside,
     possibleEffects: readStrings(source.possibleEffects, "possible effects", 10).map((entry) => entry.trim()).filter(Boolean),
     limitations
   };

@@ -150,6 +150,8 @@ Model output is untrusted. Before anything is shown or saved:
   left unlinked;
 - flowcharts are structurally checked (at most 24 nodes and 40 edges, known
   endpoints, bounded nesting); an invalid chart is dropped with a limitation;
+- comparison changes whose evidence falls outside their assigned function are
+  omitted with their orphaned visuals and an explicit incompleteness warning;
 - project maps, flows, and review summaries keep only parts, files,
   functions, and ids the host already knows
   ([`checkedProjectMap`](../src/context/projectMap.ts));

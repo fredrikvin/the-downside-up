@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import * as vscode from "vscode";
 import { MemoryRepositoryCacheStore } from "../src/cache/store";
+import { COMPARISON_EVIDENCE_OMITTED } from "../src/core/types";
 import { ChangeSession, type ChangeSessionHost } from "../src/changeSession";
 import { ExplanationService } from "../src/controller";
 import type { ComparisonPromptInput } from "../src/generation/provider";
@@ -387,6 +388,25 @@ function session(onGenerate?: () => Promise<void>, options: Partial<Pick<ChangeS
 function prefetchOptions(allowed = true) {
   return { enabled: vi.fn(() => true), allowed: vi.fn(async () => allowed), background: vi.fn() };
 }
+
+it("retries an incomplete shown comparison only on an explicit explanation", async () => {
+  await writeFile(join(root, "a.txt"), "export const a = 2;\n");
+  const { changes, provider } = session();
+  const previous = vi.mocked(provider.explainComparison).getMockImplementation()!;
+  vi.mocked(provider.explainComparison).mockImplementationOnce(async (input, signal) => {
+    const result = await previous(input, signal);
+    return { ...result, value: { ...result.value, limitations: [COMPARISON_EVIDENCE_OMITTED] } };
+  });
+  await changes.show(headOf("a.txt"), uri("file", "a.txt"));
+  await changes.explain();
+  expect(changes.view(() => "link")?.result?.incompleteEvidence).toBe(true);
+  expect(provider.requests).toBe(1);
+  await changes.show(headOf("a.txt"), uri("file", "a.txt"));
+  expect(provider.requests).toBe(1);
+  await changes.explain();
+  expect(provider.requests).toBe(2);
+  expect(changes.view(() => "link")?.result?.incompleteEvidence).toBeUndefined();
+});
 
 /** The production review/cache/visible-comparison path with deterministic request gates. */
 describe("commit preparation in the shared review queue", () => {

@@ -33,6 +33,7 @@ import type {
   ReviewSummaryRecord,
   Usage
 } from "./core/types";
+import { COMPARISON_EVIDENCE_OMITTED } from "./core/types";
 import { comparisonProblem, describeIdentity, snapshotSignature, type ChangedFile, type ComparisonSnapshot, type SideSnapshot } from "./context/comparison";
 import {
   buildReviewSummaryRequest, reviewComparisonCurrent, reviewSnapshotMatches, reviewSummaryScopeKey, validateReviewSummaryScope,
@@ -1848,7 +1849,8 @@ export class ExplanationService {
     snapshot: ComparisonSnapshot,
     reread: () => Promise<ComparisonSnapshot>,
     signal?: AbortSignal,
-    onProgress?: (detail: string) => void
+    onProgress?: (detail: string) => void,
+    retryIncomplete = false
   ): Promise<SavedComparison & { usage?: Usage; cached: boolean }> {
     this.requireModel();
     const { root } = snapshot;
@@ -1857,7 +1859,9 @@ export class ExplanationService {
     const problem = comparisonProblem(snapshot);
     if (problem) throw new Error(problem);
     const existing = await this.findComparison(snapshot);
-    if (existing?.current) return { ...existing, cached: true };
+    if (existing?.current && !(retryIncomplete && existing.comparison.limitations.includes(COMPARISON_EVIDENCE_OMITTED))) {
+      return { ...existing, cached: true };
+    }
     const restricted = await (await currentPolicy()).repositoryRestriction(root);
     if (restricted) throw new Error(`Nothing was sent because ${restricted}.`);
     const path = snapshot.modified.state === "present" ? snapshot.modified.path : snapshot.original.path;

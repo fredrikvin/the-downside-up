@@ -249,6 +249,8 @@ export interface ChangeResultView {
   readonly outside: string;
   readonly possibleEffects: readonly string[];
   readonly limitations: readonly string[];
+  /** An explicit retry can replace a comparison with omitted function evidence. */
+  readonly incompleteEvidence?: boolean;
   readonly model: string;
   readonly usage?: string;
   /** Set when either version changed since it was explained; its line links are then left out. */
@@ -2340,6 +2342,11 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
         const note = el("p", "muted small", result.outdated ? "The explanation below is outdated: one of the versions changed since, so its line links are hidden. " : "");
         if (change.canExplain) note.append(explainChangesButton(change, "Try again"));
         if (change.canExplain || result.outdated) parts.push(note);
+      }
+      if (change.status === "current" && result.incompleteEvidence && change.canExplain) {
+        const note = el("p", "muted", "Some changes were omitted because their source evidence did not match the assigned function. ");
+        note.append(explainChangesButton(change, "Explain again"));
+        parts.push(note);
       }
       const summary = el("p", "summary");
       inline(summary, result.summary);

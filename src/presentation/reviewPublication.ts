@@ -1,6 +1,7 @@
 import type {
   ComparisonCatalogueEntry, ComparisonChangeDraft, ComparisonRecord, ComparisonVisualScope, ComparisonVisualSide
 } from "../core/types";
+import { COMPARISON_EVIDENCE_OMITTED } from "../core/types";
 import {
   renderReviewComparisonFlowchart,
   renderReviewSummaryDiagram,
@@ -331,7 +332,8 @@ function fileSections(file: ReviewExportFile): Omit<ReviewPublicationFile, "path
   ].filter(Boolean).join("\n\n");
   const intro = [
     renderReviewPublicationText(comparison.summary) || "Saved comparison",
-    ...(file.status === "low-value" ? ["_Low-value file; excluded from summary evidence._"] : [])
+    ...(file.status === "low-value" ? ["_Low-value file; excluded from summary evidence._"] : []),
+    ...(comparison.limitations.includes(COMPARISON_EVIDENCE_OMITTED) ? [renderReviewPublicationText(COMPARISON_EVIDENCE_OMITTED)] : [])
   ];
   const remainder = [
     ...(unassigned ? ["### Changes without a recorded function\n\n" + unassigned] : []),

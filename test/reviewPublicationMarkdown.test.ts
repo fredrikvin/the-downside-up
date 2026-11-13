@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ComparisonRecord, ReviewSummaryRecord } from "../src/core/types";
+import { COMPARISON_EVIDENCE_OMITTED } from "../src/core/types";
 import type { ReviewExportData } from "../src/presentation/reviewExport";
 import { renderReviewPublication } from "../src/presentation/reviewPublication";
 
@@ -135,6 +136,16 @@ function exportData(overrides: Partial<ReviewExportData> = {}): ReviewExportData
 }
 
 describe("review publication Markdown", () => {
+  it("discloses omitted change evidence in the file overview", () => {
+    const record = comparisonRecord();
+    const publication = renderReviewPublication(exportData({
+      files: [{ path: "src/main.ts", status: "current", comparison: {
+        ...record, comparison: { ...record.comparison, limitations: [COMPARISON_EVIDENCE_OMITTED] }
+      } }]
+    }));
+    expect(publication.files[0]!.body).toContain(COMPARISON_EVIDENCE_OMITTED);
+    expect(publication.files[0]!.overview).toContain(COMPARISON_EVIDENCE_OMITTED);
+  });
   it("keeps ordinary punctuation and safe inline code while neutralizing hostile Markdown", () => {
     const hostile = [
       "Use `--flag`, ``a`b``, and ``@build-bot`` safely.",

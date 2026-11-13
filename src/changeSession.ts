@@ -16,6 +16,7 @@ import {
 import { findRepositoryRoot, sharingExclusion } from "./context/inventory";
 import { formatUsage } from "./generation/provider";
 import type { ComparisonCatalogueEntry, ComparisonVisualScope, ExplanationFormat, FunctionTarget } from "./core/types";
+import { COMPARISON_EVIDENCE_OMITTED } from "./core/types";
 import type { ChangeFunctionCardView, ChangeView, ExplanationView } from "./presentation/panel";
 import { languageFor } from "./languages/registry";
 import { fingerprint } from "./core/fingerprint";
@@ -515,7 +516,7 @@ export class ChangeSession {
           if (this.shown !== shown || controller.signal.aborted) return;
           shown.detail = detail;
           this.host.changed();
-        });
+        }, !prefetching && Boolean(shown.saved?.comparison.limitations.includes(COMPARISON_EVIDENCE_OMITTED)));
       }, prefetching ? "prefetch" : "explicit");
       if (this.shown === shown) {
         shown.saved = result;
@@ -651,6 +652,7 @@ export class ChangeSession {
           outside: saved.comparison.outside,
           possibleEffects: saved.comparison.possibleEffects,
           limitations: saved.comparison.limitations,
+          ...(saved.comparison.limitations.includes(COMPARISON_EVIDENCE_OMITTED) ? { incompleteEvidence: true } : {}),
           model: saved.model,
           ...(saved.usage ? { usage: formatUsage(saved.usage) } : {}),
           ...(saved.current ? {} : { outdated: true })

@@ -510,6 +510,13 @@ A malformed visual scope does not discard other valid scopes. Unsafe source
 references still reject their scope, and aggregate safety limits still apply.
 If no valid scopes remain, the textual comparison remains and the specific
 validation reason is shown.
+When a textual change cites lines outside its assigned function, the change
+and its orphaned visual are omitted rather than discarding the whole file
+comparison. A host-generated limitation warns that the result may be incomplete.
+The warning also appears in exported comparisons and PR file overviews. A
+visible **Explain again** action explicitly retries the incomplete comparison;
+opening it does not. If no usable comparison remains, generation still fails
+rather than saving an empty result.
 
 Comparison generation stays on the Functions model. The prompt prefers one to
 three coherent changed regions, concise steps and charts, and compact JSON

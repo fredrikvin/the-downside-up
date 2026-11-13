@@ -25,13 +25,42 @@ describe("host catalogue response validation", () => {
       if (bad === "count") response.added = Array.from({ length: 101 }, () => response.added[0]!);
       expect(() => parseComparison(response, checkedBounds)).toThrow();
     });
-  it("rejects unknown or Added/Removed ids on Changed text and function-external evidence", () => {
+  it("rejects unknown or Added/Removed ids on Changed text", () => {
     const response = classifiedComparisonResponse();
     response.changes[0]!.functionId = "added";
     expect(() => parseComparison(response, checkedBounds)).toThrow("Changed function id");
-    response.changes[0]!.functionId = "changed";
+  });
+  it.each(["original", "modified"] as const)("omits a change with %s evidence outside its assigned function and keeps independent changes", (side) => {
+    const response = { ...classifiedComparisonResponse(), limitations: Array.from({ length: 10 }, (_, index) => `Model limitation ${index}`) };
+    const valid = response.changes[0]!;
+    const invalid = { ...valid, id: "invalid", [side]: { startLine: 1, endLine: 1 }, visualScopeId: "invalid-scope" };
+    response.changes = [invalid, valid];
+    response.visualScopes.push({ ...response.visualScopes[0]!, id: "invalid-scope" });
+    const parsed = parseComparison(response, checkedBounds);
+    expect(parsed.changes.map((change) => change.id)).toEqual(["retry"]);
+    expect(parsed.visualScopes?.map((visual) => visual.id)).toEqual(["request"]);
+    expect(parsed.summary).toBe(response.summary);
+    expect(parsed.limitations[0]).toContain("change was omitted");
+    expect(parsed.limitations[0]).toContain("outside its assigned function");
+  });
+  it("retains the file summary and reports the omission when the only change has invalid function evidence", () => {
+    const response = classifiedComparisonResponse();
     response.changes[0]!.original.startLine = 1;
-    expect(() => parseComparison(response, checkedBounds)).toThrow("outside its function");
+    const parsed = parseComparison(response, checkedBounds);
+    expect(parsed.summary).toBe(response.summary);
+    expect(parsed.changes).toEqual([]);
+    expect(parsed.visualScopes).toBeUndefined();
+    expect(parsed.limitations.join(" ")).toContain("change was omitted");
+  });
+  it("fails explicitly when invalid function evidence leaves no usable comparison", () => {
+    const response = classifiedComparisonResponse();
+    response.changes[0]!.original.startLine = 1;
+    response.summary = "";
+    response.added = [];
+    response.removed = [];
+    expect(() => parseComparison(response, { ...checkedBounds, catalogue: {
+      ...catalogue, entries: catalogue.entries.filter((entry) => entry.category === "changed")
+    } })).toThrow("no usable comparison remains");
   });
   it("keeps changes outside every catalogued function, such as in an empty classified catalogue", () => {
     const empty = { ...catalogue, entries: [] };

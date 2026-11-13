@@ -120,6 +120,9 @@ with up to two context follow-ups for large files.
   navigable but skip background comparisons and summary evidence. Their preview
   shows the matching pattern and offers an explicit explanation; see
   `downsideUp.review.lowValuePatterns` under [Settings](#reviews).
+- If a model cites lines outside the function it assigned a change to, the
+  preview keeps the usable comparison, warns about omitted details, and offers
+  an explicit retry. Opening the preview does not retry it automatically.
 
 Details: [Review mode](docs/configuration.md#review-mode).
 

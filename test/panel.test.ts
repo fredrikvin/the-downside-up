@@ -1537,6 +1537,17 @@ describe("change view", () => {
     expect(messages).toEqual([]);
   });
 
+  it("offers an explicit retry for a comparison with omitted function evidence", () => {
+    const { renderChange, messages } = webviewHelpers();
+    const result = { summary: "Partial result.", changes: [], outside: "", possibleEffects: [], limitations: [], model: "m", incompleteEvidence: true };
+    const nodes = renderChange({ ...base, status: "current", result }).flatMap((node) => node.elements());
+    expect(nodes.some((node) => node.textContent.includes("Some changes were omitted"))).toBe(true);
+    expect(messages).toEqual([]);
+    nodes.find((node) => node.textContent === "Explain again")?.listeners.get("click")?.();
+    expect(messages).toEqual([{ type: "explainChanges" }]);
+    expect(texts(renderChange({ ...base, status: "current", result: { ...result, incompleteEvidence: false } }))).not.toContain("Explain again");
+  });
+
   it("honors optional format settings without hiding Steps or generating formats", () => {
     const { renderChange, setFormats, messages } = webviewHelpers();
     setFormats({ pseudocode: false, flowchart: true, initial: "pseudocode" });

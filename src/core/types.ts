@@ -480,6 +480,8 @@ export interface ComparisonContextRequest {
   readonly reason: string;
 }
 
+export const COMPARISON_EVIDENCE_OMITTED = "A change was omitted because its source evidence was outside its assigned function. The comparison may be incomplete; explain it again to retry.";
+
 /** A model's explanation of one file's change, before the host has checked its line spans. */
 export interface FileComparisonDraft {
   /** Intermediate response only; never saved as an explanation. */

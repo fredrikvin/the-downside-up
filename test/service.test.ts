@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { FileRepositoryCacheStore, MemoryRepositoryCacheStore } from "../src/cache/store";
 import type { ComparisonContextRequest, FileComparisonDraft, FunctionTarget, RepositoryCache } from "../src/core/types";
+import { COMPARISON_EVIDENCE_OMITTED } from "../src/core/types";
 import { fingerprint } from "../src/core/fingerprint";
 import { ExplanationService } from "../src/controller";
 import { MockProvider } from "../src/generation/mock";
@@ -1036,6 +1037,28 @@ describe("ExplanationService", () => {
         store, describeProvider: () => ({ kind: "openai", modelId: "test" }),
         createProvider: async () => provider, authorizeExternalData: authorize, maxRequestBytes: () => 32 * 1024
       });
+
+    it("reuses incomplete comparisons unless explicitly retried, then caches the replacement", async () => {
+      const provider = new MockProvider();
+      const base = contextResult();
+      const partial = { ...base, value: { ...base.value, limitations: [COMPARISON_EVIDENCE_OMITTED] } };
+      const explain = vi.spyOn(provider, "explainComparison")
+        .mockResolvedValueOnce(partial).mockResolvedValue(contextResult());
+      const authorize = vi.fn(async () => true);
+      const service = diffService(provider, new MemoryRepositoryCacheStore(), authorize);
+      const pair = snapshot();
+      const first = await service.explainComparison(pair, async () => pair);
+      expect(first.comparison.limitations).toContain(COMPARISON_EVIDENCE_OMITTED);
+      expect((await service.explainComparison(pair, async () => pair)).cached).toBe(true);
+      expect(explain).toHaveBeenCalledTimes(1);
+      const retried = await service.explainComparison(pair, async () => pair, undefined, undefined, true);
+      expect(retried.cached).toBe(false);
+      expect(retried.comparison.limitations).not.toContain(COMPARISON_EVIDENCE_OMITTED);
+      expect(explain).toHaveBeenCalledTimes(2);
+      expect(authorize).toHaveBeenCalledTimes(2);
+      expect((await service.explainComparison(pair, async () => pair, undefined, undefined, true)).cached).toBe(true);
+      expect(explain).toHaveBeenCalledTimes(2);
+    });
 
     it("uses separate guidance selected from each exact Python comparison side", async () => {
       const provider = new MockProvider();
