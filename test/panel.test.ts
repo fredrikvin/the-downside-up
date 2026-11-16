@@ -22,7 +22,7 @@ class TestElement {
   };
   readonly clientWidth = 400;
   get offsetWidth(): number { return 320; }
-  readonly offsetHeight = 200;
+  offsetHeight = 200;
   readonly scrollWidth = 320;
   readonly scrollHeight = 200;
   readonly isConnected = true;
@@ -77,11 +77,15 @@ function webviewHelpers() {
   const window = {
     scrollY: 0, innerHeight: 720,
     addEventListener: (name: string, callback: (event: { data: unknown }) => void) => { listeners.set(name, callback); },
+    getComputedStyle: () => ({ marginBottom: "12px" }),
     scrollTo: vi.fn((_x: number, y: number) => { window.scrollY = y; }),
     scrollBy: vi.fn()
   };
   const listeners = new Map<string, (event: { data: unknown }) => void>();
-  const helpers = new Function("acquireVsCodeApi", "document", "window", "requestAnimationFrame", "cancelAnimationFrame", script + "\n  return { render, layoutFlow, downwardPath, renderPseudocode, renderFlowchart, renderEntry, renderAiBody, missingFormat, renderHeader, renderCrumbs, renderActivity, renderPageActions, renderReviewNavigation, renderReviewBands, renderChange, renderFolderSummary, renderFolderFlows, highlightSteps, setFormats: (formats) => { state = { formats }; } };")(
+  const rootStyle: Record<string, string> = {};
+  const resizeCallbacks = new Map<TestElement, () => void>();
+  let stickyHeading: TestElement | undefined;
+  const helpers = new Function("acquireVsCodeApi", "document", "window", "requestAnimationFrame", "cancelAnimationFrame", "ResizeObserver", script + "\n  return { render, layoutFlow, downwardPath, renderPseudocode, renderFlowchart, renderEntry, renderAiBody, missingFormat, renderHeader, renderCrumbs, renderActivity, renderPageActions, renderReviewNavigation, renderReviewBands, renderChange, renderFolderSummary, renderFolderFlows, highlightSteps, stickyInset, setFormats: (formats) => { state = { formats }; } };")(
     () => ({
       getState: () => savedState,
       setState: (next: Record<string, unknown>) => { savedState = next; },
@@ -89,15 +93,23 @@ function webviewHelpers() {
     }),
     {
       getElementById: element,
+      documentElement: { style: { setProperty: (name: string, value: string) => { rootStyle[name] = value; } } },
       createElement: (tag: string) => new TestElement(tag),
       createElementNS: (_ns: string, tag: string) => new TestElement(tag),
       createTextNode: (text: string) => text,
-      querySelector: (selector: string) => [...elements.values()].flatMap((node) => node.querySelectorAll(selector))[0],
-      querySelectorAll: (selector: string) => [...elements.values()].flatMap((node) => node.querySelectorAll(selector))
+      querySelector: (selector: string) => selector === ".entry.depth-0 > h2, .entry.depth-0 > h3"
+        ? stickyHeading : [...elements.values()].flatMap((node) => node.querySelectorAll(selector))[0],
+      querySelectorAll: (selector: string) => selector === ".entry > h2, .entry > h3, .entry > h4"
+        ? stickyHeading ? [stickyHeading] : [] : [...elements.values()].flatMap((node) => node.querySelectorAll(selector))
     },
     window,
     (callback: () => void) => { const id = ++nextFrame; frames.push({ id, callback }); return id; },
-    (id: number) => { cancelledFrames.add(id); }
+    (id: number) => { cancelledFrames.add(id); },
+    class {
+      constructor(private readonly callback: () => void) {}
+      observe(target: TestElement): void { resizeCallbacks.set(target, this.callback); }
+      disconnect(): void {}
+    }
   ) as {
     render(state: PanelState): void;
     layoutFlow(chart: Flowchart, limit?: number): { rows: Flowchart["nodes"][]; back: Set<Flowchart["edges"][number]> };
@@ -117,11 +129,13 @@ function webviewHelpers() {
     renderReviewBands(navigation: PanelState["reviewNavigation"], review: PanelState["review"]): void;
     renderChange(change: ChangeView): TestElement[];
     highlightSteps(items: { entryId: string; steps: number[]; pseudocode: number[]; nodes: number[] }): void;
+    stickyInset(): number;
     setFormats(formats: PanelState["formats"]): void;
   };
   messages.length = 0;
   return {
-    ...helpers, element, messages, window, savedState: () => savedState,
+    ...helpers, element, messages, window, rootStyle, resize: (target: TestElement) => resizeCallbacks.get(target)?.(),
+    setStickyHeading: (heading: TestElement | undefined) => { stickyHeading = heading; }, savedState: () => savedState,
     receive: (data: unknown) => listeners.get("message")!({ data }),
     flushFrames: () => {
       while (frames.length) {
@@ -132,7 +146,7 @@ function webviewHelpers() {
   };
 }
 
-it("renders mirrored review navigation with accessible controls and host-only actions", () => {
+it("renders review navigation with accessible controls and host-only actions", () => {
   const { renderReviewBands, element, messages } = webviewHelpers();
   const navigation: NonNullable<PanelState["reviewNavigation"]> = {
     token: "opaque-review-token-123456",
@@ -144,11 +158,8 @@ it("renders mirrored review navigation with accessible controls and host-only ac
   };
   renderReviewBands(navigation, undefined);
   const top = element("reviewNavigationTop");
-  const bottom = element("reviewNavigationBottom");
   expect(top.hidden).toBe(false);
-  expect(bottom.hidden).toBe(false);
   const buttons = top.children.filter((child): child is TestElement => child instanceof TestElement);
-  const bottomButtons = bottom.children.filter((child): child is TestElement => child instanceof TestElement);
   expect(buttons.map((button) => button.getAttribute("aria-label"))).toEqual([
     "Previous changed file", "Choose src/main.ts (2 of 8) from changed files", "Next changed file"
   ]);
@@ -163,42 +174,30 @@ it("renders mirrored review navigation with accessible controls and host-only ac
   expect(buttons[2]!.children.at(-1)).toMatchObject({ tagName: "svg" });
   expect(buttons[1]!.elements().some((node) => node.textContent === navigation.fileName)).toBe(true);
   expect(buttons[1]!.elements().some((node) => node.textContent === "2 of 8")).toBe(true);
-  expect(bottomButtons.map((button) => button.getAttribute("aria-label"))).toEqual(buttons.map((button) => button.getAttribute("aria-label")));
   const clickEvent = { preventDefault: () => undefined, stopPropagation: () => undefined };
   buttons[0]!.listeners.get("click")?.(clickEvent);
   buttons[1]!.listeners.get("click")?.(clickEvent);
   buttons[2]!.listeners.get("click")?.(clickEvent);
-  bottomButtons[0]!.listeners.get("click")?.(clickEvent);
-  bottomButtons[1]!.listeners.get("click")?.(clickEvent);
-  bottomButtons[2]!.listeners.get("click")?.(clickEvent);
   expect(messages).toEqual([
-    { type: "reviewNavigation", token: navigation.token, direction: "previous" },
-    { type: "reviewNavigation", token: navigation.token, direction: "picker" },
-    { type: "reviewNavigation", token: navigation.token, direction: "next" },
     { type: "reviewNavigation", token: navigation.token, direction: "previous" },
     { type: "reviewNavigation", token: navigation.token, direction: "picker" },
     { type: "reviewNavigation", token: navigation.token, direction: "next" }
   ]);
 
   renderReviewBands({ ...navigation, position: 1, canPrevious: false, canNext: false }, undefined);
-  for (const id of ["reviewNavigationTop", "reviewNavigationBottom"]) {
-    const boundary = element(id).children.filter((child): child is TestElement => child instanceof TestElement);
-    expect(boundary[0]!.disabled).toBe(true);
-    expect(boundary[2]!.disabled).toBe(true);
-  }
+  const boundary = top.children.filter((child): child is TestElement => child instanceof TestElement);
+  expect(boundary[0]!.disabled).toBe(true);
+  expect(boundary[2]!.disabled).toBe(true);
   renderReviewBands({ ...navigation, loading: true }, undefined);
-  for (const id of ["reviewNavigationTop", "reviewNavigationBottom"]) {
-    expect(element(id).hidden).toBe(false);
-    expect(element(id).getAttribute("aria-busy")).toBe("true");
-    const loading = element(id).children.filter((child): child is TestElement => child instanceof TestElement);
-    expect(loading.map((button) => button.disabled)).toEqual([true, true, true]);
-    expect(loading[1]!.elements().some((node) => node.textContent === navigation.fileName)).toBe(true);
-  }
+  expect(top.hidden).toBe(false);
+  expect(top.getAttribute("aria-busy")).toBe("true");
+  const loading = top.children.filter((child): child is TestElement => child instanceof TestElement);
+  expect(loading.map((button) => button.disabled)).toEqual([true, true, true]);
+  expect(loading[1]!.elements().some((node) => node.textContent === navigation.fileName)).toBe(true);
   messages.length = 0;
   renderReviewBands(undefined, undefined);
   expect(element("reviewBandTop").hidden).toBe(true);
   expect(element("reviewNavigationTop").hidden).toBe(true);
-  expect(element("reviewNavigationBottom").hidden).toBe(true);
 });
 
 it("renders a review landing page as safe text with explicit token-bound actions and incomplete coverage", () => {
@@ -458,16 +457,16 @@ it("shows elapsed activity across updates and clears the timer when work stops",
 });
 
 describe("preview webview document", () => {
-  it("places review bands around file content and removes progress from the header", () => {
+  it("places one sticky review band above file content", () => {
     const html = panelHtml("n");
     expect(html.indexOf('id="reviewBandTop"')).toBeLessThan(html.indexOf('id="crumbs"'));
     expect(html.indexOf('id="reviewProgress"')).toBeLessThan(html.indexOf('id="reviewNavigationTop"'));
-    expect(html.indexOf('id="reviewNavigationBottom"')).toBeGreaterThan(html.indexOf('id="limitations"'));
-    expect(html.indexOf('id="reviewNavigationBottom"')).toBeLessThan(html.indexOf('id="repo"'));
+    expect(html).not.toContain('id="reviewNavigationBottom"');
     const header = html.slice(html.indexOf("<header"), html.indexOf("</header>"));
     expect(header).not.toContain('id="commitProgress"');
-    expect(html).toContain('aria-label="Review files, top"');
-    expect(html).toContain('aria-label="Review files, bottom"');
+    expect(html).toContain('aria-label="Review files"');
+    expect(html).toContain(".review-band { position: sticky; top: 0; z-index: 10;");
+    expect(html).toContain("position: sticky; top: var(--review-band-height); z-index: 5;");
     expect(html).toContain('id="reviewProgress" class="review-progress" role="status" aria-live="polite"');
     expect(html).toContain(".review-navigation button:focus-visible");
     expect(html).toContain(".review-navigation .review-action-label { display: none; }");
@@ -487,7 +486,6 @@ describe("preview webview document", () => {
     const progress = element("reviewProgress");
     expect(element("reviewBandTop").hidden).toBe(false);
     expect(element("reviewNavigationTop").hidden).toBe(true);
-    expect(element("reviewNavigationBottom").hidden).toBe(true);
     expect(progress.hidden).toBe(false);
     expect(progress.children[0]).toMatchObject({ textContent: "Commit: 3/8 ready · 1 preparing" });
     const stop = progress.elements().find((entry) => entry.textContent === "Stop")!;
@@ -509,19 +507,14 @@ describe("preview webview document", () => {
     const entries = element("entries");
     const replace = vi.spyOn(entries, "replaceChildren");
     const topNavigation = element("reviewNavigationTop");
-    const bottomNavigation = element("reviewNavigationBottom");
     const topChildren = [...topNavigation.children];
-    const bottomChildren = [...bottomNavigation.children];
     const replaceTop = vi.spyOn(topNavigation, "replaceChildren");
-    const replaceBottom = vi.spyOn(bottomNavigation, "replaceChildren");
     window.scrollTo.mockClear();
     receive({ type: "review", review: { text: "Review: 8/8 ready", canStop: false } });
     flushFrames();
     expect(replace).not.toHaveBeenCalled();
     expect(replaceTop).not.toHaveBeenCalled();
-    expect(replaceBottom).not.toHaveBeenCalled();
     expect(topNavigation.children).toEqual(topChildren);
-    expect(bottomNavigation.children).toEqual(bottomChildren);
     expect(window.scrollTo).not.toHaveBeenCalled();
     expect(window.scrollBy).not.toHaveBeenCalled();
     expect(progress.children[0]).toMatchObject({ textContent: "Review: 8/8 ready" });
@@ -531,6 +524,37 @@ describe("preview webview document", () => {
     expect(progress.hidden).toBe(true);
     expect(element("reviewBandTop").hidden).toBe(false);
     expect(topNavigation.hidden).toBe(false);
+  });
+
+  it("measures the visible band and stacks ordinary and diff headings below it", () => {
+    const { renderReviewBands, element, rootStyle, resize, stickyInset, setStickyHeading, flushFrames } = webviewHelpers();
+    const band = element("reviewBandTop");
+    let bandHeight = 60.5;
+    vi.spyOn(band, "getBoundingClientRect").mockImplementation(() => ({ width: 320, height: bandHeight, left: 0, right: 320, top: 0, bottom: bandHeight }));
+    renderReviewBands(undefined, { text: "Review: 1/2 ready", canStop: true });
+    expect(rootStyle["--review-band-height"]).toBe("60.5px");
+
+    for (const tag of ["h2", "h3"]) {
+      const section = new TestElement("section");
+      const heading = new TestElement(tag);
+      heading.offsetHeight = 30;
+      section.append(heading);
+      vi.spyOn(section, "getBoundingClientRect").mockReturnValue({ width: 320, height: 300, left: 0, right: 320, top: 40, bottom: 340 });
+      setStickyHeading(heading);
+      resize(band);
+      flushFrames();
+      expect(stickyInset()).toBe(90.5);
+      expect(heading.className.split(" ")).toContain("stuck");
+    }
+
+    bandHeight = 85;
+    resize(band);
+    flushFrames();
+    expect(rootStyle["--review-band-height"]).toBe("85px");
+    expect(stickyInset()).toBe(115);
+    renderReviewBands(undefined, undefined);
+    expect(rootStyle["--review-band-height"]).toBe("0px");
+    expect(stickyInset()).toBe(30);
   });
 
   it("does not shift the reader when progress text changes above the viewport", () => {
@@ -551,12 +575,14 @@ describe("preview webview document", () => {
     render(state);
     flushFrames();
     const band = element("reviewBandTop");
+    const anchor = element("reviewBandAnchor");
     const progress = element("reviewProgress");
     const bounds = vi.spyOn(TestElement.prototype, "getBoundingClientRect").mockImplementation(function(this: TestElement) {
       const height = this === band ? 40 + (progress.hidden ? 0 : 20 * Math.min(1, progress.children.length)) : 40;
-      const top = this === band ? 100 - window.scrollY : 0;
+      const top = this === band ? Math.max(0, 100 - window.scrollY) : this === anchor ? 100 - window.scrollY : 0;
       return { width: 320, height, left: 0, right: 320, top, bottom: top + height };
     });
+
     try {
       window.scrollY = 800;
       window.scrollBy.mockClear();
@@ -570,6 +596,23 @@ describe("preview webview document", () => {
       bounds.mockRestore();
       window.scrollY = 0;
     }
+  });
+
+  it("preserves the reader when a progress-only sticky band appears or disappears", () => {
+    const { render, element, flushFrames, receive, window } = webviewHelpers();
+    const state: PanelState = {
+      provider: "mock", models: { explanation: "mock" }, busy: false, hasRepository: false,
+      explanations: [], showDetails: false, formats: { pseudocode: false, flowchart: false, initial: "steps" }
+    };
+    render(state);
+    flushFrames();
+    window.scrollY = 800;
+    vi.spyOn(element("reviewBandAnchor"), "getBoundingClientRect").mockReturnValue({ width: 320, height: 0, left: 0, right: 320, top: -700, bottom: -700 });
+    window.scrollBy.mockClear();
+    receive({ type: "review", review: { text: "Review: 1/2 ready", canStop: true } });
+    expect(window.scrollBy).toHaveBeenLastCalledWith(0, 52);
+    receive({ type: "review", review: undefined });
+    expect(window.scrollBy).toHaveBeenLastCalledWith(0, -52);
   });
 
   it("omits the shared help footer while keeping contextual notices and limitations", () => {

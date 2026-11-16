@@ -1168,7 +1168,7 @@ async function runWithCommitRepository(commitRoot: string): Promise<void> {
     const transition = api.renderedReviewNavigation();
     assert.ok(transition.length > 0, "Navigating re-renders the preview.");
     assert.ok(transition.every((state) => state !== undefined),
-      `The review bands stay visible while the next diff loads: ${JSON.stringify(transition)}`);
+      `The review band stays visible while the next diff loads: ${JSON.stringify(transition)}`);
     assert.ok(transition.some((state) => state?.fileName === "Badge.tsx" && state.loading),
       "The next file is shown, disabled, while it is read.");
     assert.equal(transition.at(-1)?.loading, false);

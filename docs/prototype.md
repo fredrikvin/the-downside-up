@@ -51,7 +51,8 @@ Queued scroll/reveal frames are cancelled when the reader clicks a linked item.
 Moving the cursor in the code brings what it
 highlights into view in the preview (the highlighted item, or else the item
 at the cursor) without scrolling the editor back. Item headings are sticky:
-a function's heading stays at the top of the preview, on one line with its
+a function's heading stays at the top of the preview (below the sticky review
+band when shown), on one line with its
 AI title shortened if needed, while its explanation scrolls under it, and
 the next heading pushes it away; scroll sync and scrolling into view account
 for its height. The item at the cursor is highlighted, and double-clicking
@@ -640,8 +641,8 @@ When the preview shows a native diff whose repository, both side identities
 (including exact revision IDs), and both paths match an item in the active
 confirmed Review set, a review band above the file header (**‹ Previous /
 filename · position of total / Next ›**) steps through the confirmed files in
-stable path order. The band is mirrored below a divider at the bottom of the preview, without
-progress. While the next confirmed diff is being read, both bands stay in
+stable path order. The band stays at the top while scrolling, with function
+headings stacked below it. While the next confirmed diff is being read, it stays in
 place with that file's name and all controls disabled, so they don't
 disappear and reflow. Boundary buttons are disabled and navigation does
 not wrap. The summary precedes the first file: Previous from that file returns
@@ -651,7 +652,7 @@ entry is **Review summary** and whose current file is marked and highlighted.
 File counts still count files, not the summary.
 The top band also holds the single compact progress status
 (**Review:** or **Commit:** ready/total) with **Stop**. A progress update
-changes only that line; it does not re-render the bands or charts. Starting
+changes only that line; it does not re-render the navigation or charts. Starting
 Review Changes… or Prepare Commit Explanations… opens one confirmed file's
 native diff in the first editor column, with the preview beside it and focus
 kept on the diff. The preview lands on Review summary. That underlying file is
@@ -665,7 +666,7 @@ aborts its remaining requests, like Cancel. Ordinary opt-in prefetching then
 resumes for the shown file, using only consent already given.
 The most recent review's confirmed set is retained in memory when leaving by
 navigation. Returning to one of its exact native diff URI pairs restores the
-review bands, progress, and selected file, including immutable commit reviews;
+review band, progress, and selected file, including immutable commit reviews;
 for working reviews, selecting a confirmed file from Source Control's Changes
 list (HEAD/index to working tree) opens its confirmed review pair instead,
 preserving the review base even when it differs from HEAD. Both side paths must

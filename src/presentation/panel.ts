@@ -354,7 +354,7 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'nonce-${nonce}'; script-src 'nonce-${nonce}';">
   <style nonce="${nonce}">
-    :root { --separator: var(--vscode-textSeparator-foreground, rgba(128, 128, 128, .35)); --item-highlight: var(--vscode-editor-selectionHighlightBackground, rgba(128, 128, 128, .22)); }
+    :root { --separator: var(--vscode-textSeparator-foreground, rgba(128, 128, 128, .35)); --item-highlight: var(--vscode-editor-selectionHighlightBackground, rgba(128, 128, 128, .22)); --review-band-height: 0px; }
     html, body { margin: 0; }
     body {
       color: var(--vscode-editor-foreground);
@@ -422,7 +422,7 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
     .stats .outdated { color: var(--vscode-editorWarning-foreground, var(--vscode-descriptionForeground)); }
     .stats.stale { opacity: .55; transition: opacity .15s; }
     .stats button { font-size: 11px; padding: 2px 6px; min-height: 24px; }
-    .review-band { margin: 0 0 12px; padding: 4px 0 8px; border-bottom: 1px solid var(--separator); }
+    .review-band { position: sticky; top: 0; z-index: 10; margin: 0 0 12px; padding: 4px 0 8px; border-bottom: 1px solid var(--separator); background: var(--vscode-editor-background, #fff); }
     .review-navigation { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: center; gap: 4px; width: 100%; min-width: 0; }
     .review-navigation button { display: inline-flex; align-items: center; justify-content: center; gap: 5px; min-width: 0; min-height: 30px; border: 1px solid transparent; border-radius: 3px; padding: 3px 6px; color: inherit; background: transparent; font: inherit; cursor: pointer; }
     .review-navigation button:not(:disabled):is(:hover, :focus-visible, :active) { background: var(--vscode-toolbar-hoverBackground, rgba(128,128,128,.14)); }
@@ -438,7 +438,6 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
     .review-progress button { border: 0; border-radius: 3px; padding: 2px 6px; color: inherit; background: transparent; font: inherit; cursor: pointer; }
     .review-progress button:hover { background: var(--vscode-toolbar-hoverBackground, rgba(128,128,128,.14)); }
     .review-progress button:focus-visible { outline: 1px solid var(--vscode-contrastActiveBorder, var(--vscode-focusBorder)); outline-offset: 1px; }
-    .review-band-bottom { margin: 18px 0 0; padding: 8px 0 0; border-top: 1px solid var(--separator); }
     @media (max-width: 420px) {
       .review-navigation .review-action-label { display: none; }
       .review-navigation .review-file { max-width: 60vw; }
@@ -468,7 +467,7 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
     .entry > h2, .entry > h3, .entry > h4 { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
     /* Headings stay in view while their section is read, and are pushed away by the next one. */
     .entry > h2, .entry > h3, .entry > h4 {
-      position: sticky; top: 0; z-index: 5;
+      position: sticky; top: var(--review-band-height); z-index: 5;
       padding: 8px 0 6px; margin-bottom: 6px;
       background: color-mix(in srgb, var(--vscode-editor-background, #fff) 88%, transparent);
       -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px);
@@ -682,9 +681,10 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
   <aside id="prefetchConsent" class="prefetch-consent" aria-label="Background explanation approval" hidden></aside>
   <main id="doc">
     <section id="welcome" class="prefetch-consent" aria-label="Welcome to Downside Up" hidden></section>
+    <div id="reviewBandAnchor"></div>
     <section id="reviewBandTop" class="review-band" hidden>
       <div id="reviewProgress" class="review-progress" role="status" aria-live="polite" hidden></div>
-      <nav id="reviewNavigationTop" class="review-navigation" aria-label="Review files, top" hidden></nav>
+      <nav id="reviewNavigationTop" class="review-navigation" aria-label="Review files" hidden></nav>
     </section>
     <nav id="crumbs" class="crumbs muted small" aria-label="Location" hidden></nav>
     <div class="page-heading"><h1 id="title">Downside Up</h1><div id="pageActions" class="page-actions"></div></div>
@@ -694,7 +694,6 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
     <div id="entries"></div>
     <p id="empty" class="muted" hidden></p>
     <p id="limitations" class="muted small"></p>
-    <nav id="reviewNavigationBottom" class="review-navigation review-band-bottom" aria-label="Review files, bottom" hidden></nav>
     <details id="repo" class="repo" hidden>
       <summary>Repository context used for explanations</summary>
       <div id="repoBody"></div>
@@ -2630,10 +2629,19 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
       }
     }
 
-    /** Height of a stuck function heading, so code lines map to the visible area below it. */
+    function reviewBandHeight() {
+      const band = byId("reviewBandTop");
+      return band.hidden ? 0 : band.getBoundingClientRect().height;
+    }
+
+    function updateReviewBandHeight() {
+      document.documentElement.style.setProperty("--review-band-height", reviewBandHeight() + "px");
+    }
+
+    /** Keep source-linked content below both sticky layers. */
     function stickyInset() {
-      const heading = document.querySelector(".entry.depth-0 > h2");
-      return heading ? heading.offsetHeight : 0;
+      const heading = document.querySelector(".entry.depth-0 > h2, .entry.depth-0 > h3");
+      return reviewBandHeight() + (heading ? heading.offsetHeight : 0);
     }
 
     let stuckFrame = 0;
@@ -2641,9 +2649,10 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
     function updateStuck() {
       cancelAnimationFrame(stuckFrame);
       stuckFrame = requestAnimationFrame(() => {
+        const top = reviewBandHeight();
         for (const heading of document.querySelectorAll(".entry > h2, .entry > h3, .entry > h4")) {
           const section = heading.parentElement.getBoundingClientRect();
-          heading.classList.toggle("stuck", section.top < -1 && section.bottom > heading.offsetHeight);
+          heading.classList.toggle("stuck", section.top < top - 1 && section.bottom > top + heading.offsetHeight);
         }
       });
     }
@@ -2759,8 +2768,9 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
       const band = byId("reviewBandTop");
       const previousScroll = window.scrollY;
       const wasHidden = band.hidden;
-      const bandTop = band.getBoundingClientRect().top + previousScroll;
-      const previousHeight = wasHidden ? 0 : band.getBoundingClientRect().height;
+      const previousRect = band.getBoundingClientRect();
+      const bandTop = byId("reviewBandAnchor").getBoundingClientRect().top + previousScroll;
+      const previousHeight = wasHidden ? 0 : previousRect.height;
       const progress = byId("reviewProgress");
       progress.hidden = !review;
       progress.replaceChildren();
@@ -2775,14 +2785,15 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
           progress.append(" · ", stop);
         }
       }
-      // Only compensate when the band lies entirely above the viewport.
+      updateReviewBandHeight();
+      updateStuck();
+      // The anchor stays in normal flow even when the band itself is sticky.
       if (!preserveScroll) return;
       const nextRect = band.hidden ? undefined : band.getBoundingClientRect();
       const nextHeight = nextRect ? nextRect.height : 0;
-      const top = wasHidden && nextRect ? nextRect.top + previousScroll : bandTop;
-      const height = wasHidden ? nextHeight : previousHeight;
-      if (top + height > previousScroll || (wasHidden && !nextRect)) return;
-      const heightChange = nextHeight - previousHeight;
+      if (bandTop >= previousScroll || (wasHidden && !nextRect)) return;
+      const margin = parseFloat(window.getComputedStyle(band).marginBottom) || 0;
+      const heightChange = nextHeight - previousHeight + (wasHidden !== band.hidden ? (band.hidden ? -margin : margin) : 0);
       if (heightChange !== 0) {
         ignoreScrollUntil = performance.now() + 100;
         window.scrollBy(0, heightChange);
@@ -2879,8 +2890,11 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
     function renderReviewBands(navigation, review) {
       currentReviewNavigation = navigation;
       renderReviewNavigation(navigation, "reviewNavigationTop");
-      renderReviewNavigation(navigation, "reviewNavigationBottom");
       renderReviewProgress(review);
+    }
+
+    if (typeof ResizeObserver === "function") {
+      new ResizeObserver(() => { updateReviewBandHeight(); updateStuck(); }).observe(byId("reviewBandTop"));
     }
 
     window.addEventListener("message", (event) => {

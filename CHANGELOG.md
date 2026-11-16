@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.67.0
+
+- Keep review file navigation and progress visible while scrolling, with
+  function headings stacked beneath them. Remove the duplicate bottom
+  navigation.
+
 ## 0.66.4
 
 - Keep valid parts of a change comparison when a model cites lines outside
