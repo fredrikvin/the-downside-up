@@ -445,6 +445,11 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
     @container (max-width: 600px) { .toolbar .spacer { display: none; } }
     @container (max-width: 420px) { .toolbar .btn-label { display: none; } .toolbar .tool-button { width: 28px; padding: 6px; } .model-options { flex-direction: column; } }
     .change-item, .entry.change-item { margin: 0 0 28px; padding-left: 12px; border-left: 2px solid var(--separator); }
+    .change-group > .change-group-heading {
+      position: sticky; top: var(--review-band-height); z-index: 7;
+      margin: 20px 0 6px; padding: 5px 0; font-size: .9em;
+      background: var(--vscode-editor-background, #fff);
+    }
     .change-item:not(.entry) h3 { margin: 0 0 10px; }
     .change-item .change-title { margin: 12px 0 10px; font-size: 1em; font-weight: 600; }
     .change-sides { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px 24px; margin: 16px 0; }
@@ -467,7 +472,7 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
     .entry > h2, .entry > h3, .entry > h4 { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
     /* Headings stay in view while their section is read, and are pushed away by the next one. */
     .entry > h2, .entry > h3, .entry > h4 {
-      position: sticky; top: var(--review-band-height); z-index: 5;
+      position: sticky; top: calc(var(--review-band-height) + var(--change-group-height, 0px)); z-index: 5;
       padding: 8px 0 6px; margin-bottom: 6px;
       background: color-mix(in srgb, var(--vscode-editor-background, #fff) 88%, transparent);
       -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px);
@@ -2352,9 +2357,15 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
       summary.title = "AI-generated explanation of this change";
       parts.push(summary);
       const outdated = Boolean(result.outdated || change.status === "outdated");
+      const changeGroup = (heading) => {
+        const group = el("section", "change-group");
+        group.append(el("h2", "folder-heading change-group-heading", heading));
+        parts.push(group);
+        return group;
+      };
       const renderFunctionCards = (heading, cards) => {
         if (!cards || !cards.length) return;
-        parts.push(el("h2", "folder-heading", heading));
+        const group = changeGroup(heading);
         for (const card of cards) {
           const entry = el("section", "entry depth-0 kind-function");
           entry.id = card.id;
@@ -2391,11 +2402,11 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
           } else if (card.note) {
             entry.append(el("p", "muted small", card.note));
           }
-          parts.push(entry);
+          group.append(entry);
         }
       };
       renderFunctionCards("Added", result.added);
-      if (result.changes.length) parts.push(el("h2", "folder-heading", "Changed"));
+      const changedGroup = result.changes.length ? changeGroup("Changed") : undefined;
       const visualScopes = result.visualScopes || [];
       const usedScopes = new Set();
       for (const [index, item] of result.changes.entries()) {
@@ -2434,13 +2445,14 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
           usedScopes.add(visual.scope.id);
           section.append(renderComparisonVisual(visual, change, result.outdated || change.status === "outdated"));
         }
-        parts.push(section);
+        changedGroup.append(section);
       }
       for (const visual of visualScopes) {
         if (usedScopes.has(visual.scope.id)) continue;
         const section = el("section", "change-item");
         section.append(renderComparisonVisual(visual, change, result.outdated || change.status === "outdated"));
-        parts.push(section);
+        if (changedGroup) changedGroup.append(section);
+        else parts.push(section);
       }
       renderFunctionCards("Removed", result.removed);
       if (result.outside) parts.push(el("h2", "folder-heading", "Other changes"), inline(el("p"), result.outside));
@@ -2504,6 +2516,17 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
     }
 
 
+    const changeGroupObserver = typeof ResizeObserver === "function" ? new ResizeObserver(() => {
+      updateChangeGroupHeights();
+      updateStuck();
+    }) : undefined;
+
+    function updateChangeGroupHeights() {
+      for (const heading of document.querySelectorAll(".change-group-heading")) {
+        heading.parentElement.style.setProperty("--change-group-height", heading.getBoundingClientRect().height + "px");
+      }
+    }
+
     function render(next) {
       flowViewUpdates.length = 0;
       const previousScroll = window.scrollY;
@@ -2516,6 +2539,7 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
       const anchorId = anchor?.id;
       const anchorTop = anchor?.getBoundingClientRect().top;
       for (const observer of chartObservers.splice(0)) observer.disconnect();
+      changeGroupObserver?.disconnect();
       const focusedEntry = document.activeElement && document.activeElement.closest ? document.activeElement.closest(".entry") : null;
       const focusedClass = document.activeElement ? document.activeElement.className : "";
       const focusedItem = document.activeElement && document.activeElement.dataset
@@ -2583,6 +2607,10 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
       purpose.textContent = localPurpose;
       const views = new Map((next.explanations || []).map((view) => [view.entryId, view]));
       byId("entries").replaceChildren(...(reviewSummary ? renderReviewSummary(reviewSummary) : change ? renderChange(change) : file ? file.entries.map((entry) => renderEntry(entry, views)) : folder ? renderFolder(folder) : loading ? [renderSkeleton(true)] : []));
+      updateChangeGroupHeights();
+      if (changeGroupObserver) {
+        for (const heading of document.querySelectorAll(".change-group-heading")) changeGroupObserver.observe(heading);
+      }
       const empty = byId("empty");
       empty.hidden = Boolean(reviewSummary || loading || change || (file && file.entries.length) || (folder && folder.children.length));
       empty.textContent = file ? "Nothing to describe in this file." : folder ? "Nothing to describe in this folder." : "Open a source file to see its description here.";
@@ -2638,10 +2666,18 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
       document.documentElement.style.setProperty("--review-band-height", reviewBandHeight() + "px");
     }
 
-    /** Keep source-linked content below both sticky layers. */
+    /** Keep source-linked content below the visible sticky layers. */
     function stickyInset() {
       const heading = document.querySelector(".entry.depth-0 > h2, .entry.depth-0 > h3");
-      return reviewBandHeight() + (heading ? heading.offsetHeight : 0);
+      const bandHeight = reviewBandHeight();
+      let groupHeight = 0;
+      for (const groupHeading of document.querySelectorAll(".change-group-heading")) {
+        const rect = groupHeading.getBoundingClientRect();
+        if (rect.top <= bandHeight + 1 && rect.bottom > bandHeight) {
+          groupHeight = Math.max(groupHeight, rect.bottom - bandHeight);
+        }
+      }
+      return bandHeight + groupHeight + (heading ? heading.offsetHeight : 0);
     }
 
     let stuckFrame = 0;
@@ -2649,8 +2685,9 @@ export const panelHtml = (nonce: string): string => `<!doctype html>
     function updateStuck() {
       cancelAnimationFrame(stuckFrame);
       stuckFrame = requestAnimationFrame(() => {
-        const top = reviewBandHeight();
         for (const heading of document.querySelectorAll(".entry > h2, .entry > h3, .entry > h4")) {
+          const groupHeading = heading.closest(".change-group")?.querySelector(".change-group-heading");
+          const top = reviewBandHeight() + (groupHeading ? groupHeading.getBoundingClientRect().height : 0);
           const section = heading.parentElement.getBoundingClientRect();
           heading.classList.toggle("stuck", section.top < top - 1 && section.bottom > top + heading.offsetHeight);
         }

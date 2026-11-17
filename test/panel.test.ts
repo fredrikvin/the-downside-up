@@ -14,7 +14,10 @@ class TestElement {
   focused = false;
   readonly listeners = new Map<string, (event?: { key?: string; target?: TestElement; preventDefault(): void; stopPropagation(): void }) => void>();
   readonly dataset: Record<string, string> = {};
-  readonly style: Record<string, string> = {};
+  readonly style: Record<string, string> & { setProperty(name: string, value: string): void } = Object.assign(
+    Object.create(null) as Record<string, string>,
+    { setProperty: (name: string, value: string) => { this.style[name] = value; } }
+  );
   readonly classList = {
     add: (...names: string[]) => { this.className += " " + names.join(" "); },
     remove: (...names: string[]) => { this.className = this.className.split(" ").filter((name) => !names.includes(name)).join(" "); },
@@ -106,9 +109,10 @@ function webviewHelpers() {
     (callback: () => void) => { const id = ++nextFrame; frames.push({ id, callback }); return id; },
     (id: number) => { cancelledFrames.add(id); },
     class {
+      private readonly targets = new Set<TestElement>();
       constructor(private readonly callback: () => void) {}
-      observe(target: TestElement): void { resizeCallbacks.set(target, this.callback); }
-      disconnect(): void {}
+      observe(target: TestElement): void { this.targets.add(target); resizeCallbacks.set(target, this.callback); }
+      disconnect(): void { for (const target of this.targets) resizeCallbacks.delete(target); this.targets.clear(); }
     }
   ) as {
     render(state: PanelState): void;
@@ -466,7 +470,8 @@ describe("preview webview document", () => {
     expect(header).not.toContain('id="commitProgress"');
     expect(html).toContain('aria-label="Review files"');
     expect(html).toContain(".review-band { position: sticky; top: 0; z-index: 10;");
-    expect(html).toContain("position: sticky; top: var(--review-band-height); z-index: 5;");
+    expect(html).toContain("position: sticky; top: var(--review-band-height); z-index: 7;");
+    expect(html).toContain("position: sticky; top: calc(var(--review-band-height) + var(--change-group-height, 0px)); z-index: 5;");
     expect(html).toContain('id="reviewProgress" class="review-progress" role="status" aria-live="polite"');
     expect(html).toContain(".review-navigation button:focus-visible");
     expect(html).toContain(".review-navigation .review-action-label { display: none; }");
@@ -1191,6 +1196,9 @@ describe("change view", () => {
     expect(nodes.filter((node) => node.tagName === "h2").map((node) => node.textContent)).toEqual([
       "Added", "Changed", "Removed", "Other changes", "Possible consequences"
     ]);
+    const groups = cards.filter((node) => node.className === "change-group");
+    expect(groups.map((group) => (group.children[0] as TestElement).textContent)).toEqual(["Added", "Changed", "Removed"]);
+    expect(groups.map((group) => group.elements().filter((node) => node.className.includes("kind-function")).length)).toEqual([1, 2, 1]);
     const functionHeadings = nodes.filter((node) => node.tagName === "h3" && node.elements().some((part) => part.tagName === "code"));
     expect(functionHeadings.some((node) => node.elements().some((part) => part.textContent === "validate"))).toBe(true);
     expect(nodes.filter((node) => node.tagName === "code" && node.textContent === "Retry")).toHaveLength(1);
@@ -1203,6 +1211,59 @@ describe("change view", () => {
 
     const legacy = renderChange({ ...view, result: { ...view.result!, outside: "" } });
     expect(legacy.flatMap((card) => card.elements()).filter((node) => node.tagName === "h2").map((node) => node.textContent)).toEqual(["Changed"]);
+  });
+
+  it("measures category headings independently and accounts for the active category in sticky offsets", () => {
+    const { render, element, resize, stickyInset, setStickyHeading, flushFrames, renderReviewBands } = webviewHelpers();
+    const view = withVisual();
+    const state: PanelState = {
+      provider: "mock", models: { explanation: "mock" }, busy: false, hasRepository: false,
+      explanations: [], showDetails: false, formats: { pseudocode: false, flowchart: false, initial: "steps" },
+      review: { text: "Review: 1/2 ready", canStop: false },
+      change: { ...view, result: { ...view.result!, added: [functionCard()], removed: [functionCard({ id: "removed" })] } }
+    };
+    const band = element("reviewBandTop");
+    vi.spyOn(band, "getBoundingClientRect").mockReturnValue({ width: 320, height: 60, left: 0, right: 320, top: 0, bottom: 60 });
+    render(state);
+    flushFrames();
+    const groups = element("entries").children.filter((node): node is TestElement => node instanceof TestElement && node.className === "change-group");
+    const added = groups[0]!;
+    const changed = groups[1]!;
+    const addedHeading = added.children[0] as TestElement;
+    const changedHeading = changed.children[0] as TestElement;
+    const removedHeading = groups[2]!.children[0] as TestElement;
+    const card = added.children[1] as TestElement;
+    const functionHeading = card.children[0] as TestElement;
+    functionHeading.offsetHeight = 30;
+    setStickyHeading(functionHeading);
+    let addedHeight = 24;
+    let addedTop = 60;
+    let changedTop = 300;
+    vi.spyOn(addedHeading, "getBoundingClientRect").mockImplementation(() => ({ width: 320, height: addedHeight, left: 0, right: 320, top: addedTop, bottom: addedTop + addedHeight }));
+    vi.spyOn(changedHeading, "getBoundingClientRect").mockImplementation(() => ({ width: 320, height: 28, left: 0, right: 320, top: changedTop, bottom: changedTop + 28 }));
+    vi.spyOn(removedHeading, "getBoundingClientRect").mockReturnValue({ width: 320, height: 40, left: 0, right: 320, top: 500, bottom: 540 });
+    vi.spyOn(card, "getBoundingClientRect").mockReturnValue({ width: 320, height: 300, left: 0, right: 320, top: 70, bottom: 370 });
+    resize(addedHeading);
+    flushFrames();
+    expect(added.style["--change-group-height"]).toBe("24px");
+    expect(changed.style["--change-group-height"]).toBe("28px");
+    expect(stickyInset()).toBe(114);
+    expect(functionHeading.className.split(" ")).toContain("stuck");
+
+    addedHeight = 38;
+    resize(addedHeading);
+    flushFrames();
+    expect(added.style["--change-group-height"]).toBe("38px");
+    expect(stickyInset()).toBe(128);
+    addedTop = 10;
+    changedTop = 60;
+    expect(stickyInset()).toBe(118);
+    changedTop = 200;
+    expect(stickyInset()).toBe(90);
+
+    renderReviewBands(undefined, undefined);
+    addedTop = 0;
+    expect(stickyInset()).toBe(68);
   });
 
   it("renders changed function names literally as code headings, without inventing navigation", () => {

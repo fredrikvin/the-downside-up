@@ -641,9 +641,10 @@ When the preview shows a native diff whose repository, both side identities
 (including exact revision IDs), and both paths match an item in the active
 confirmed Review set, a review band above the file header (**‹ Previous /
 filename · position of total / Next ›**) steps through the confirmed files in
-stable path order. The band stays at the top while scrolling, with function
-headings stacked below it. While the next confirmed diff is being read, it stays in
-place with that file's name and all controls disabled, so they don't
+stable path order. The band stays at the top while scrolling, with the current
+Added, Changed, or Removed heading and function heading stacked below it. Each
+category heading leaves when its section ends. While the next confirmed diff is
+being read, the band stays in place with that file's name and all controls disabled, so they don't
 disappear and reflow. Boundary buttons are disabled and navigation does
 not wrap. The summary precedes the first file: Previous from that file returns
 to the summary and Next from the summary opens the first file. The

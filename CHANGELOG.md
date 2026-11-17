@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.68.0
+
+- Keep Added, Changed, and Removed headings visible while scrolling their
+  sections, between review navigation and function headings.
+
 ## 0.67.0
 
 - Keep review file navigation and progress visible while scrolling, with
