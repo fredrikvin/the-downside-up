@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.68.1
+
+- Improve review summary diagrams in the preview and on GitHub: decision
+  arrows lead to distinct, source-supported outcomes, including unchanged
+  paths when relevant. Features of the same outcome no longer read as
+  alternative branches. Regenerate saved summaries to use the new guidance.
+
 ## 0.68.0
 
 - Keep Added, Changed, and Removed headings visible while scrolling their

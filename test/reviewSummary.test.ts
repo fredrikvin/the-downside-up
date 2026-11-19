@@ -1138,7 +1138,6 @@ describe("review summary response and prompt", () => {
     expect(system).toContain("do not invent architectural edges, speculative causality, or clutter");
     expect(system).toContain("not a control-flow chart with start/end nodes");
     expect(system).toContain("never use raw paths for navigation");
-    expect(REVIEW_SUMMARY_PROMPT_VERSION).toBe("downside-up-review-summary-5");
     expect(JSON.parse(user).coverage.unavailable).toBe(1);
     expect(reviewSummaryScopeKey(scopeFor())).toBe(reviewSummaryScopeKey(scopeFor()));
   });

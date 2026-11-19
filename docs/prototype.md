@@ -720,8 +720,11 @@ supported significance, not an implementation walkthrough. At most three
 distinct high-level themes group related code, tests, and documentation; file
 links provide drill-down. Avoid speculative bug lists and repeated host caveats.
 An optional compact affected-parts diagram is included only when source supports
-a useful relationship across parts, not as a changed-file checklist. Its labels
-are text, and its file references are validated against included evidence.
+a useful relationship across parts, not as a changed-file checklist. When the
+diagram shows a decision, the prompt asks for distinct, source-supported
+conditions and outcomes, including unchanged outcomes when relevant. Behaviors
+that happen together belong under their shared outcome or in the prose.
+Its labels are text, and its file references are validated against included evidence.
 Current diagrams link only to confirmed diffs: a single-file node opens its
 diff directly, while a node covering several files opens a picker of its
 host-validated evidence files. Choosing rechecks evidence freshness and policy

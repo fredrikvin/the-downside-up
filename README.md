@@ -144,6 +144,8 @@ Run **Downside Up: Export Review Summary…** and choose what to include, using
 the same bases as **Review Changes…** (including **Uncommitted changes only**),
 an immutable commit review, or your current/most recent review.
 The **Export** button on the summary page exports that review directly.
+Review summary diagrams distinguish decision outcomes from features that
+happen together. Regenerate older summaries to apply updated diagram guidance.
 Choose where to save the Markdown file in the save dialog. The file
 then opens beside the review. It contains:
 
