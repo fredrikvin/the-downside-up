@@ -456,7 +456,7 @@ correctness guarantee or a whole-repository audit.
 - [Changelog](CHANGELOG.md): release notes.
 
 For a locally built package, install the current version with
-`code --install-extension the-downside-up-0.68.0.vsix`.
+`code --install-extension the-downside-up-0.68.1.vsix`.
 
 ## License
 
